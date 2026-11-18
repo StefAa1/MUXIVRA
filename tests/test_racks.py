@@ -120,3 +120,81 @@ def test_audit_reports_unlinked_and_overlaps(rack, monkeypatch):
     kinds = {issue["kind"] for issue in report["issues"]}
     assert "overlap" in kinds
     assert any("U30" in issue["detail"] for issue in report["issues"] if issue["kind"] == "overlap")
+
+
+def _two_devices(rack, tag="t"):
+    sw = add_device(rack, f"sw-{tag}", position=10).json()
+    pp = add_device(rack, f"pp-{tag}", position=11, kind="patch-panel").json()
+    a = rack["client"].post("/api/netdoc/ports/bulk", json={"device_id": sw["id"], "prefix": "e", "count": 3}).json()["created"]
+    b = rack["client"].post("/api/netdoc/ports/bulk", json={"device_id": pp["id"], "prefix": "p", "count": 3}).json()["created"]
+    return sw, pp, a, b
+
+
+def test_port_cannot_appear_in_two_links_in_either_direction(rack):
+    sw, pp, a, b = _two_devices(rack)
+    assert rack["client"].post("/api/netdoc/links", json={"port_a": a[0]["id"], "port_b": b[0]["id"]}).status_code == 200
+    # same port, but now in the port_a column of the new row (the case two
+    # separate unique indexes missed)
+    swapped = rack["client"].post("/api/netdoc/links", json={"port_a": b[0]["id"], "port_b": a[1]["id"]})
+    assert swapped.status_code == 409
+    assert swapped.json()["detail"].startswith("port_already_linked")
+
+
+def test_concurrent_links_to_same_port_leave_exactly_one(rack):
+    from concurrent.futures import ThreadPoolExecutor
+
+    sw, pp, a, b = _two_devices(rack, "c")
+    payloads = [{"port_a": a[0]["id"], "port_b": b[i]["id"]} for i in range(3)]
+
+    def post(payload):
+        return rack["client"].post("/api/netdoc/links", json=payload).status_code
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        codes = list(pool.map(post, payloads))
+    assert codes.count(200) == 1, codes
+    assert rack["client"].get("/api/netdoc/links").json().__len__() == 1
+
+
+def test_device_links_to_connection_inventory_host(rack):
+    host = rack["client"].post(
+        "/api/hosts", json={"label": "core-sw", "hostname": "10.0.0.9", "protocol": "ssh"}
+    ).json()
+    device = rack["client"].post(
+        "/api/netdoc/devices",
+        json={"rack_id": rack["rack"]["id"], "name": "core-sw", "position": 5, "host_id": host["id"],
+              "vendor": "Cisco", "model": "C9200", "mgmt_ip": "10.0.0.9"},
+    ).json()
+    assert device["host_id"] == host["id"]
+
+    layout = rack["client"].get(f"/api/netdoc/rack/{rack['rack']['id']}").json()
+    mine = [d for d in layout["devices"] if d["id"] == device["id"]][0]
+    assert mine["host_label"] == "core-sw" and mine["model"] == "C9200"
+
+    patched = rack["client"].patch(f"/api/netdoc/devices/{device['id']}", json={"mgmt_ip": "10.0.0.10"})
+    assert patched.status_code == 200 and patched.json()["mgmt_ip"] == "10.0.0.10"
+
+    deps = rack["client"].get(f"/api/netdoc/devices/{device['id']}/dependents").json()
+    assert deps == {"ports": 0, "links": 0}
+
+
+def test_cross_rack_port_search_and_paged_links(rack):
+    sw, pp, a, b = _two_devices(rack, "x")
+    other_site = rack["client"].post("/api/netdoc/sites", json={"name": "Δεύτερος χώρος"}).json()
+    other_rack = rack["client"].post("/api/netdoc/racks", json={"site_id": other_site["id"], "name": "R2"}).json()
+    far = rack["client"].post(
+        "/api/netdoc/devices", json={"rack_id": other_rack["id"], "name": "sw-far", "position": 3}
+    ).json()
+    far_ports = rack["client"].post(
+        "/api/netdoc/ports/bulk", json={"device_id": far["id"], "prefix": "ether", "count": 2}
+    ).json()["created"]
+
+    found = rack["client"].get("/api/netdoc/ports?q=sw-far").json()
+    assert found["total"] == 2 and all(p["rack"] == "R2" and p["site"] == "Δεύτερος χώρος" for p in found["ports"])
+
+    # cross-rack link: a port in R1 to a port in another site's rack
+    cross = rack["client"].post("/api/netdoc/links", json={"port_a": a[0]["id"], "port_b": far_ports[0]["id"], "cable": "XC-1"})
+    assert cross.status_code == 200
+
+    page = rack["client"].get("/api/netdoc/links/page?limit=1&offset=0").json()
+    assert page["total"] == 1 and len(page["links"]) == 1
+    assert page["links"][0]["device_b"] == "sw-far"

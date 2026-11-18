@@ -5,7 +5,7 @@ from contextlib import contextmanager
 
 from . import config
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -94,13 +94,17 @@ CREATE TABLE IF NOT EXISTS racks (
 );
 
 CREATE TABLE IF NOT EXISTS devices (
-    id       INTEGER PRIMARY KEY AUTOINCREMENT,
-    rack_id  INTEGER NOT NULL REFERENCES racks(id) ON DELETE CASCADE,
-    name     TEXT NOT NULL,
-    kind     TEXT NOT NULL DEFAULT 'switch',
-    units    INTEGER NOT NULL DEFAULT 1,
-    position INTEGER NOT NULL DEFAULT 1,
-    note     TEXT NOT NULL DEFAULT ''
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    rack_id   INTEGER NOT NULL REFERENCES racks(id) ON DELETE CASCADE,
+    name      TEXT NOT NULL,
+    kind      TEXT NOT NULL DEFAULT 'switch',
+    units     INTEGER NOT NULL DEFAULT 1,
+    position  INTEGER NOT NULL DEFAULT 1,
+    note      TEXT NOT NULL DEFAULT '',
+    host_id   INTEGER REFERENCES hosts(id) ON DELETE SET NULL,
+    vendor    TEXT NOT NULL DEFAULT '',
+    model     TEXT NOT NULL DEFAULT '',
+    mgmt_ip   TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS ports (
@@ -122,6 +126,29 @@ CREATE TABLE IF NOT EXISTS links (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_links_port_a ON links(port_a);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_links_port_b ON links(port_b);
+
+-- a port may appear at most once across *both* columns: the two unique
+-- indexes above do not catch a port that is port_a in one row and port_b in
+-- another, so the rule is enforced with triggers as well
+CREATE TRIGGER IF NOT EXISTS links_one_endpoint_ins
+BEFORE INSERT ON links
+BEGIN
+  SELECT CASE WHEN EXISTS (
+    SELECT 1 FROM links
+     WHERE port_a IN (NEW.port_a, NEW.port_b)
+        OR port_b IN (NEW.port_a, NEW.port_b)
+  ) THEN RAISE(ABORT, 'port_already_linked') END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS links_one_endpoint_upd
+BEFORE UPDATE ON links
+BEGIN
+  SELECT CASE WHEN EXISTS (
+    SELECT 1 FROM links
+     WHERE id <> NEW.id
+       AND (port_a IN (NEW.port_a, NEW.port_b) OR port_b IN (NEW.port_a, NEW.port_b))
+  ) THEN RAISE(ABORT, 'port_already_linked') END;
+END;
 """
 
 
@@ -160,12 +187,27 @@ HOST_COLUMNS = {
 }
 
 
+DEVICE_COLUMNS = {
+    "host_id": "INTEGER REFERENCES hosts(id) ON DELETE SET NULL",
+    "vendor": "TEXT NOT NULL DEFAULT ''",
+    "model": "TEXT NOT NULL DEFAULT ''",
+    "mgmt_ip": "TEXT NOT NULL DEFAULT ''",
+}
+
+
+def _add_missing_columns(conn: sqlite3.Connection, table: str, columns: dict) -> None:
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if not existing:
+        return  # table not created yet; SCHEMA handles it
+    for name, ddl in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+
+
 def migrate(conn: sqlite3.Connection) -> None:
     """Bring an older database up to the current schema without losing data."""
-    existing = {row["name"] for row in conn.execute("PRAGMA table_info(hosts)").fetchall()}
-    for name, ddl in HOST_COLUMNS.items():
-        if name not in existing:
-            conn.execute(f"ALTER TABLE hosts ADD COLUMN {name} {ddl}")
+    _add_missing_columns(conn, "hosts", HOST_COLUMNS)
+    _add_missing_columns(conn, "devices", DEVICE_COLUMNS)
     conn.execute(
         "INSERT INTO settings(key, value) VALUES ('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",

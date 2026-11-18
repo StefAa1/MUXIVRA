@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import FileResponse, JSONResponse
@@ -29,7 +30,37 @@ def configure_logging() -> None:
     log.setLevel(logging.INFO)
 
 
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]", "testserver"}
+
+
+def _allowed_hosts() -> set[str]:
+    extra = {h.strip().lower() for h in os.environ.get("SSHDECK_ALLOWED_HOSTS", "").split(",") if h.strip()}
+    return LOOPBACK_HOSTS | extra
+
+
+def host_is_allowed(host_header: str | None) -> bool:
+    """Reject DNS-rebinding: a page on evil.com must not reach this API."""
+    if not host_header:
+        return False
+    host = host_header.rsplit(":", 1)[0] if not host_header.endswith("]") else host_header
+    return host.strip("[]").lower() in {h.strip("[]") for h in _allowed_hosts()}
+
+
+def origin_is_allowed(origin: str | None) -> bool:
+    """Browsers send Origin on cross-site requests and on every WebSocket."""
+    if not origin:
+        return True  # non-browser clients (CLI, tests) send none
+    try:
+        from urllib.parse import urlsplit
+
+        host = urlsplit(origin).hostname or ""
+    except ValueError:
+        return False
+    return host.lower() in {h.strip("[]") for h in _allowed_hosts()}
+
+
 def create_app() -> FastAPI:
+    config.migrate_legacy_data()
     config.ensure_dirs()
     configure_logging()
     db.init()
@@ -41,6 +72,12 @@ def create_app() -> FastAPI:
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
+        if not host_is_allowed(request.headers.get("host")) or not origin_is_allowed(
+            request.headers.get("origin")
+        ):
+            log.warning("blocked request with host=%r origin=%r", request.headers.get("host"),
+                        request.headers.get("origin"))
+            return JSONResponse(status_code=403, content={"detail": "host_not_allowed"})
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
@@ -84,6 +121,9 @@ def create_app() -> FastAPI:
 
     @app.websocket("/api/ws/terminal/{host_id}")
     async def ws_terminal(ws: WebSocket, host_id: int, cols: int = 120, rows: int = 32):
+        if not host_is_allowed(ws.headers.get("host")) or not origin_is_allowed(ws.headers.get("origin")):
+            await ws.close(code=4403)
+            return
         try:
             await api.terminal_endpoint(ws, host_id, cols, rows)
         except Exception as exc:  # never leave the client with a bare socket close
@@ -93,15 +133,6 @@ def create_app() -> FastAPI:
                 await ws.close(code=1011)
             except Exception:
                 pass
-
-    @app.websocket("/api/ws/echo")
-    async def ws_echo(ws: WebSocket):  # pragma: no cover - test hook
-        await ws.accept()
-        try:
-            while True:
-                await ws.send_text(await ws.receive_text())
-        except Exception:
-            return
 
     return app
 

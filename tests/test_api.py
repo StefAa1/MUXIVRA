@@ -162,10 +162,33 @@ def test_expired_session_is_rejected(auth_client):
     assert auth_client.get("/api/hosts").status_code == 401
 
 
-def test_websocket_echo_hook(client):
-    with client.websocket_connect("/api/ws/echo") as ws:
-        ws.send_text("ping")
-        assert ws.receive_text() == "ping"
+def test_echo_websocket_is_gone(client):
+    """The leftover test hook must not ship: it echoed anything unauthenticated."""
+    with pytest.raises(Exception):
+        with client.websocket_connect("/api/ws/echo") as ws:
+            ws.receive_text()
+
+
+def test_host_header_outside_loopback_is_rejected(client):
+    res = client.get("/healthz", headers={"host": "evil.example.com"})
+    assert res.status_code == 403
+    assert res.json()["detail"] == "host_not_allowed"
+
+
+def test_cross_site_origin_is_rejected(client):
+    res = client.get("/healthz", headers={"origin": "https://evil.example.com"})
+    assert res.status_code == 403
+    ok = client.get("/healthz", headers={"origin": "http://127.0.0.1:8722"})
+    assert ok.status_code == 200
+
+
+def test_terminal_websocket_refuses_foreign_origin(auth_client):
+    from starlette.websockets import WebSocketDisconnect
+
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with auth_client.websocket_connect("/api/ws/terminal/1", headers={"origin": "https://evil.example.com"}) as ws:
+            ws.receive_json()
+    assert exc.value.code == 4403
 
 
 def test_desktop_login_exchanges_single_use_token(client):

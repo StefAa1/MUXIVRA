@@ -13,6 +13,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
+import sqlite3
+
 from . import db
 from .api import guard
 
@@ -40,6 +42,22 @@ class DeviceIn(BaseModel):
     units: int = Field(default=1, ge=1, le=48)
     position: int = Field(default=1, ge=1, le=60)
     note: str = Field(default="", max_length=400)
+    host_id: int | None = None
+    vendor: str = Field(default="", max_length=60)
+    model: str = Field(default="", max_length=60)
+    mgmt_ip: str = Field(default="", max_length=64)
+
+
+class DevicePatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    kind: DeviceKind | None = None
+    units: int | None = Field(default=None, ge=1, le=48)
+    position: int | None = Field(default=None, ge=1, le=60)
+    note: str | None = Field(default=None, max_length=400)
+    host_id: int | None = None
+    vendor: str | None = Field(default=None, max_length=60)
+    model: str | None = Field(default=None, max_length=60)
+    mgmt_ip: str | None = Field(default=None, max_length=64)
 
 
 class PortIn(BaseModel):
@@ -144,9 +162,15 @@ def create_device(payload: DeviceIn):
         ).fetchone()
         if clash:
             raise HTTPException(status_code=409, detail=f"position_taken:{clash['name']}")
+        if payload.host_id is not None:
+            _one(conn, "SELECT id FROM hosts WHERE id = ?", (payload.host_id,))
         cur = conn.execute(
-            "INSERT INTO devices (rack_id, name, kind, units, position, note) VALUES (?, ?, ?, ?, ?, ?)",
-            (payload.rack_id, payload.name.strip(), payload.kind, payload.units, payload.position, payload.note),
+            """INSERT INTO devices (rack_id, name, kind, units, position, note, host_id, vendor, model, mgmt_ip)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                payload.rack_id, payload.name.strip(), payload.kind, payload.units, payload.position,
+                payload.note, payload.host_id, payload.vendor.strip(), payload.model.strip(), payload.mgmt_ip.strip(),
+            ),
         )
         conn.commit()
         return dict(conn.execute("SELECT * FROM devices WHERE id = ?", (cur.lastrowid,)).fetchone())
@@ -222,10 +246,11 @@ def bulk_ports(payload: dict):
 def list_links():
     with _conn() as conn:
         rows = conn.execute(
-            """SELECT l.id, l.cable, l.length_m,
+            """SELECT l.id, l.cable, l.length_m, l.port_a, l.port_b,
                       pa.name AS port_a_name, pb.name AS port_b_name,
+                      da.id AS device_a_id, db.id AS device_b_id,
                       da.name AS device_a, db.name AS device_b,
-                      ra.name AS rack_a, rb.name AS rack_b
+                      ra.name AS rack_a, rb.name AS rack_b, ra.id AS rack_a_id, rb.id AS rack_b_id
                FROM links l
                JOIN ports pa ON pa.id = l.port_a
                JOIN ports pb ON pb.id = l.port_b
@@ -250,10 +275,13 @@ def create_link(payload: LinkIn):
             ).fetchone()
             if busy:
                 raise HTTPException(status_code=409, detail=f"port_already_linked:{port_id}")
-        cur = conn.execute(
-            "INSERT INTO links (port_a, port_b, cable, length_m) VALUES (?, ?, ?, ?)",
-            (payload.port_a, payload.port_b, payload.cable.strip(), payload.length_m),
-        )
+        try:
+            cur = conn.execute(
+                "INSERT INTO links (port_a, port_b, cable, length_m) VALUES (?, ?, ?, ?)",
+                (payload.port_a, payload.port_b, payload.cable.strip(), payload.length_m),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status_code=409, detail=f"port_already_linked:{payload.port_a}") from exc
         conn.commit()
         return dict(conn.execute("SELECT * FROM links WHERE id = ?", (cur.lastrowid,)).fetchone())
 
@@ -291,7 +319,10 @@ def rack_layout(rack_id: int):
         devices = [
             dict(r)
             for r in conn.execute(
-                "SELECT * FROM devices WHERE rack_id = ? ORDER BY position DESC", (rack_id,)
+                """SELECT d.*, h.label AS host_label, h.hostname AS host_hostname
+                     FROM devices d LEFT JOIN hosts h ON h.id = d.host_id
+                    WHERE d.rack_id = ? ORDER BY d.position DESC""",
+                (rack_id,),
             )
         ]
         for device in devices:
@@ -377,3 +408,117 @@ def audit():
             "issues": len(issues), "unlinked": sum(i["detail"].count("ports") for i in issues if i["kind"] == "unlinked_ports"),
         },
     }
+
+
+@router.patch("/devices/{device_id}")
+def update_device(device_id: int, payload: DevicePatch):
+    with _conn() as conn:
+        device = _one(conn, "SELECT * FROM devices WHERE id = ?", (device_id,))
+        rack = _one(conn, "SELECT units FROM racks WHERE id = ?", (device["rack_id"],))
+        merged = {**dict(device), **{k: v for k, v in payload.model_dump().items() if v is not None}}
+        top = merged["position"] + merged["units"] - 1
+        if top > rack["units"]:
+            raise HTTPException(status_code=422, detail="device_outside_rack")
+        clash = conn.execute(
+            """SELECT name FROM devices
+                WHERE rack_id = ? AND id <> ? AND position < ? AND (position + units) > ?""",
+            (device["rack_id"], device_id, top + 1, merged["position"]),
+        ).fetchone()
+        if clash:
+            raise HTTPException(status_code=409, detail=f"position_taken:{clash['name']}")
+        if merged.get("host_id") is not None:
+            _one(conn, "SELECT id FROM hosts WHERE id = ?", (merged["host_id"],))
+        conn.execute(
+            """UPDATE devices SET name = ?, kind = ?, units = ?, position = ?, note = ?,
+                      host_id = ?, vendor = ?, model = ?, mgmt_ip = ?
+                WHERE id = ?""",
+            (
+                merged["name"], merged["kind"], merged["units"], merged["position"], merged["note"],
+                merged.get("host_id"), merged.get("vendor") or "", merged.get("model") or "",
+                merged.get("mgmt_ip") or "", device_id,
+            ),
+        )
+        conn.commit()
+        return dict(conn.execute("SELECT * FROM devices WHERE id = ?", (device_id,)).fetchone())
+
+
+@router.get("/devices/{device_id}/dependents")
+def device_dependents(device_id: int):
+    """What disappears if this device is deleted — shown before confirming."""
+    with _conn() as conn:
+        _one(conn, "SELECT id FROM devices WHERE id = ?", (device_id,))
+        ports = conn.execute("SELECT COUNT(*) AS n FROM ports WHERE device_id = ?", (device_id,)).fetchone()["n"]
+        links = conn.execute(
+            """SELECT COUNT(*) AS n FROM links
+                WHERE port_a IN (SELECT id FROM ports WHERE device_id = ?)
+                   OR port_b IN (SELECT id FROM ports WHERE device_id = ?)""",
+            (device_id, device_id),
+        ).fetchone()["n"]
+    return {"ports": ports, "links": links}
+
+
+@router.get("/ports")
+def search_ports(q: str = "", limit: int = 200, offset: int = 0):
+    """Port lookup across every rack — feeds cross-rack Quick Connect."""
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+    like = f"%{q.strip()}%"
+    with _conn() as conn:
+        rows = conn.execute(
+            """SELECT p.id, p.name, p.kind, d.id AS device_id, d.name AS device,
+                      r.id AS rack_id, r.name AS rack, s.name AS site,
+                      (SELECT COUNT(*) FROM links l WHERE l.port_a = p.id OR l.port_b = p.id) AS linked
+                 FROM ports p
+                 JOIN devices d ON d.id = p.device_id
+                 JOIN racks r ON r.id = d.rack_id
+                 JOIN sites s ON s.id = r.site_id
+                WHERE (? = '%%' OR d.name LIKE ? OR p.name LIKE ? OR r.name LIKE ? OR s.name LIKE ?)
+                ORDER BY s.name, r.name, d.name, p.id
+                LIMIT ? OFFSET ?""",
+            (like, like, like, like, like, limit, offset),
+        ).fetchall()
+        total = conn.execute(
+            """SELECT COUNT(*) AS n FROM ports p JOIN devices d ON d.id = p.device_id
+                 JOIN racks r ON r.id = d.rack_id JOIN sites s ON s.id = r.site_id
+                WHERE (? = '%%' OR d.name LIKE ? OR p.name LIKE ? OR r.name LIKE ? OR s.name LIKE ?)""",
+            (like, like, like, like, like),
+        ).fetchone()["n"]
+    return {"ports": [dict(r) for r in rows], "total": total, "limit": limit, "offset": offset}
+
+
+@router.patch("/links/{link_id}")
+def update_link(link_id: int, payload: dict):
+    """Relabel or re-route a cable (both endpoints must stay free)."""
+    with _conn() as conn:
+        link = _one(conn, "SELECT * FROM links WHERE id = ?", (link_id,))
+        cable = str(payload.get("cable", link["cable"]))[:80]
+        length = float(payload.get("length_m", link["length_m"]) or 0)
+        port_a = int(payload.get("port_a", link["port_a"]))
+        port_b = int(payload.get("port_b", link["port_b"]))
+        if port_a == port_b:
+            raise HTTPException(status_code=422, detail="same_port")
+        for port_id in (port_a, port_b):
+            _one(conn, "SELECT id FROM ports WHERE id = ?", (port_id,))
+        try:
+            conn.execute(
+                "UPDATE links SET port_a = ?, port_b = ?, cable = ?, length_m = ? WHERE id = ?",
+                (port_a, port_b, cable, length, link_id),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status_code=409, detail=f"port_already_linked:{port_b}") from exc
+        conn.commit()
+        return dict(conn.execute("SELECT * FROM links WHERE id = ?", (link_id,)).fetchone())
+
+
+@router.get("/links/page")
+def page_links(q: str = "", limit: int = 100, offset: int = 0):
+    """Paged cable table for search/filter UI (never silently hides rows)."""
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+    like = f"%{q.strip()}%"
+    rows = list_links()
+    if q.strip():
+        rows = [r for r in rows if like.strip("%").lower() in " ".join(
+            str(v) for v in (r["device_a"], r["port_a_name"], r["device_b"], r["port_b_name"], r["cable"])
+        ).lower()]
+    return {"links": rows[offset:offset + limit], "total": len(rows), "limit": limit, "offset": offset}

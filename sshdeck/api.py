@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import base64
 import os
 import posixpath
@@ -145,6 +146,13 @@ class UpdateAssetIn(BaseModel):
     name: str = "update.zip"
     size: int = 0
     digest: str = ""
+
+
+class UpdateReleaseIn(BaseModel):
+    latest: str
+    asset: dict | None = None
+    manifest: dict | None = None
+    signature: dict | None = None
 
 
 class PathIn(BaseModel):
@@ -556,6 +564,42 @@ def delete_host(host_id: int):
     return {"ok": True}
 
 
+@api.post("/hosts/{host_id}/trust")
+def trust_host_key(host_id: int, payload: dict):
+    """Approve the exact fingerprint the user was shown."""
+    target = target_or_404(host_id)
+    fingerprint = str(payload.get("fingerprint") or "").strip()
+    if not fingerprint:
+        raise HTTPException(status_code=422, detail="fingerprint_required")
+    try:
+        stored = sshconn.trust_pending_key(host_id, fingerprint)
+    except SshError as exc:
+        raise HTTPException(status_code=409, detail=f"{exc.code}: {exc.message}")
+    with db.db() as conn:
+        db.log_event(host_id, "host_key_trusted", f"{target.hostname} {stored}", conn=conn)
+    return {"ok": True, "fingerprint": stored}
+
+
+@api.delete("/hosts/{host_id}/trust")
+def forget_host_key(host_id: int):
+    """Drop trust for this host:port only — other ports of the same host keep theirs."""
+    target = target_or_404(host_id)
+    removed = sshconn.forget_host_key(target.hostname, int(target.port or 22))
+    with db.db() as conn:
+        db.log_event(host_id, "host_key_forgotten", f"{target.hostname}:{target.port}", conn=conn)
+    return {"ok": True, "removed": removed}
+
+
+@api.get("/hosts/{host_id}/trust")
+def host_trust_state(host_id: int):
+    target = target_or_404(host_id)
+    return {
+        "hostname": target.hostname,
+        "port": int(target.port or 22),
+        "fingerprint": sshconn.known_fingerprint(target.hostname, int(target.port or 22)),
+    }
+
+
 @api.post("/hosts/{host_id}/ping")
 async def ping_host(host_id: int):
     target = target_or_404(host_id)
@@ -646,7 +690,17 @@ def update_state():
         "last_check": last,
         "platform": "windows-portable" if (config.BASE_DIR / "runtime" / "python").exists() else "source",
         "vault_key": security.vault_key_status(),
+        "signing_key": _signing_key_state(),
     }
+
+
+def _signing_key_state() -> dict:
+    """Whether this install can verify release signatures at all (fail closed)."""
+    try:
+        key = update.trusted_key()
+    except update.UpdateError as exc:
+        return {"configured": False, "reason": exc.code}
+    return {"configured": True, "fingerprint": hashlib.sha256(key).hexdigest()[:16]}
 
 
 @api.post("/update/repo")
@@ -677,23 +731,36 @@ async def update_check(payload: UpdateCheckIn):
 
 
 @api.post("/update/prepare")
-async def update_prepare(payload: UpdateAssetIn):
-    """Download the release, verify it and write apply-update.cmd next to the bundle."""
-    work = config.DATA_DIR / "updates"
+async def update_prepare(payload: UpdateReleaseIn):
+    """Verify the signed release, stage it OUTSIDE the bundle, write apply-update.cmd."""
+    release = payload.model_dump()
+    release["latest"] = payload.latest
     try:
+        manifest = await asyncio.to_thread(update.fetch_manifest, release)
         archive = await asyncio.to_thread(
-            update.download,
-            {"url": payload.url, "name": payload.name, "size": payload.size, "digest": payload.digest},
-            work,
+            update.download_verified, release, manifest, config.STAGING_DIR
         )
-        root = await asyncio.to_thread(update.stage, archive, work)
-        bundle = update.bundle_root()
-        script_dir = bundle if os.access(bundle, os.W_OK) else work
-        script = await asyncio.to_thread(update.write_apply_script, bundle, root, script_dir)
+        root = await asyncio.to_thread(update.stage, archive, config.STAGING_DIR)
+        script = await asyncio.to_thread(
+            update.write_apply_script,
+            update.bundle_root(),
+            root,
+            os.getpid(),
+            config.STAGING_DIR,
+        )
     except update.UpdateError as exc:
+        with db.db() as conn:
+            db.log_event(conn=conn, host_id=None, kind="update_rejected", detail=f"{exc.code}")
         raise HTTPException(status_code=502, detail=f"{exc.code}: {exc.message}")
-    db.log_event(None, "update_prepared", archive.name)
-    return {"archive": str(archive), "staged": str(root), "script": str(script)}
+    with db.db() as conn:
+        db.log_event(None, "update_prepared", f"{manifest['version']} {manifest['sha256'][:12]}", conn=conn)
+    return {
+        "version": manifest["version"],
+        "archive": str(archive),
+        "staged": str(root),
+        "script": str(script),
+        "pid": os.getpid(),
+    }
 
 
 # --------------------------------------------------------------------- SFTP
@@ -927,6 +994,17 @@ async def terminal_endpoint(ws: WebSocket, host_id: int, cols: int = 120, rows: 
 
     try:
         session = await asyncio.to_thread(transports.open_session, target, cols, rows)
+    except sshconn.HostKeyUnknown as exc:
+        await ws.send_json({
+            "type": "error",
+            "code": "host_key_unknown",
+            "message": exc.message,
+            "fingerprint": exc.fingerprint,
+            "hostname": exc.hostname,
+            "key_type": exc.key_type,
+        })
+        await ws.close(code=4000)
+        return
     except (SshError, transports.TransportError) as exc:
         await ws.send_json({"type": "error", "code": exc.code, "message": exc.message})
         await ws.close(code=4000)
