@@ -196,21 +196,38 @@ def _load_key() -> bytes:
     wrapped = _wrapped_key_path()
 
     if wrapped.exists():
-        return _validate_key(dpapi_unprotect(wrapped.read_bytes()))
+        blob = wrapped.read_bytes()
+        if not blob:
+            # a failed protect used to leave a zero-byte file: nothing was ever
+            # encrypted with it, so regenerating is lossless
+            wrapped.unlink(missing_ok=True)
+        else:
+            try:
+                return _validate_key(dpapi_unprotect(blob))
+            except VaultError as exc:
+                raise VaultError("vault_key_unreadable") from exc
 
     if plain.exists():
-        key = _validate_key(plain.read_bytes())
-        if _dpapi_available():
-            wrapped.write_bytes(dpapi_protect(key) or key)
-            os.chmod(wrapped, 0o600)
+        raw = plain.read_bytes()
+        if not raw:
             plain.unlink(missing_ok=True)
-        return key
+        else:
+            key = _validate_key(raw)
+            if _dpapi_available():
+                wrapped.write_bytes(dpapi_protect(key) or key)
+                os.chmod(wrapped, 0o600)
+                plain.unlink(missing_ok=True)
+            return key
 
     key = Fernet.generate_key()
     if _dpapi_available():
+        # wrap before opening the file: a failed protect must not leave a stub
+        wrapped_blob = dpapi_protect(key)
+        if not wrapped_blob:
+            raise VaultError("dpapi_protect_failed")
         fd = os.open(wrapped, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "wb") as fh:
-            fh.write(dpapi_protect(key) or key)
+            fh.write(wrapped_blob)
     else:
         fd = os.open(plain, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "wb") as fh:

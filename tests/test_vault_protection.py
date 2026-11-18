@@ -120,3 +120,31 @@ def test_vault_error_surfaces_as_json_detail(fresh):
         )
     assert res.status_code == 500
     assert res.json()["detail"].startswith("vault:CryptProtectData_failed")
+
+
+def test_zero_byte_wrapped_key_self_heals(fresh):
+    """A failed DPAPI wrap used to leave an empty vault.key.dpapi behind."""
+    enable_fake_dpapi()
+    security._load_key()
+    wrapped = Path(str(config.VAULT_KEY_PATH) + ".dpapi")
+    wrapped.write_bytes(b"")
+
+    security._cached_fernet = None
+    key = security._load_key()
+    assert key
+    assert wrapped.read_bytes().startswith(b"WRAP:")
+    assert security.open_sealed(security.seal("after-heal")) == "after-heal"
+
+
+def test_unreadable_wrapped_key_is_reported(fresh):
+    security.FORCE_DPAPI = True
+    security._DPAPI_HOOKS["protect"] = lambda data: b"WRAP:" + data[::-1]
+    security._DPAPI_HOOKS["unprotect"] = lambda blob: blob[5:][::-1]
+    security._load_key()
+    wrapped = Path(str(config.VAULT_KEY_PATH) + ".dpapi")
+    wrapped.write_bytes(b"garbage-not-dpapi")
+
+    security._cached_fernet = None
+    with pytest.raises(security.VaultError) as exc:
+        security._load_key()
+    assert exc.value.args[0] in {"vault_key_unreadable", "dpapi_unprotect_failed"}

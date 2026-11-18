@@ -61,21 +61,38 @@ function ndLayoutView() {
   const byTopUnit = new Map();
   devices.forEach((device) => byTopUnit.set(device.position + device.units - 1, device));
 
-  const rows = [];
-  for (let unit = rack.units; unit >= 1; unit -= 1) {
+  const cells = [];
+  let row = 1;
+  let unit = rack.units;
+  while (unit >= 1) {
     const device = byTopUnit.get(unit);
     if (device) {
       const linked = device.ports.filter((p) => p.link_id).length;
-      rows.push(`<div class="nd-device ${esc(device.kind)}" style="grid-row: span ${device.units}" data-nd-select="${device.id}" title="U${device.position}">
+      cells.push(`<div class="nd-u" style="grid-row:${row}">U${unit}</div>`);
+      for (let extra = 1; extra < device.units; extra += 1) {
+        cells.push(`<div class="nd-u" style="grid-row:${row + extra}">U${unit - extra}</div>`);
+      }
+      cells.push(`<div class="nd-device ${esc(device.kind)}" style="grid-row:${row} / span ${device.units}" data-nd-select="${device.id}" title="U${device.position}–U${unit}">
           <b>${esc(device.name)}</b>
           <span>${esc(device.kind)} · ${device.ports.length} ports${linked ? ` · ${linked} δεμένα` : ''}</span>
         </div>`);
-      for (let skip = 1; skip < device.units; skip += 1) {
-        rows.push(`<div class="nd-filler"></div>`);
-      }
-      unit -= device.units - 1;
+      row += device.units;
+      unit -= device.units;
+      continue;
+    }
+    // collapse long runs of empty units so the rack stays readable
+    let run = 0;
+    while (unit - run >= 1 && !byTopUnit.get(unit - run)) run += 1;
+    if (run > 4) {
+      cells.push(`<div class="nd-u muted" style="grid-row:${row}">…</div>`);
+      cells.push(`<div class="nd-gap" style="grid-row:${row}">${run} κενές U (U${unit - run + 1}–U${unit})</div>`);
+      row += 1;
+      unit -= run;
     } else {
-      rows.push(`<div class="nd-empty"></div>`);
+      cells.push(`<div class="nd-u" style="grid-row:${row}">U${unit}</div>`);
+      cells.push(`<div class="nd-empty" style="grid-row:${row}"></div>`);
+      row += 1;
+      unit -= 1;
     }
   }
 
@@ -84,7 +101,7 @@ function ndLayoutView() {
     ? `<div class="nd-ports">
         <div class="nd-ports-head">
           <b>${esc(selectedDevice.name)}</b>
-          <span class="hint">${selectedDevice.ports.length} ports</span>
+          <span class="hint">${selectedDevice.ports.length} ports · U${selectedDevice.position}</span>
           <button class="btn ghost xs" data-nd-ports="${selectedDevice.id}">+24</button>
         </div>
         <div class="nd-port-grid">${selectedDevice.ports.map((p) => ndPortButton(selectedDevice, p)).join('') || '<p class="hint">Χωρίς ports.</p>'}</div>
@@ -99,10 +116,7 @@ function ndLayoutView() {
 
   return `<div class="nd-layout">
       ${quickBar}
-      <div class="nd-rack-wrap">
-        <div class="nd-rack-units">${Array.from({ length: rack.units }, (_, i) => `<span>U${rack.units - i}</span>`).join('')}</div>
-        <div class="nd-rack-view" style="--units:${rack.units}">${rows.join('')}</div>
-      </div>
+      <div class="nd-rack-view" style="--units:${rack.units}">${cells.join('')}</div>
       ${portList}
     </div>`;
 }
