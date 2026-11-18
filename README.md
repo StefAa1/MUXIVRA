@@ -23,10 +23,19 @@ FastAPI + xterm.js + paramiko/pyserial, χωρίς cloud και χωρίς λο�
 - **Serial / COM**: baud, bits, parity, stop bits· λίστα θυρών από το μηχάνημα που τρέχει ο
   server (COM1… στα Windows, `/dev/ttyUSB*` στο Linux) — για switches, PLC, relay boards.
 - **Vault**: passwords και private keys κρυπτογραφημένα με Fernet (AES-128-CBC + HMAC-SHA256)
-  σε SQLite· το κλειδί είναι ξεχωριστό αρχείο `0600`.
+  σε SQLite· το κλειδί είναι ξεχωριστό αρχείο `0600` και **στα Windows** τυλίγεται με
+  **DPAPI** (`data/vault.key.dpapi`) — αντίγραφο σε άλλο μηχάνημα δεν το αποκρυπτογραφεί.
 - **SFTP** (μόνο SSH): περιήγηση, upload, download, mkdir, rename, delete.
 - **Snippets**: αποθηκευμένες εντολές που στέλνονται στο ενεργό session με ένα κλικ.
 - **Import**: `~/.ssh/config` και **Keeper Secrets Manager** (βλ. παρακάτω).
+- **Racks & καλώδια** (NETDOC-style, δικό μας module): χώροι → racks → συσκευές με U θέση →
+  ports (bulk 24 τη φορά) → συνδέσεις με καλώδιο/μήκος. Ένα port μπορεί να είναι σε **μία μόνο**
+  σύνδεση, οπότε οι διπλές καταγραφές απορρίπτονται με σαφές μήνυμα· εξαγωγή `links.csv`.
+  Για ομάδες που χρησιμοποιούν και το [netdoc.app](https://netdoc.app), υπάρχει κουμπί
+  που ανοίγει την υπηρεσία — δεν ανταλλάσσονται δεδομένα αυτόματα (δεν υπάρχει δημόσιο API).
+- **Ενημερώσεις από GitHub**: Ρυθμίσεις → repo `owner/name` → έλεγχος release, λήψη του `.zip`
+  με επαλήθευση `sha256`, και δημιουργία `apply-update.cmd` που κάνει backup, αντικατάσταση
+  και επανεκκίνηση (το αρχείο τρέχει *αφού* κλείσει η εφαρμογή).
 - **Host keys (TOFU)**: το πρώτο SSH key καταγράφεται· αν αλλάξει, η σύνδεση **απορρίπτεται**.
 
 ## Εκκίνηση
@@ -93,7 +102,8 @@ MUXIVRA-portable-win64/
 ```
 
 Δεν χρειάζεται admin, Python ή VC++ redist. Τα δεδομένα μένουν στο `data\` δίπλα στο exe·
-αντίγραφο του φακέλου = μεταφορά/backup (μαζί με το `vault.key`).
+αντίγραφο του φακέλου = μεταφορά/backup (μαζί με το `vault.key`· στα Windows ισχύει μόνο
+στον ίδιο Windows λογαριασμό λόγω DPAPI).
 
 Για πραγματικό single-file `.exe` χρειάζεται Windows toolchain (PyInstaller):
 
@@ -139,7 +149,7 @@ pip install keeper-secrets-manager-core          # προαιρετικό extra
 | Path | Περιεχόμενο |
 |---|---|
 | `data/sshdeck.db` | hosts (ssh/telnet/serial), credentials (encrypted), sessions, events |
-| `data/vault.key` | κλειδί Fernet (`0600`) — **χωρίς αυτό τα secrets δεν ανακτώνται** |
+| `data/vault.key` (Linux) / `data/vault.key.dpapi` (Windows) | κλειδί Fernet — **χωρίς αυτό τα secrets δεν ανακτώνται** |
 | `data/known_hosts` | TOFU host keys (`0600`) |
 | `data/ksm-config.json` | bound Keeper device config (`0600`, αν χρησιμοποιείται KSM) |
 
