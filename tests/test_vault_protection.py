@@ -76,3 +76,47 @@ def test_secrets_never_stored_in_plaintext(fresh):
     for path in config.DATA_DIR.rglob("*"):
         if path.is_file():
             assert b"super-secret-password" not in path.read_bytes(), path
+
+
+def test_credential_create_works_with_dpapi_enabled(fresh):
+    """The Windows path (DPAPI wrapping) must let a credential be stored."""
+    from fastapi.testclient import TestClient
+
+    from sshdeck.main import create_app
+
+    enable_fake_dpapi()
+    with TestClient(create_app()) as client:
+        client.post("/api/setup", json={"username": "admin", "password": "correct-horse-9"})
+        client.headers.update({"x-requested-with": "sshdeck"})
+        res = client.post(
+            "/api/credentials",
+            json={"name": "te", "kind": "password", "username": "root", "secret": "inss$1234$"},
+        )
+        assert res.status_code == 201, res.text
+        assert res.json()["name"] == "te"
+
+    wrapped = Path(str(config.VAULT_KEY_PATH) + ".dpapi")
+    assert wrapped.exists()
+    assert b"inss$1234$" not in wrapped.read_bytes()
+    assert not Path(str(config.VAULT_KEY_PATH)).exists()
+
+
+def test_vault_error_surfaces_as_json_detail(fresh):
+    from fastapi.testclient import TestClient
+
+    from sshdeck.main import create_app
+
+    def boom(_data):
+        raise security.VaultError("CryptProtectData_failed:87")
+
+    security.FORCE_DPAPI = True
+    security._DPAPI_HOOKS["protect"] = boom
+    with TestClient(create_app(), raise_server_exceptions=False) as client:
+        client.post("/api/setup", json={"username": "admin", "password": "correct-horse-9"})
+        client.headers.update({"x-requested-with": "sshdeck"})
+        res = client.post(
+            "/api/credentials",
+            json={"name": "te", "kind": "password", "username": "root", "secret": "x"},
+        )
+    assert res.status_code == 500
+    assert res.json()["detail"].startswith("vault:CryptProtectData_failed")

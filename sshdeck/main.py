@@ -8,13 +8,30 @@ from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import api, config, db, racks
+from . import api, config, db, racks, security
 
 log = logging.getLogger("sshdeck")
 
 
+def configure_logging() -> None:
+    """Log to data/sshdeck.log so a failing portable install can send the file."""
+    path = config.DATA_DIR / "sshdeck.log"
+    if any(getattr(h, "baseFilename", "") == str(path) for h in log.handlers):
+        return
+    try:
+        if path.exists() and path.stat().st_size > 2 * 1024 * 1024:
+            path.replace(config.DATA_DIR / "sshdeck.log.1")
+    except OSError:
+        pass
+    handler = logging.FileHandler(path, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    log.addHandler(handler)
+    log.setLevel(logging.INFO)
+
+
 def create_app() -> FastAPI:
     config.ensure_dirs()
+    configure_logging()
     db.init()
 
     app = FastAPI(title="MUXIVRA", version=__import__("sshdeck").__version__, docs_url=None, redoc_url=None)
@@ -47,6 +64,18 @@ def create_app() -> FastAPI:
         return FileResponse(
             str(config.WEB_DIR / "index.html"),
             headers={"Cache-Control": "no-cache"},
+        )
+
+    @app.exception_handler(security.VaultError)
+    async def vault_error(request: Request, exc: security.VaultError):
+        log.error("vault failure on %s: %s", request.url.path, exc)
+        return JSONResponse(status_code=500, content={"detail": f"vault:{exc}"})
+
+    @app.exception_handler(Exception)
+    async def unhandled(request: Request, exc: Exception):
+        log.exception("unhandled error on %s", request.url.path)
+        return JSONResponse(
+            status_code=500, content={"detail": f"internal:{type(exc).__name__}: {exc}"[:300]}
         )
 
     @app.get("/healthz")

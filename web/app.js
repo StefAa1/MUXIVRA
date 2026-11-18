@@ -917,6 +917,22 @@ function connectFromPalette() {
 
 /* ----------------------------------------------------------------- events */
 document.addEventListener('click', async (event) => {
+  const ndTab = event.target.closest('[data-nd-tab]');
+  if (ndTab) {
+    ND.tab = ndTab.dataset.ndTab;
+    if (ND.tab === 'audit') { try { await ndAudit(); } catch (err) { toast(err.message, 'err'); } }
+    renderPage();
+    return;
+  }
+
+  const ndSel = event.target.closest('[data-nd-select]');
+  if (ndSel) { ND.deviceId = Number(ndSel.dataset.ndSelect); renderPage(); return; }
+
+  const ndPort = event.target.closest('[data-nd-port]');
+  if (ndPort) { await ndQuickPort(Number(ndPort.dataset.ndPort), ndPort.dataset.ndPortLabel || ''); return; }
+
+  if (event.target.closest('#nd-quick-cancel')) { ND.quick = null; renderPage(); return; }
+
   const ndRack = event.target.closest('[data-nd-rack]');
   if (ndRack) { await ndSelectRack(Number(ndRack.dataset.ndRack)); return; }
 
@@ -925,7 +941,7 @@ document.addEventListener('click', async (event) => {
     const deviceId = Number(ndPorts.dataset.ndPorts);
     try {
       const created = await api('/netdoc/ports/bulk', { json: { device_id: deviceId, prefix: 'eth', count: 24 } });
-      S.nd.ports[deviceId] = await api(`/netdoc/devices/${deviceId}/ports`);
+      await loadNetdoc();
       renderPage();
       toast(`${created.created.length} ports προστέθηκαν`);
     } catch (err) { toast(err.message, 'err'); }
@@ -1147,7 +1163,7 @@ document.addEventListener('click', (event) => {
       } catch (err) { toast(err.message, 'err'); }
     },
     'nd-add-dev': async () => {
-      const rackId = (S.nd || {}).selectedRack;
+      const rackId = (typeof ND !== 'undefined' && ND.rackId) || null;
       const name = (($('#nd-dev-name') || {}).value || '').trim();
       const kind = (($('#nd-dev-kind') || {}).value) || 'switch';
       const position = Number((($('#nd-dev-pos') || {}).value) || 1);
@@ -1159,21 +1175,6 @@ document.addEventListener('click', (event) => {
         toast('Η συσκευή προστέθηκε');
       } catch (err) {
         toast(err.message.startsWith('position_taken') ? 'Η θέση είναι πιασμένη' : err.message, 'err');
-      }
-    },
-    'nd-link': async () => {
-      const a = Number((($('#nd-port-a') || {}).value) || 0);
-      const b = Number((($('#nd-port-b') || {}).value) || 0);
-      const cable = (($('#nd-cable') || {}).value || '').trim();
-      const length = Number((($('#nd-length') || {}).value) || 0);
-      if (!a || !b) { toast('Διάλεξε δύο ports', 'err'); return; }
-      try {
-        await api('/netdoc/links', { json: { port_a: a, port_b: b, cable, length_m: length } });
-        await loadNetdoc();
-        await ndSelectRack((S.nd || {}).selectedRack);
-        toast('Η σύνδεση καταγράφηκε');
-      } catch (err) {
-        toast(err.message.startsWith('port_already_linked') ? 'Το port είναι ήδη συνδεδεμένο' : err.message, 'err');
       }
     },
     'upd-save': async () => {

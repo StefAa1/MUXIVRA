@@ -82,3 +82,41 @@ def test_delete_rack_cascades(rack):
     assert rack["client"].delete(f"/api/netdoc/racks/{rack['rack']['id']}").status_code == 200
     assert rack["client"].get("/api/netdoc/links").json() == []
     assert rack["client"].get("/api/netdoc/tree").json()["sites"][0]["racks"] == []
+
+
+def test_rack_layout_includes_peer_for_linked_port(rack):
+    switch = add_device(rack, "sw-x", position=10).json()
+    panel = add_device(rack, "pp-x", position=11, kind="patch-panel").json()
+    a = rack["client"].post("/api/netdoc/ports/bulk", json={"device_id": switch["id"], "prefix": "e", "count": 2}).json()["created"]
+    b = rack["client"].post("/api/netdoc/ports/bulk", json={"device_id": panel["id"], "prefix": "p", "count": 2}).json()["created"]
+    rack["client"].post("/api/netdoc/links", json={"port_a": a[0]["id"], "port_b": b[0]["id"], "cable": "CAT6-09"})
+
+    layout = rack["client"].get(f"/api/netdoc/rack/{rack['rack']['id']}").json()
+    assert layout["site"] == "Υπόγειο Α"
+    by_name = {d["name"]: d for d in layout["devices"]}
+    linked = [p for p in by_name["sw-x"]["ports"] if p["link_id"]]
+    assert len(linked) == 1 and linked[0]["peer"] == "pp-x · p1"
+    free = [p for p in by_name["sw-x"]["ports"] if not p["link_id"]]
+    assert len(free) == 1
+
+
+def test_audit_reports_unlinked_and_overlaps(rack, monkeypatch):
+    from sshdeck import db
+
+    switch = add_device(rack, "sw-audit", position=30).json()
+    rack["client"].post("/api/netdoc/ports/bulk", json={"device_id": switch["id"], "prefix": "e", "count": 3})
+    report = rack["client"].get("/api/netdoc/audit").json()
+    kinds = {issue["kind"] for issue in report["issues"]}
+    assert "unlinked_ports" in kinds
+    assert report["summary"]["ports"] == 3
+
+    # force an impossible layout straight into the DB to exercise the overlap branch
+    with db.db() as conn:
+        conn.execute(
+            "INSERT INTO devices (rack_id, name, kind, units, position, note) VALUES (?, ?, 'switch', 1, 30, '')",
+            (rack["rack"]["id"], "sw-overlap"),
+        )
+    report = rack["client"].get("/api/netdoc/audit").json()
+    kinds = {issue["kind"] for issue in report["issues"]}
+    assert "overlap" in kinds
+    assert any("U30" in issue["detail"] for issue in report["issues"] if issue["kind"] == "overlap")

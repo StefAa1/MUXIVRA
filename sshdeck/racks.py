@@ -279,3 +279,101 @@ def export_links():
             row["port_b_name"], row["rack_a"], row["rack_b"], row["cable"], row["length_m"],
         ])
     return PlainTextResponse(buffer.getvalue(), headers={"content-disposition": 'attachment; filename="links.csv"'})
+
+
+# ------------------------------------------------------------------- views
+@router.get("/rack/{rack_id}")
+def rack_layout(rack_id: int):
+    """Everything the visual rack view needs: devices in U order with their ports."""
+    with _conn() as conn:
+        rack = _one(conn, "SELECT * FROM racks WHERE id = ?", (rack_id,))
+        site = _one(conn, "SELECT name FROM sites WHERE id = ?", (rack["site_id"],))
+        devices = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT * FROM devices WHERE rack_id = ? ORDER BY position DESC", (rack_id,)
+            )
+        ]
+        for device in devices:
+            ports = [
+                dict(r)
+                for r in conn.execute(
+                    """SELECT p.id, p.name, p.kind,
+                              l.id AS link_id,
+                              (SELECT d2.name || ' · ' || p2.name
+                                 FROM links l2
+                                 JOIN ports p2 ON p2.id = CASE WHEN l2.port_a = p.id THEN l2.port_b ELSE l2.port_a END
+                                 JOIN devices d2 ON d2.id = p2.device_id
+                                WHERE l2.port_a = p.id OR l2.port_b = p.id) AS peer
+                       FROM ports p
+                       LEFT JOIN links l ON l.port_a = p.id OR l.port_b = p.id
+                      WHERE p.device_id = ?
+                      ORDER BY p.id""",
+                    (device["id"],),
+                )
+            ]
+            device["ports"] = ports
+    return {"rack": dict(rack), "site": site["name"], "devices": devices}
+
+
+@router.get("/audit")
+def audit():
+    """Documentation problems worth fixing: overlaps, orphans, duplicates."""
+    issues = []
+    with _conn() as conn:
+        racks = [dict(r) for r in conn.execute("SELECT * FROM racks")]
+        for rack in racks:
+            devices = [dict(r) for r in conn.execute(
+                "SELECT * FROM devices WHERE rack_id = ? ORDER BY position", (rack["id"],))]
+            occupied: list[tuple[int, str]] = []
+            for device in devices:
+                top = device["position"] + device["units"] - 1
+                if top > rack["units"]:
+                    issues.append({
+                        "kind": "outside_rack", "rack": rack["name"], "device": device["name"],
+                        "detail": f"U{device['position']}–U{top} > {rack['units']}U",
+                    })
+                for unit in range(device["position"], top + 1):
+                    for owner_unit, owner in occupied:
+                        if owner_unit == unit:
+                            issues.append({
+                                "kind": "overlap", "rack": rack["name"], "device": device["name"],
+                                "detail": f"U{unit} μοιράζεται με {owner}",
+                            })
+                    occupied.append((unit, device["name"]))
+            names: dict[str, int] = {}
+            for device in devices:
+                names[device["name"]] = names.get(device["name"], 0) + 1
+            for name, count in names.items():
+                if count > 1:
+                    issues.append({
+                        "kind": "duplicate_device", "rack": rack["name"], "device": name,
+                        "detail": f"{count} συσκευές με το ίδιο όνομα",
+                    })
+        orphans = conn.execute(
+            """SELECT d.name AS device, r.name AS rack, COUNT(p.id) AS ports
+                 FROM devices d JOIN racks r ON r.id = d.rack_id
+                 LEFT JOIN ports p ON p.device_id = d.id AND p.id NOT IN (
+                    SELECT port_a FROM links UNION SELECT port_b FROM links)
+                GROUP BY d.id HAVING ports > 0 ORDER BY ports DESC LIMIT 50"""
+        ).fetchall()
+        for row in orphans:
+            issues.append({
+                "kind": "unlinked_ports", "rack": row["rack"], "device": row["device"],
+                "detail": f"{row['ports']} ports χωρίς σύνδεση",
+            })
+        duplicates = conn.execute(
+            """SELECT port_a AS port FROM links GROUP BY port_a HAVING COUNT(*) > 1
+               UNION SELECT port_b FROM links GROUP BY port_b HAVING COUNT(*) > 1"""
+        ).fetchall()
+        for row in duplicates:
+            issues.append({"kind": "duplicate_port", "rack": "", "device": "", "detail": f"port #{row['port']}"})
+        total_ports = conn.execute("SELECT COUNT(*) AS n FROM ports").fetchone()["n"]
+        total_links = conn.execute("SELECT COUNT(*) AS n FROM links").fetchone()["n"]
+    return {
+        "issues": issues,
+        "summary": {
+            "racks": len(racks), "ports": total_ports, "links": total_links,
+            "issues": len(issues), "unlinked": sum(i["detail"].count("ports") for i in issues if i["kind"] == "unlinked_ports"),
+        },
+    }

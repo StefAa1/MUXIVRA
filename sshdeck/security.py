@@ -109,17 +109,54 @@ _cached_fernet: Fernet | None = None
 # data\ to another machine does not reveal the key.
 FORCE_DPAPI = False
 _DPAPI_HOOKS: dict = {}
+CRYPTPROTECT_UI_FORBIDDEN = 0x1
 
 
 def _dpapi_available() -> bool:
     return FORCE_DPAPI or os.name == "nt"
 
 
-def _blob(data: bytes):
+def _data_blob(data: bytes):
+    """Build a real DATA_BLOB (cbData + pointer), keeping the buffer alive."""
     import ctypes
 
+    class DataBlob(ctypes.Structure):
+        _fields_ = [("cbData", ctypes.c_uint32), ("pbData", ctypes.POINTER(ctypes.c_char))]
+
     buffer = ctypes.create_string_buffer(data, len(data))
-    return ctypes.cast(buffer, ctypes.c_void_p), buffer
+    blob = DataBlob(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_char)))
+    blob._buffer = buffer  # prevent garbage collection while Windows reads it
+    return blob, DataBlob
+
+
+def _dpapi_call(name: str, data: bytes) -> bytes:
+    import ctypes
+
+    src, DataBlob = _data_blob(data)
+    out = DataBlob()
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    function = getattr(crypt32, name)
+    function.argtypes = [
+        ctypes.POINTER(DataBlob),
+        ctypes.c_wchar_p,
+        ctypes.POINTER(DataBlob),
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.POINTER(DataBlob),
+    ]
+    function.restype = ctypes.c_bool
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    ok = function(ctypes.byref(src), None, None, None, None, CRYPTPROTECT_UI_FORBIDDEN, ctypes.byref(out))
+    if not ok:
+        error = ctypes.get_last_error()
+        raise VaultError(f"{name}_failed:{error}")
+    try:
+        return ctypes.string_at(out.pbData, out.cbData)
+    finally:
+        kernel32.LocalFree(ctypes.cast(out.pbData, ctypes.c_void_p))
 
 
 def dpapi_protect(data: bytes) -> bytes | None:
@@ -128,25 +165,7 @@ def dpapi_protect(data: bytes) -> bytes | None:
         return None
     if _DPAPI_HOOKS.get("protect"):
         return _DPAPI_HOOKS["protect"](data)
-    import ctypes
-    from ctypes import wintypes
-
-    class DataBlob(ctypes.Structure):
-        _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
-
-    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    src, _keep = _blob(data)
-    out = DataBlob()
-    ok = crypt32.CryptProtectData(
-        ctypes.byref(src), None, None, None, None, 0x1, ctypes.byref(out)  # UI_FORBIDDEN
-    )
-    if not ok:
-        raise VaultError("dpapi_protect_failed")
-    try:
-        return ctypes.string_at(out.pbData, out.cbData)
-    finally:
-        kernel32.LocalFree(out.pbData)
+    return _dpapi_call("CryptProtectData", data)
 
 
 def dpapi_unprotect(blob: bytes) -> bytes:
@@ -154,25 +173,7 @@ def dpapi_unprotect(blob: bytes) -> bytes:
         return _DPAPI_HOOKS["unprotect"](blob)
     if not _dpapi_available():
         raise VaultError("dpapi_unavailable")
-    import ctypes
-    from ctypes import wintypes
-
-    class DataBlob(ctypes.Structure):
-        _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
-
-    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    src, _keep = _blob(blob)
-    out = DataBlob()
-    ok = crypt32.CryptUnprotectData(
-        ctypes.byref(src), None, None, None, None, 0x1, ctypes.byref(out)
-    )
-    if not ok:
-        raise VaultError("dpapi_unprotect_failed")
-    try:
-        return ctypes.string_at(out.pbData, out.cbData)
-    finally:
-        kernel32.LocalFree(out.pbData)
+    return _dpapi_call("CryptUnprotectData", blob)
 
 
 def _wrapped_key_path():
