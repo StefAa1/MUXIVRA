@@ -17,9 +17,10 @@ def build_id() -> str:
         return _cached_build
     stamp = os.environ.get("SSHDECK_BUILD", "").strip()
     if not stamp:
-        stamp_file = config.BASE_DIR / "BUILD.txt"
-        if stamp_file.exists():
-            stamp = stamp_file.read_text(encoding="utf-8").strip()
+        for candidate in (config.BASE_DIR / "BUILD.txt", config.BASE_DIR.parent / "BUILD.txt"):
+            if candidate.exists():
+                stamp = candidate.read_text(encoding="utf-8").strip().splitlines()[0].strip()
+                break
     if not stamp:
         try:
             stamp = subprocess.run(
