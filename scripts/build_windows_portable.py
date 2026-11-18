@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -213,7 +214,9 @@ def copy_msvc_runtime(bundle: Path) -> None:
 
 def write_build_stamp(bundle: Path) -> None:
     """BUILD.txt + pinned update public key travel with the app."""
-    version = (ROOT / "sshdeck" / "__init__.py").read_text().split('"')[1]
+    init_text = (ROOT / "sshdeck" / "__init__.py").read_text()
+    match = re.search(r'__version__\s*=\s*"([^"]+)"', init_text)
+    version = match.group(1) if match else "0.0.0"
     try:
         commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
                                 capture_output=True, text=True, check=False).stdout.strip()

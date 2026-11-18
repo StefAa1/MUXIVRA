@@ -312,6 +312,14 @@
 .dg-svg.dg-no-labels .dg-edge-label {
   display: none;
 }
+/* dense areas: a label that cannot clear a device box is shown only when its
+   cable belongs to the selected node (or a parallel pair) */
+.dg-edge.cramped .dg-edge-label {
+  display: none;
+}
+.dg-edge.cramped.on .dg-edge-label {
+  display: block;
+}
 .dg-svg.dg-far .dg-sub {
   display: none;
 }

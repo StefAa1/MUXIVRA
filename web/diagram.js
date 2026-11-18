@@ -22,8 +22,9 @@ const DG = {
   W: 196,              // node width
   H: 54,               // node height
   COL_GAP: 58,
-  ROW_GAP: 28,
-  TOP: 104,            // first row baseline (room for band + rack labels)
+  ROW_GAP: 42,         // vertical room for edge labels + self-loops
+  TOP: 122,            // first node row: leaves space for band + rack labels
+  GROUP_PAD: 112,      // band header height above the first row
   MAX_PER_COL: 14,     // taller racks continue in a neighbouring column
   el: null,
   svg: null,
@@ -302,8 +303,8 @@ function dgAutoLayout(nodes) {
     const lastCol = columns[last];
     let bottom = DG.TOP;
     for (let i = index; i <= last; i += 1) bottom = Math.max(bottom, columns[i].bottom);
-    const top = DG.TOP - 78;
-    const left = firstCol.x - 22;
+    const top = DG.TOP - DG.GROUP_PAD;
+    const left = firstCol.x - 44;            // room for self-loop labels
     bands.push({
       x: left,
       y: top,
@@ -371,8 +372,9 @@ function dgBuild() {
   pairs.forEach((group) => {
     group.sort((x, y) => x.id - y.id);
     group.forEach((edge, i) => {
+      edge.parallel = group.length > 1;
       edge.curve = group.length === 1 ? 0 : (i - (group.length - 1) / 2) * 40;
-      edge.labelShift = group.length === 1 ? 0 : (i - (group.length - 1) / 2) * 0.07;
+      edge.labelShift = group.length === 1 ? 0 : (i - (group.length - 1) / 2) * 0.14;
     });
   });
 
@@ -386,6 +388,36 @@ function dgBuild() {
   });
 
   dgAutoLayout(nodes);
+  dgAssignLanes();
+}
+
+/* Vertical cables between devices of the same rack share one gutter; give each
+   one a lane so their rotated labels never sit on top of each other. */
+function dgAssignLanes() {
+  const byColumn = new Map();
+  DG.edgeList.forEach((edge) => {
+    const a = DG.nodeById.get(Number(edge.device_a_id));
+    const b = DG.nodeById.get(Number(edge.device_b_id));
+    if (!a || !b || a === b) return;
+    if (Math.abs(a.gx - b.gx) >= 1) return;
+    const key = Math.round(a.gx);
+    if (!byColumn.has(key)) byColumn.set(key, []);
+    byColumn.get(key).push({
+      edge,
+      y0: Math.min(a.gy, b.gy) - 70,
+      y1: Math.max(a.gy, b.gy) + DG.H + 70,
+    });
+  });
+  byColumn.forEach((list) => {
+    const laneEnd = [];
+    list.sort((p1, p2) => p1.y0 - p2.y0);
+    list.forEach((item) => {
+      let lane = 0;
+      while (lane < 4 && laneEnd[lane] != null && laneEnd[lane] > item.y0) lane += 1;
+      item.edge.lane = lane;
+      laneEnd[lane] = item.y1;
+    });
+  });
 }
 
 /* ------------------------------------------------------------------- shell */
@@ -592,17 +624,41 @@ function dgClipToNode(node, towardX, towardY) {
 
 function dgEdgeGeometry(a, b, edge) {
   if (a.id === b.id) {
-    const spread = 20 + Math.abs(edge.curve || 0) * 0.6;
-    const x0 = a.gx + DG.W * 0.34;
-    const x1 = a.gx + DG.W * 0.66;
-    const y = a.gy + 3;
+    // Loop back into the same port pair: draw it in the left gutter so neither
+    // the arc nor its label can touch a node above or below in the column.
+    const spread = 26 + Math.abs(edge.curve || 0) * 0.8;
+    const x = a.gx;
+    const y0 = a.gy + 14;
+    const y1 = a.gy + DG.H - 14;
     return {
-      d: `M${dgRound(x0)},${dgRound(y)} C${dgRound(x0 - spread)},${dgRound(y - spread * 1.55)}`
-        + ` ${dgRound(x1 + spread)},${dgRound(y - spread * 1.55)} ${dgRound(x1)},${dgRound(y)}`,
-      lx: a.gx + DG.W / 2,
-      ly: a.gy - spread * 1.1,
+      d: `M${dgRound(x)},${dgRound(y0)} C${dgRound(x - spread)},${dgRound(y0 - 10)}`
+        + ` ${dgRound(x - spread)},${dgRound(y1 + 10)} ${dgRound(x)},${dgRound(y1)}`,
+      lx: a.gx - 34,
+      ly: a.gy + DG.H / 2,
+      rot: -90,
       a: null,
       b: null,
+    };
+  }
+  // Same rack column: a straight vertical edge would run through the boxes in
+  // between and its label would land on a device. Bow it into the right gutter
+  // and set the label vertically along the gutter instead.
+  if (Math.abs(a.gx - b.gx) < 1) {
+    const rightX = Math.max(a.gx, b.gx) + DG.W;
+    const startY = a.gy + DG.H / 2;
+    const endY = b.gy + DG.H / 2;
+    const lane = Math.min(edge.lane || 0, 4);
+    const bulge = 20 + lane * 9 + (edge.curve || 0) * 0.3;
+    return {
+      d: `M${dgRound(rightX)},${dgRound(startY)}`
+        + ` C${dgRound(rightX + bulge)},${dgRound(startY + (endY - startY) * 0.3)}`
+        + ` ${dgRound(rightX + bulge)},${dgRound(startY + (endY - startY) * 0.7)}`
+        + ` ${dgRound(rightX)},${dgRound(endY)}`,
+      lx: rightX + 12 + lane * 12,
+      ly: (startY + endY) / 2,
+      rot: -90,
+      a: { x: rightX, y: startY },
+      b: { x: rightX, y: endY },
     };
   }
   // Parallel edges must bow in a stable direction regardless of which end is
@@ -620,31 +676,84 @@ function dgEdgeGeometry(a, b, edge) {
   const cx = (A.x + B.x) / 2 + (-dy / len) * offset;
   const cy = (A.y + B.y) / 2 + (dx / len) * offset;
   if (Math.abs(offset) < 0.5) {
+    const label = dgLabelPoint(A, B, null, edge, 0.5);
     return {
       d: `M${dgRound(A.x)},${dgRound(A.y)} L${dgRound(B.x)},${dgRound(B.y)}`,
-      lx: (A.x + B.x) / 2,
-      ly: (A.y + B.y) / 2,
+      lx: label.x,
+      ly: label.y,
+      fit: dgFits(label.x, label.y),
       a: A,
       b: B,
     };
   }
-  // Offset the label along the curve as well, so parallel edges never stack
-  // their labels on the same point.
-  const t = dgClamp(0.5 + (edge.labelShift || 0), 0.18, 0.82);
-  const mt = 1 - t;
+  // Parallel edges bow by different amounts and their labels slide along the
+  // curve, so two cables between the same pair never share a label position.
+  const label = dgLabelPoint(A, B, { x: cx, y: cy }, edge, 0.44);
   return {
     d: `M${dgRound(A.x)},${dgRound(A.y)} Q${dgRound(cx)},${dgRound(cy)}`
       + ` ${dgRound(B.x)},${dgRound(B.y)}`,
-    lx: mt * mt * A.x + 2 * mt * t * cx + t * t * B.x,
-    ly: mt * mt * A.y + 2 * mt * t * cy + t * t * B.y,
+    lx: label.x,
+    ly: label.y,
+    fit: dgFits(label.x, label.y),
     a: A,
     b: B,
   };
 }
 
-function dgEdgeLabel(edge) {
+/* Choose the point on the edge that keeps the label clear of device boxes:
+   sample the path, score the distance to the nearest node, prefer the sample
+   closest to `desired` (0..1 along the edge). */
+function dgPointOnEdge(A, B, control, t) {
+  const mt = 1 - t;
+  return control
+    ? { x: mt * mt * A.x + 2 * mt * t * control.x + t * t * B.x,
+      y: mt * mt * A.y + 2 * mt * t * control.y + t * t * B.y }
+    : { x: A.x + (B.x - A.x) * t, y: A.y + (B.y - A.y) * t };
+}
+
+/* Parallel cables keep a fixed, shifted label point (their bows already differ);
+   single cables pick the point on the path that is furthest from any device. */
+function dgLabelPoint(A, B, control, edge, base) {
+  const desired = base + (edge.labelShift || 0);
+  if (edge.parallel) return dgPointOnEdge(A, B, control, dgClamp(desired, 0.16, 0.84));
+  return dgLabelSpot(A, B, control, desired);
+}
+
+function dgLabelSpot(A, B, control, desired) {
+  const samples = 9;
+  let best = null;
+  for (let i = 0; i < samples; i += 1) {
+    const t = 0.08 + (0.84 * i) / (samples - 1);
+    const point = dgPointOnEdge(A, B, control, t);
+    const score = dgClearance(point.x, point.y) - Math.abs(t - dgClamp(desired, 0.1, 0.9)) * 26;
+    if (!best || score > best.score) best = { x: point.x, y: point.y, score };
+  }
+  return best || { x: (A.x + B.x) / 2, y: (A.y + B.y) / 2 };
+}
+
+/* True when a label at that point clears every device box. */
+function dgFits(x, y) {
+  return dgClearance(x, y) >= 3;
+}
+
+/* Distance from a label box (approximate text extents) to the nearest node. */
+function dgClearance(x, y) {
+  const halfW = 132;         // worst-case edge label width (44 chars mono)
+  const halfH = 10;
+  let best = Infinity;
+  for (let i = 0; i < DG.nodes.length; i += 1) {
+    const node = DG.nodes[i];
+    const dx = Math.max(node.gx - (x + halfW), (x - halfW) - (node.gx + DG.W), 0);
+    const dy = Math.max(node.gy - (y + halfH), (y - halfH) - (node.gy + DG.H), 0);
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    if (distance < best) best = distance;
+  }
+  return best === Infinity ? 1000 : best;
+}
+
+function dgEdgeLabel(edge, max) {
   const cable = edge.cable ? ` · ${edge.cable}` : '';
-  return dgClipText(`${edge.port_a_name || '?'} ↔ ${edge.port_b_name || '?'}${cable}`, 44);
+  return dgClipText(`${edge.port_a_name || '?'} ↔ ${edge.port_b_name || '?'}${cable}`, max || 44);
 }
 
 function dgEdgeEl(edge) {
@@ -652,14 +761,19 @@ function dgEdgeEl(edge) {
   const b = DG.nodeById.get(Number(edge.device_b_id));
   const geo = dgEdgeGeometry(a, b, edge);
   const group = dgSvg('g', {
-    class: `dg-edge${String(edge.rack_a_id) !== String(edge.rack_b_id) ? ' inter' : ''}`,
+    class: `dg-edge${String(edge.rack_a_id) !== String(edge.rack_b_id) ? ' inter' : ''}`
+      + `${geo.fit === false && !edge.parallel ? ' cramped' : ''}`,
   });
   group.dataset.dgEdge = String(edge.id);
   group.appendChild(dgSvg('path', { class: 'dg-edge-line', d: geo.d, fill: 'none' }));
   if (!geo.a) {
-    group.appendChild(dgSvg('text', {
+    const loopLabel = dgSvg('text', {
       class: 'dg-edge-label', x: dgRound(geo.lx), y: dgRound(geo.ly), 'text-anchor': 'middle',
-    }, dgEdgeLabel(edge)));
+    }, dgEdgeLabel(edge, 32));
+    if (geo.rot) {
+      loopLabel.setAttribute('transform', `rotate(${geo.rot} ${dgRound(geo.lx)} ${dgRound(geo.ly)})`);
+    }
+    group.appendChild(loopLabel);
     return group;
   }
   group.appendChild(dgSvg('circle', {
@@ -668,9 +782,15 @@ function dgEdgeEl(edge) {
   group.appendChild(dgSvg('circle', {
     class: 'dg-term', cx: dgRound(geo.b.x), cy: dgRound(geo.b.y), r: 2.3,
   }));
-  group.appendChild(dgSvg('text', {
+  const label = dgSvg('text', {
     class: 'dg-edge-label', x: dgRound(geo.lx), y: dgRound(geo.ly - 4), 'text-anchor': 'middle',
-  }, dgEdgeLabel(edge)));
+  }, dgEdgeLabel(edge, geo.rot ? 30 : 44));
+  if (geo.rot) {
+    label.setAttribute('x', dgRound(geo.lx));
+    label.setAttribute('y', dgRound(geo.ly));
+    label.setAttribute('transform', `rotate(${geo.rot} ${dgRound(geo.lx)} ${dgRound(geo.ly)})`);
+  }
+  group.appendChild(label);
   return group;
 }
 
@@ -686,7 +806,9 @@ function dgUpdateEdge(edge) {
   if (line) line.setAttribute('d', geo.d);
   if (label) {
     label.setAttribute('x', dgRound(geo.lx));
-    label.setAttribute('y', dgRound(geo.ly - 4));
+    label.setAttribute('y', dgRound(geo.rot ? geo.ly : geo.ly - 4));
+    if (geo.rot) label.setAttribute('transform', `rotate(${geo.rot} ${dgRound(geo.lx)} ${dgRound(geo.ly)})`);
+    else label.removeAttribute('transform');
   }
   const terms = group.querySelectorAll('.dg-term');
   if (terms.length === 2 && geo.a && geo.b) {
@@ -713,12 +835,12 @@ function dgPaint() {
       width: dgRound(band.w), height: dgRound(band.h), rx: 14,
     }));
     bandFragment.appendChild(dgSvg('text', {
-      class: 'dg-band-label', x: dgRound(band.x + 14), y: dgRound(band.y + 20),
+      class: 'dg-band-label', x: dgRound(band.x + 16), y: dgRound(band.y + 22),
     }, band.siteName));
   });
   DG.columns.forEach((column) => {
     bandFragment.appendChild(dgSvg('text', {
-      class: 'dg-col-label', x: dgRound(column.x), y: DG.TOP - 16,
+      class: 'dg-col-label', x: dgRound(column.x), y: DG.TOP - 62,
     }, column.parts > 1 ? `${column.rackName} ·${column.part}/${column.parts}` : column.rackName));
   });
   DG.layers.bands.appendChild(bandFragment);

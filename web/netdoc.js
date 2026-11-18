@@ -766,7 +766,7 @@ function ndPortFormHtml(device) {
   const chips = templates.length
     ? `<div class="nd-tpl-list">${templates.map((t, index) => `<span class="nd-tpl">
           <button type="button" class="nd-tpl-apply" data-nd-tpl="${index}" title="Συμπλήρωσε τη φόρμα">${esc(t.prefix)} · ${Number(t.count)} · ${esc(ND_PORT_KIND_LABEL[t.kind] || t.kind)}</button>
-          <button type="button" class="nd-tpl-del" data-nd-tpl-del="${index}" title="Αφαίρεση προτύπου" aria-label="Αφαίρεση προτύπου">✕</button>
+          <button type="button" class="nd-tpl-del" data-nd-tpl-del="${index}" title="Αφαίρεση προτύπου" aria-label="Αφαίρεση προτύπου">×</button>
         </span>`).join('')}</div>`
     : '<span class="nd-pf-label">Δεν έχεις αποθηκευμένα πρότυπα ακόμη — τα 3 τελευταία μένουν στον browser.</span>';
   return `<form class="nd-portform" id="nd-port-form" data-device="${device.id}" autocomplete="off">
