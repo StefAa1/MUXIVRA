@@ -418,6 +418,17 @@ def vault_state():
     return security.vault_state()
 
 
+@api.post("/vault/auto-lock")
+def vault_auto_lock(payload: dict):
+    seconds = int(payload.get("seconds") or 0)
+    if not 0 <= seconds <= 86400:
+        raise HTTPException(status_code=422, detail="bad_auto_lock")
+    security.AUTO_LOCK_SECONDS = seconds
+    with db.db() as conn:
+        db.set_setting(conn, "vault_auto_lock_seconds", str(seconds))
+    return {"ok": True, "auto_lock_seconds": seconds}
+
+
 @api.post("/vault/lock")
 def vault_lock():
     security.lock()

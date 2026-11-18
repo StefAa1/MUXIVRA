@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import api, config, db, racks, security
+from . import api, buildinfo, config, db, racks, security
 
 log = logging.getLogger("sshdeck")
 
@@ -64,6 +64,13 @@ def create_app() -> FastAPI:
     config.ensure_dirs()
     configure_logging()
     db.init()
+    with db.db() as conn:
+        stored = db.get_setting(conn, "vault_auto_lock_seconds")
+    if stored not in (None, ""):
+        try:
+            security.AUTO_LOCK_SECONDS = max(0, int(stored))
+        except ValueError:
+            pass
 
     app = FastAPI(title="MUXIVRA", version=__import__("sshdeck").__version__, docs_url=None, redoc_url=None)
     app.include_router(api.public)
@@ -114,6 +121,12 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=500, content={"detail": f"internal:{type(exc).__name__}: {exc}"[:300]}
         )
+
+    info = buildinfo.info()
+    log.info(
+        "MUXIVRA %s (build %s, %s) | data=%s | staging=%s | python %s",
+        info["version"], info["build"], info["mode"], info["data_dir"], info["staging_dir"], info["python"],
+    )
 
     @app.get("/healthz")
     async def healthz():

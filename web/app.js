@@ -422,6 +422,8 @@ function renderPage() {
   renderSnippets();
   renderActivity();
   if (typeof renderRacks === 'function') renderRacks();
+  if (S.view === 'racks') decorateDeviceConnections();
+  if (S.view === 'diagram' && typeof renderDiagram === 'function') renderDiagram();
   renderSettings();
   if (S.view !== 'hosts') {
     $('#page-hosts').classList.add('hidden');
@@ -507,6 +509,44 @@ function renderActivity() {
     </tr>`).join('')}</tbody></table>`;
 }
 
+async function decorateDeviceConnections() {
+  const layout = (typeof ND !== 'undefined' && ND.layout) || null;
+  if (!layout || !layout.devices || !layout.devices.length) return;
+  const device = layout.devices.find((d) => d.id === ND.deviceId) || layout.devices[0];
+  const panel = document.querySelector('.nd-ports');
+  if (!panel || panel.querySelector('.nd-conn-row')) return;
+  let payload;
+  try {
+    payload = await api(`/netdoc/devices/${device.id}/connections`);
+    ND.connections = ND.connections || {};
+    ND.connections[device.id] = payload;
+  } catch (err) {
+    return;
+  }
+  const hosts = payload.hosts || [];
+  const buttons = hosts.map((h) => `<button class="btn ghost xs" data-nd-open="${h.id}" title="${esc(h.hostname)}:${h.port}">${esc((h.protocol || 'ssh').toUpperCase())} · ${esc(h.label)}</button>`).join('');
+  const winbox = device.mgmt_ip
+    ? `<button class="btn ghost xs" data-nd-winbox="${device.id}">WinBox${payload.winbox && payload.winbox.available ? '' : ' (λείπει)'}</button>`
+    : '';
+  const row = document.createElement('div');
+  row.className = 'nd-conn-row';
+  row.innerHTML = `<span class="hint">Συνδέσεις συσκευής</span>${buttons || '<span class="hint">χωρίς profile — σύνδεσέ τη με host από τις Ρυθμίσεις</span>'}${winbox}`;
+  panel.insertBefore(row, panel.querySelector('.nd-port-grid'));
+}
+
+async function renderVaultState() {
+  const state = await api('/vault');
+  S.vault = state;
+  const label = $('#vault-state');
+  if (label) {
+    label.textContent = state.locked
+      ? 'Κατάσταση: κλειδωμένο — τα secrets δεν διαβάζονται'
+      : 'Κατάσταση: ξεκλείδωτο';
+  }
+  const input = $('#vault-autolock');
+  if (input) input.value = Math.round((state.auto_lock_seconds || 0) / 60);
+}
+
 function renderSettings() {
   const status = S.status || {};
   const upd = S.update || {};
@@ -542,13 +582,24 @@ function renderSettings() {
           </div>
         </div></div>
       <div class="card"><h3>Vault</h3>
-        <div class="sub">${esc((upd.vault_key || {}).mechanism || 'file-0600')}</div>
+        <div class="sub" id="vault-status">${esc((upd.vault_key || {}).mechanism || 'file-0600')}</div>
         <div class="body">Τα credentials είναι κρυπτογραφημένα (Fernet). ${(upd.vault_key || {}).protected
           ? 'Το κλειδί είναι δεμένο με τον Windows λογαριασμό σου (DPAPI) — αντίγραφο σε άλλο PC δεν το ανοίγει.'
           : 'Το κλειδί προστατεύεται με δικαιώματα αρχείου 0600.'}</div>
+        <div class="body" id="vault-state">—</div>
+        <div class="nd-form">
+          <label class="field" style="flex:1"><span>Auto-lock (λεπτά)</span>
+            <input id="vault-autolock" type="number" min="0" max="1440" step="1" value="0" /></label>
+          <button class="btn xs" id="vault-save-lock">Αποθήκευση</button>
+        </div>
+        <div class="actions">
+          <button class="btn ghost xs" id="vault-lock">Κλείδωμα</button>
+          <button class="btn primary xs" id="vault-unlock">Ξεκλείδωμα</button>
+        </div>
       </div>
     </div>`;
 
+  if (S.view === 'settings') renderVaultState().catch(() => {});
   const ev = $('#events-refresh');
   if (ev) ev.onclick = async () => { await loadEvents(); renderPage(); toast('Ανανεώθηκε'); };
 }
@@ -918,6 +969,26 @@ function connectFromPalette() {
 
 /* ----------------------------------------------------------------- events */
 document.addEventListener('click', async (event) => {
+  const ndOpen = event.target.closest('[data-nd-open]');
+  if (ndOpen) {
+    const host = (S.hosts || []).find((h) => h.id === Number(ndOpen.dataset.ndOpen));
+    if (host) openTerminal(host); else toast('Το profile δεν βρέθηκε', 'err');
+    return;
+  }
+
+  const ndWinbox = event.target.closest('[data-nd-winbox]');
+  if (ndWinbox) {
+    try {
+      const deviceId = Number(ndWinbox.dataset.ndWinbox);
+      const device = ((ND.layout || {}).devices || []).find((d) => d.id === deviceId) || {};
+      const res = await api(`/netdoc/devices/${deviceId}/winbox`, { json: { address: device.mgmt_ip || '' } });
+      toast(`WinBox: pid ${res.pid || '—'}`);
+    } catch (err) {
+      toast(err.message.startsWith('winbox') ? 'Το WinBox δεν είναι εγκατεστημένο' : err.message, 'err');
+    }
+    return;
+  }
+
   const ndTab = event.target.closest('[data-nd-tab]');
   if (ndTab) {
     ND.tab = ndTab.dataset.ndTab;
@@ -1177,6 +1248,22 @@ document.addEventListener('click', (event) => {
       } catch (err) {
         toast(err.message.startsWith('position_taken') ? 'Η θέση είναι πιασμένη' : err.message, 'err');
       }
+    },
+    'vault-lock': async () => {
+      try { await api('/vault/lock', { json: {} }); await renderVaultState(); toast('Το vault κλειδώθηκε'); }
+      catch (err) { toast(err.message, 'err'); }
+    },
+    'vault-unlock': async () => {
+      try { await api('/vault/unlock', { json: {} }); await renderVaultState(); toast('Το vault ξεκλειδώθηκε'); }
+      catch (err) { toast(err.message, 'err'); }
+    },
+    'vault-save-lock': async () => {
+      const minutes = Number((($('#vault-autolock') || {}).value) || 0);
+      try {
+        await api('/vault/auto-lock', { json: { seconds: Math.max(0, minutes) * 60 } });
+        await renderVaultState();
+        toast(minutes ? `Auto-lock: ${minutes} λεπτά` : 'Auto-lock ανενεργό');
+      } catch (err) { toast(err.message, 'err'); }
     },
     'upd-save': async () => {
       const repo = ($('#upd-repo') || {}).value || '';

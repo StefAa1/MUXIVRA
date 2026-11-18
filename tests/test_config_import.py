@@ -45,3 +45,27 @@ def test_legacy_migration_only_runs_when_asked(tmp_path, monkeypatch):
     config.migrate_legacy_data()          # startup path adopts the legacy folder
     assert (target / "sshdeck.db").read_bytes() == b"legacy-db"
     assert not legacy.exists()
+
+
+def test_migration_never_overwrites_existing_database(tmp_path, monkeypatch):
+    legacy = tmp_path / "program" / "data"
+    legacy.mkdir(parents=True)
+    (legacy / "sshdeck.db").write_bytes(b"legacy-db")
+    (legacy / "vault.key").write_bytes(b"legacy-key")
+
+    target = tmp_path / "userdata"
+    target.mkdir()
+    (target / "sshdeck.db").write_bytes(b"current-db")
+    (target / "vault.key").write_bytes(b"current-key")
+
+    monkeypatch.setattr(config, "_legacy_data_dir", lambda: legacy)
+    monkeypatch.setattr(config, "DATA_DIR", target)
+    monkeypatch.delenv("SSHDECK_DATA", raising=False)
+    config.migrate_legacy_data()
+
+    assert (target / "sshdeck.db").read_bytes() == b"current-db"
+    assert (target / "vault.key").read_bytes() == b"current-key"
+    assert (legacy / "sshdeck.db").exists(), "legacy folder must stay untouched"
+    imported = list(target.glob("legacy-import-*"))
+    assert imported and (imported[0] / "sshdeck.db").read_bytes() == b"legacy-db"
+    assert "kept existing database" in (target / "migration.txt").read_text()

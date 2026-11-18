@@ -137,7 +137,13 @@ def trusted_key() -> bytes:
     if not raw and config.UPDATE_PUBKEY_PATH.exists():
         raw = config.UPDATE_PUBKEY_PATH.read_text(encoding="utf-8").strip()
     if not raw:
-        raise UpdateError("no_pubkey", "Δεν έχει οριστεί δημόσιο κλειδί υπογραφής (update-pubkey.txt).")
+        shipped = config.BASE_DIR / "update-pubkey.txt"
+        if shipped.exists():
+            raw = shipped.read_text(encoding="utf-8").strip()
+    if not raw:
+        raw = getattr(config, "DEFAULT_UPDATE_PUBKEY", "").strip()
+    if not raw:
+        raise UpdateError("no_pubkey", "Δεν έχει οριστεί δημόσιο κλειδί υπογραφής.")
     for decoder in (base64.b64decode, bytes.fromhex):
         try:
             key = decoder(raw)

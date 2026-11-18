@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
+import json
 import sqlite3
 
 from . import db
@@ -574,3 +575,31 @@ def launch_winbox(device_id: int, payload: dict | None = None):
         raise HTTPException(status_code=409, detail=f"{code}: {message}")
     db.log_event(None, "winbox_launched", f"{device['name']} {address}")
     return {"ok": True, **result}
+
+
+# --------------------------------------------------------- backup / import
+@router.get("/export")
+def export_netdoc():
+    """Versioned JSON backup of documentation data (no credentials, no secrets)."""
+    from . import netdoc_io
+
+    with _conn() as conn:
+        payload = netdoc_io.export_payload(conn)
+    return payload
+
+
+@router.post("/import")
+def import_netdoc(payload: dict):
+    """Restore a backup. dry_run=true shows what would be created, changing nothing."""
+    from . import netdoc_io
+
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    dry_run = bool(payload.get("dry_run"))
+    with _conn() as conn:
+        try:
+            report = netdoc_io.import_payload(conn, data, dry_run=dry_run)
+        except netdoc_io.ImportError_ as exc:
+            raise HTTPException(status_code=422, detail=f"{exc.code}: {exc.message}")
+    if not dry_run:
+        db.log_event(None, "netdoc_import", json.dumps(report["created"]))
+    return report

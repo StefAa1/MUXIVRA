@@ -53,8 +53,11 @@ def main() -> int:
         names = zipfile.ZipFile(ARCHIVE).namelist()
         if any("bcryptprimitives" in n for n in names):
             problems.append("archive contains the Wine shim")
-        for required in ("MUXIVRA.exe", "MUXIVRA.cmd", "app/sshdeck/keeper.py", "app/sshdeck/transports.py",
-                         "app/sshdeck/update.py", "runtime/python/python.exe", "runtime/libs/fastapi/__init__.py"):
+        for required in ("MUXIVRA.exe", "MUXIVRA.cmd", "BUILD.txt", "update-pubkey.txt",
+                         "app/sshdeck/keeper.py", "app/sshdeck/transports.py", "app/sshdeck/update.py",
+                         "app/sshdeck/buildinfo.py", "app/sshdeck/racks.py",
+                         "app/web/netdoc.js", "app/web/netdoc.css", "app/web/diagram.js", "app/web/diagram.css",
+                         "runtime/python/python.exe", "runtime/libs/fastapi/__init__.py"):
             if not any(n.endswith(required) for n in names):
                 problems.append(f"archive missing {required}")
         libs = sum(1 for n in names if n.startswith("MUXIVRA-portable-win64/runtime/libs/"))

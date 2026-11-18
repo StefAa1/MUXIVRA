@@ -1,0 +1,273 @@
+name: release
+
+# Release pipeline for the portable Windows bundle.
+#
+# Trigger: pushing a tag v* (e.g. v0.4.0). Nothing is published from a branch.
+# Required repository secret: MUXIVRA_SIGNING_KEY_B64 — base64 of the Ed25519
+# signing key (PEM or raw 32-byte seed). The secret is only ever exposed to the
+# signing step's environment; it is never written to disk and never echoed.
+#
+# See docs/RELEASE.md for the full runbook (key handling, rollback, rotation).
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  ZIP: dist/MUXIVRA-portable-win64.zip
+  MANIFEST: dist/release.json
+  SIGNATURE: dist/release.json.sig
+  PUBKEY: dist/release.pubkey.txt
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  build:
+    name: build and sign
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install build tools (mingw-w64 for the launcher)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends mingw-w64
+          x86_64-w64-mingw32-gcc --version | head -1
+
+      - name: Create venv and install dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install --quiet -r requirements.txt
+
+      - name: Tests
+        run: .venv/bin/pytest -o addopts="" -q
+
+      - name: Verify tag matches package version
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          pkg="$(.venv/bin/python -c 'import sshdeck; print(sshdeck.__version__)')"
+          if [ "$version" != "$pkg" ]; then
+            echo "::error::tag $tag does not match sshdeck/__init__.py __version__ ($pkg). Bump the version, commit, and re-tag."
+            exit 1
+          fi
+          echo "tag $tag matches package version $pkg"
+
+      - name: Build portable bundle
+        run: .venv/bin/python scripts/build_windows_portable.py
+
+      - name: Verify bundle matches source
+        run: .venv/bin/python scripts/verify_bundle.py
+
+      - name: Check signing secret is configured
+        env:
+          MUXIVRA_SIGNING_KEY_B64: ${{ secrets.MUXIVRA_SIGNING_KEY_B64 }}
+        run: |
+          if [ -z "${MUXIVRA_SIGNING_KEY_B64}" ]; then
+            echo "::error::secret MUXIVRA_SIGNING_KEY_B64 is not set — a release without a signature is refused by every client."
+            exit 1
+          fi
+
+      - name: Sign release manifest
+        env:
+          MUXIVRA_SIGNING_KEY_B64: ${{ secrets.MUXIVRA_SIGNING_KEY_B64 }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          # Deterministic built_at: the commit timestamp, not the wall clock.
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          .venv/bin/python tools/sign_release.py \
+            --zip "$ZIP" \
+            --version "$version" \
+            --out dist \
+            --repo "${{ github.repository }}"
+
+      - name: Verify the signed manifest with the client's own verifier
+        run: |
+          .venv/bin/python - <<'PY'
+          import base64, hashlib, json, pathlib
+          from sshdeck import update as U
+
+          manifest_path = pathlib.Path("dist/release.json")
+          signature_path = pathlib.Path("dist/release.json.sig")
+          pubkey_path = pathlib.Path("dist/release.pubkey.txt")
+          archive = pathlib.Path("dist/MUXIVRA-portable-win64.zip")
+
+          raw = manifest_path.read_bytes()
+          signature = base64.b64decode(signature_path.read_text().strip(), validate=True)
+          pubkey = base64.b64decode(pubkey_path.read_text().strip(), validate=True)
+          manifest = U.verify_manifest(raw, signature, pubkey)
+          assert hashlib.sha256(archive.read_bytes()).hexdigest() == manifest["sha256"]
+          assert archive.name == manifest["archive"]
+          print(f"signed manifest OK: {manifest['version']} {manifest['sha256']}")
+          PY
+
+      - name: Ensure no private key material is committed
+        run: |
+          .venv/bin/python - <<'PY'
+          import re, subprocess
+
+          # One deliberate exception: a synthetic OpenSSH key used by
+          # scripts/seed_demo.py, live_check.py and wine_e2e.py. It must never
+          # be used for a real host — it has been public since v0.2.0.
+          ALLOWED = {"testdata/deploy_key"}
+          pattern = re.compile(rb"-----BEGIN [A-Z ]*PRIVATE KEY-----[\r\n]+[A-Za-z0-9+/=\s]{64,}")
+          tracked = subprocess.run(["git", "ls-files", "-z"], capture_output=True)
+          if tracked.returncode != 0:
+              raise SystemExit("::error::cannot enumerate tracked files (not a git checkout?)")
+          tracked = tracked.stdout
+          found = []
+          for path in tracked.split(b"\0"):
+              if not path:
+                  continue
+              name = path.decode()
+              try:
+                  data = open(path, "rb").read()
+              except OSError:
+                  continue
+              if pattern.search(data):
+                  found.append(name)
+          leaks = [p for p in found if p not in ALLOWED]
+          for fixture in sorted(set(found) & ALLOWED):
+              print(f"::warning::allowlisted test fixture (never use on a real host): {fixture}")
+          if leaks:
+              print("::error::private key material in tracked files: " + ", ".join(leaks))
+              raise SystemExit(1)
+          print("no unexpected private key material in tracked files")
+          PY
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            dist/MUXIVRA-portable-win64.zip
+            dist/release.json
+            dist/release.json.sig
+            dist/release.pubkey.txt
+
+  publish:
+    name: publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download signed assets
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: dist
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Verify signature independently of the build job
+        run: |
+          python -m pip install --quiet "cryptography==44.0.0"
+          python - <<'PY'
+          import base64, hashlib, json, pathlib
+          from cryptography.exceptions import InvalidSignature
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+          raw = pathlib.Path("dist/release.json").read_bytes()
+          signature = base64.b64decode(pathlib.Path("dist/release.json.sig").read_text().strip(), validate=True)
+          pubkey = base64.b64decode(pathlib.Path("dist/release.pubkey.txt").read_text().strip(), validate=True)
+          try:
+              Ed25519PublicKey.from_public_bytes(pubkey).verify(signature, raw)
+          except InvalidSignature:
+              raise SystemExit("signature does not verify — refusing to publish")
+          manifest = json.loads(raw)
+          archive = pathlib.Path("dist") / manifest["archive"]
+          digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+          if digest != manifest["sha256"]:
+              raise SystemExit("archive digest does not match the signed manifest — refusing to publish")
+          if not str(manifest.get("version", "")).lstrip("vV") == __import__("os").environ["GITHUB_REF_NAME"].lstrip("vV"):
+              raise SystemExit("manifest version does not match the tag — refusing to publish")
+          print(f"independent verification OK: {manifest['version']} {digest}")
+          PY
+
+      - name: Prepare release notes from CHANGELOG
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if [ -f CHANGELOG.md ]; then
+            awk -v v="$version" '
+              $0 ~ "^## \\[" v "\\]" {flag=1; next}
+              flag && /^## \[/ {exit}
+              flag {print}
+            ' CHANGELOG.md > notes.md
+          fi
+          if [ ! -s notes.md ]; then
+            echo "Release ${GITHUB_REF_NAME}. See CHANGELOG.md." > notes.md
+          fi
+          { echo "Portable Windows x64 bundle. Verify before running:"
+            echo
+            echo '```'
+            echo "sha256  $(sha256sum dist/MUXIVRA-portable-win64.zip | cut -d' ' -f1)"
+            echo "public  $(cat dist/release.pubkey.txt)"
+            echo '```'
+            echo
+            cat notes.md; } > release-notes.md
+          mv release-notes.md notes.md
+          cat notes.md
+
+      - name: Publish release and attach assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          assets=(dist/MUXIVRA-portable-win64.zip dist/release.json dist/release.json.sig dist/release.pubkey.txt)
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag exists — uploading assets with --clobber"
+            gh release upload "$tag" "${assets[@]}" --clobber
+          else
+            gh release create "$tag" "${assets[@]}" \
+              --verify-tag \
+              --title "MUXIVRA $tag" \
+              --notes-file notes.md
+          fi
+
+      - name: Verify the published assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          names="$(gh release view "$tag" --json assets --jq '.assets[].name' | sort)"
+          echo "$names"
+          for wanted in MUXIVRA-portable-win64.zip release.json release.json.sig release.pubkey.txt; do
+            if ! grep -qx "$wanted" <<<"$names"; then
+              echo "::error::asset $wanted is missing from release $tag"
+              exit 1
+            fi
+          done
+          echo "release $tag has all required assets"

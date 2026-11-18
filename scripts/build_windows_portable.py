@@ -211,6 +211,24 @@ def copy_msvc_runtime(bundle: Path) -> None:
     log(f"msvc runtime dlls placed next to python.exe: {sorted(copied)}")
 
 
+def write_build_stamp(bundle: Path) -> None:
+    """BUILD.txt + pinned update public key travel with the app."""
+    version = (ROOT / "sshdeck" / "__init__.py").read_text().split('"')[1]
+    try:
+        commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
+                                capture_output=True, text=True, check=False).stdout.strip()
+    except OSError:
+        commit = ""
+    stamp = f"{version}+{commit}" if commit else version
+    (bundle / "BUILD.txt").write_text(f"{stamp}\nversion={version}\ncommit={commit}\n", encoding="utf-8")
+    key = ROOT / "update-pubkey.txt"
+    if key.exists():
+        (bundle / "update-pubkey.txt").write_text(key.read_text(encoding="utf-8").strip() + "\n", encoding="utf-8")
+        log(f"update public key shipped ({key.read_text().strip()[:12]}…)")
+    else:
+        log("WARNING: update-pubkey.txt missing — updates will rely on the pinned default only")
+
+
 def build_launcher(bundle: Path) -> None:
     """Compile the native MUXIVRA.exe stub (or reuse a prebuilt one)."""
     source = ROOT / "tools" / "launcher.c"
@@ -274,6 +292,7 @@ def build() -> Path:
     copy_tree(ROOT / "sshdeck", app_dir / "sshdeck")
     copy_tree(ROOT / "web", app_dir / "web")
     build_launcher(bundle)
+    write_build_stamp(bundle)
 
     (bundle / "MUXIVRA.cmd").write_bytes(LAUNCHER.replace("\n", "\r\n").encode("ascii"))
     (bundle / "MUXIVRA-debug.cmd").write_bytes(LAUNCHER_DEBUG.replace("\n", "\r\n").encode("ascii"))

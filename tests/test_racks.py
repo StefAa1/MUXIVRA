@@ -1,4 +1,6 @@
 """Rack documentation: layout bounds, duplicate ports, one-link-per-port, export."""
+import json
+
 import pytest
 
 
@@ -221,3 +223,41 @@ def test_device_connections_lists_profiles_and_winbox_state(rack):
         assert "winbox" in res.json()["detail"]
     else:
         assert res.status_code == 200
+
+
+def test_export_import_roundtrip_is_idempotent(rack):
+    sw, pp, a, b = _two_devices(rack, "io")
+    rack["client"].post("/api/netdoc/links", json={"port_a": a[0]["id"], "port_b": b[0]["id"], "cable": "CAT6-77"})
+
+    bundle = rack["client"].get("/api/netdoc/export").json()
+    assert bundle["format"] == "muxivra.netdoc/1"
+    assert len(bundle["links"]) == 1
+    assert "secret" not in json.dumps(bundle).lower()
+
+    # importing the same bundle again must not duplicate anything
+    report = rack["client"].post("/api/netdoc/import", json={"data": bundle}).json()
+    assert report["created"]["sites"] == 0 and report["created"]["devices"] == 0
+    assert report["created"]["links"] == 0
+    assert report["skipped"]["devices"] >= 2
+
+    tree = rack["client"].get("/api/netdoc/tree").json()
+    assert len(tree["sites"]) == 1 and len(tree["sites"][0]["racks"]) == 1
+
+
+def test_import_dry_run_changes_nothing(rack):
+    other = {
+        "format": "muxivra.netdoc/1",
+        "sites": [{"id": 99, "name": "Νέος χώρος", "note": ""}],
+        "racks": [{"id": 98, "site_id": 99, "name": "R9", "units": 12}],
+        "devices": [{"id": 97, "rack_id": 98, "name": "sw-new", "kind": "switch", "units": 1, "position": 5}],
+        "ports": [{"id": 96, "device_id": 97, "name": "e1", "kind": "rj45"}],
+        "links": [],
+    }
+    report = rack["client"].post("/api/netdoc/import", json={"data": other, "dry_run": True}).json()
+    assert report["dry_run"] is True and report["created"]["sites"] == 1
+    assert rack["client"].get("/api/netdoc/tree").json()["sites"][0]["name"] == "Υπόγειο Α"
+
+
+def test_import_rejects_bad_format(rack):
+    res = rack["client"].post("/api/netdoc/import", json={"data": {"format": "nope"}})
+    assert res.status_code == 422 and "bad_format" in res.json()["detail"]

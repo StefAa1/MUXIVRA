@@ -98,6 +98,8 @@ def test_missing_pubkey_fails_closed(tmp_path, monkeypatch):
     from sshdeck import config
 
     monkeypatch.setattr(config, "UPDATE_PUBKEY_PATH", tmp_path / "absent.txt")
+    monkeypatch.setattr(config, "DEFAULT_UPDATE_PUBKEY", "", raising=False)
+    monkeypatch.setattr(config, "BASE_DIR", tmp_path, raising=False)
     archive = tmp_path / "a.zip"
     data = make_archive(archive)
     _manifest, raw, signature = signed_manifest(data)

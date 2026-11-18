@@ -6,6 +6,7 @@ folder so an update can replace the binaries without touching user data.
 import os
 import shutil
 import sys
+import time
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -24,10 +25,36 @@ def _legacy_data_dir() -> Path:
     return BASE_DIR / "data"
 
 
+def _looks_like_data(path: Path) -> bool:
+    return any((path / name).exists() for name in ("sshdeck.db", "vault.key", "vault.key.dpapi"))
+
+
 def _migrate_legacy_data(target: Path) -> None:
-    """Move a pre-0.4 `<bundle>/data` folder to the per-user location, once."""
+    """Adopt a pre-0.4 `<bundle>/data` folder without ever overwriting data.
+
+    - target missing/empty  -> move the legacy folder into place
+    - target already has a database or vault -> keep it, copy the legacy data
+      beside it (legacy-import-<stamp>) and leave the legacy folder untouched
+    """
     legacy = _legacy_data_dir()
-    if target.exists() or not legacy.exists():
+    if not legacy.exists():
+        return
+    if _looks_like_data(target):
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        destination = target / f"legacy-import-{stamp}"
+        destination.mkdir(parents=True, exist_ok=True)
+        for item in legacy.iterdir():
+            if item.name in {"sshdeck.log", "updates"}:
+                continue
+            if item.is_dir():
+                shutil.copytree(item, destination / item.name, dirs_exist_ok=True)
+            else:
+                shutil.copy2(item, destination / item.name)
+        (target / "migration.txt").write_text(
+            f"kept existing database; copied legacy data to {destination.name}\n", encoding="utf-8"
+        )
+        return
+    if target.exists():
         return
     target.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -71,6 +98,10 @@ def _default_staging_dir(data_dir: Path) -> Path:
 # update staging must never live inside the folder that gets replaced
 STAGING_DIR = Path(os.environ.get("SSHDECK_STAGING") or _default_staging_dir(DATA_DIR))
 UPDATE_PUBKEY_PATH = DATA_DIR / "update-pubkey.txt"
+# Pinned Ed25519 public key for release signatures (base64, raw 32 bytes).
+# A release that does not verify against this key is refused; replacing it is a
+# code change, which is the point.
+DEFAULT_UPDATE_PUBKEY = "JD1KLsqJo/lc3WKSxl9Se9y0l3eLblFa9/5fhfUbLMg="
 
 BIND_HOST = os.environ.get("SSHDECK_HOST", "127.0.0.1")
 BIND_PORT = int(os.environ.get("SSHDECK_PORT", "8722"))
