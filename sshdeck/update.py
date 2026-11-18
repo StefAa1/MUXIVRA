@@ -72,11 +72,18 @@ def _open(url: str, timeout: float, accept: str = "application/vnd.github+json")
     return urllib.request.urlopen(request, timeout=timeout)
 
 
+def _allowed_hosts() -> set[str]:
+    extra = {h.strip().lower() for h in os.environ.get("SSHDECK_UPDATE_HOSTS", "").split(",") if h.strip()}
+    return ALLOWED_DOWNLOAD_HOSTS | extra
+
+
 def _assert_https(url: str) -> None:
+    """https only, and only hosts we trust. http needs the explicit test switch."""
     parts = urllib.parse.urlsplit(url)
-    if parts.scheme != "https":
+    allow_http = os.environ.get("SSHDECK_UPDATE_ALLOW_HTTP") == "1"
+    if parts.scheme != "https" and not (allow_http and parts.scheme == "http"):
         raise UpdateError("insecure_url", "Οι ενημερώσεις απαιτούν https.")
-    if (parts.hostname or "").lower() not in ALLOWED_DOWNLOAD_HOSTS:
+    if (parts.hostname or "").lower() not in _allowed_hosts():
         raise UpdateError("untrusted_host", f"Μη επιτρεπτός host λήψης: {parts.hostname}")
 
 

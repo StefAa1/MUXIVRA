@@ -449,7 +449,7 @@ function renderHero() {
 
 const KIND_LABEL = {
   login_ok: 'Σύνδεση στο panel', login_failed: 'Αποτυχημένη σύνδεση',
-  host_created: 'Νέος server', host_deleted: 'Διαγραφή server',
+  host_created: 'Νέα σύνδεση', host_deleted: 'Διαγραφή server',
   credential_created: 'Νέο credential', credential_deleted: 'Διαγραφή credential',
   session_open: 'Άνοιγμα session', session_close: 'Κλείσιμο session',
   host_key_learned: 'Νέο host key', host_key_forgotten: 'Διαγραφή host key',
@@ -529,7 +529,8 @@ function renderSettings() {
         <div class="body">Διάβασε hosts από το <span class="mono">~/.ssh/config</span> του server ή επικόλλησε το περιεχόμενο.</div>
         <div class="actions"><button class="btn ghost xs" id="settings-import">Import ssh config</button></div></div>
       <div class="card"><h3>Ενημερώσεις</h3>
-        <div class="sub">v${esc(upd.current || S.status?.version || '')} · ${esc(upd.platform || 'source')}</div>
+        <div class="sub">v${esc(upd.current || S.status?.version || '')} · build ${esc((S.status && S.status.build) || 'dev')} · ${esc((S.status && S.status.mode) || 'source')}</div>
+        <div class="body mono" style="font-size:11.5px;word-break:break-all">data: ${esc((S.status && S.status.data_dir) || '')}</div>
         <div class="body">
           <label class="field"><span>GitHub repo</span>
             <input id="upd-repo" value="${esc(upd.repo || '')}" placeholder="owner/repo" autocomplete="off" /></label>

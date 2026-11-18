@@ -25,7 +25,7 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from . import config, db, security, sshconfig, sshconn, transports, update
+from . import buildinfo, config, db, security, sshconfig, sshconn, transports, update
 from .sshconn import SshError, Target
 
 MAX_DOWNLOAD = 200 * 1024 * 1024
@@ -317,6 +317,9 @@ def status(request: Request):
         "authenticated": authed,
         "username": username,
         "version": __import__("sshdeck").__version__,
+        "build": buildinfo.build_id(),
+        "mode": buildinfo.info()["mode"],
+        "data_dir": str(config.DATA_DIR),
         "demo": bool(os.environ.get("SSHDECK_DEMO")),
     }
 

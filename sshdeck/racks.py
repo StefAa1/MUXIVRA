@@ -522,3 +522,55 @@ def page_links(q: str = "", limit: int = 100, offset: int = 0):
             str(v) for v in (r["device_a"], r["port_a_name"], r["device_b"], r["port_b_name"], r["cable"])
         ).lower()]
     return {"links": rows[offset:offset + limit], "total": len(rows), "limit": limit, "offset": offset}
+
+
+# ------------------------------------------------------- device → connection
+def _winbox_module():
+    try:
+        from . import winbox
+
+        return winbox
+    except Exception:  # module not installed yet / unsupported platform
+        return None
+
+
+@router.get("/devices/{device_id}/connections")
+def device_connections(device_id: int):
+    """The device's registered SSH/Telnet/COM profiles plus WinBox availability."""
+    with _conn() as conn:
+        device = _one(conn, "SELECT * FROM devices WHERE id = ?", (device_id,))
+        rows = conn.execute(
+            """SELECT id, label, hostname, port, protocol, username
+                 FROM hosts
+                WHERE id = ? OR (? <> '' AND hostname = ?)
+                ORDER BY (id = ?) DESC, label""",
+            (device["host_id"] or -1, device["mgmt_ip"] or "", device["mgmt_ip"] or "", device["host_id"] or -1),
+        ).fetchall()
+    module = _winbox_module()
+    return {
+        "device": dict(device),
+        "hosts": [dict(r) for r in rows],
+        "winbox": module.describe() if module else {"available": False, "reason": "module_missing"},
+    }
+
+
+@router.post("/devices/{device_id}/winbox")
+def launch_winbox(device_id: int, payload: dict | None = None):
+    """Open the official WinBox client in its own window for this device."""
+    payload = payload or {}
+    with _conn() as conn:
+        device = _one(conn, "SELECT * FROM devices WHERE id = ?", (device_id,))
+    module = _winbox_module()
+    if module is None:
+        raise HTTPException(status_code=409, detail="winbox:module_missing")
+    address = str(payload.get("address") or device["mgmt_ip"] or "").strip()
+    if not address:
+        raise HTTPException(status_code=422, detail="winbox:address_required")
+    try:
+        result = module.launch(address, username=payload.get("username"))
+    except Exception as exc:  # WinBoxUnavailable and friends
+        code = getattr(exc, "code", "winbox_unavailable")
+        message = getattr(exc, "message", str(exc))
+        raise HTTPException(status_code=409, detail=f"{code}: {message}")
+    db.log_event(None, "winbox_launched", f"{device['name']} {address}")
+    return {"ok": True, **result}

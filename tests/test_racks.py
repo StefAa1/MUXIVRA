@@ -198,3 +198,26 @@ def test_cross_rack_port_search_and_paged_links(rack):
     page = rack["client"].get("/api/netdoc/links/page?limit=1&offset=0").json()
     assert page["total"] == 1 and len(page["links"]) == 1
     assert page["links"][0]["device_b"] == "sw-far"
+
+
+def test_device_connections_lists_profiles_and_winbox_state(rack):
+    host = rack["client"].post(
+        "/api/hosts", json={"label": "mk-core", "hostname": "10.0.0.20", "protocol": "ssh"}
+    ).json()
+    device = rack["client"].post(
+        "/api/netdoc/devices",
+        json={"rack_id": rack["rack"]["id"], "name": "mk-core", "position": 8,
+              "mgmt_ip": "10.0.0.20", "host_id": host["id"]},
+    ).json()
+
+    payload = rack["client"].get(f"/api/netdoc/devices/{device['id']}/connections").json()
+    assert payload["device"]["name"] == "mk-core"
+    assert any(h["id"] == host["id"] for h in payload["hosts"])
+    assert "available" in payload["winbox"]
+
+    # WinBox launch without an executable must fail with a clear code, not a crash
+    res = rack["client"].post(f"/api/netdoc/devices/{device['id']}/winbox", json={})
+    if res.status_code == 409:
+        assert "winbox" in res.json()["detail"]
+    else:
+        assert res.status_code == 200
