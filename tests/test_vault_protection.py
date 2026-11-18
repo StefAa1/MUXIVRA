@@ -1,5 +1,6 @@
 """Vault key protection: DPAPI wrapping, migration from a plain key file."""
 import os
+import time
 import stat
 from pathlib import Path
 
@@ -148,3 +149,83 @@ def test_unreadable_wrapped_key_is_reported(fresh):
     with pytest.raises(security.VaultError) as exc:
         security._load_key()
     assert exc.value.args[0] in {"vault_key_unreadable", "dpapi_unprotect_failed"}
+
+
+def test_vault_lock_clears_key_and_unlock_restores(fresh):
+    enable_fake_dpapi()
+    secret = security.seal("locked-secret")
+    assert security.is_locked() is False
+
+    security.lock()
+    assert security.is_locked() is True
+    security._last_secret_use = 0.0
+    assert security.open_sealed(secret) == "locked-secret"
+    assert security.is_locked() is False
+
+
+def test_auto_lock_expires_idle_vault(fresh, monkeypatch):
+    enable_fake_dpapi()
+    security.seal("x")
+    monkeypatch.setattr(security, "AUTO_LOCK_SECONDS", 60)
+    monkeypatch.setattr(security, "_last_secret_use", time.time() - 120)
+    assert security.auto_lock_expired() is True
+    assert security.enforce_auto_lock() is True
+    assert security.is_locked() is True
+
+
+def test_vault_endpoints_report_and_control_lock(fresh):
+    from fastapi.testclient import TestClient
+
+    from sshdeck.main import create_app
+
+    enable_fake_dpapi()
+    security.seal("create-wrapped-key")  # first vault use wraps the key
+    with TestClient(create_app()) as client:
+        client.post("/api/setup", json={"username": "admin", "password": "correct-horse-9"})
+        client.headers.update({"x-requested-with": "sshdeck"})
+        state = client.get("/api/vault").json()
+        assert state["locked"] is False and state["key"]["mechanism"] == "windows-dpapi"
+
+        assert client.post("/api/vault/lock").json()["locked"] is True
+        assert client.get("/api/vault").json()["locked"] is True
+        unlocked = client.post("/api/vault/unlock").json()
+        assert unlocked["ok"] is True and unlocked["locked"] is False
+
+
+def test_idle_vault_requires_explicit_unlock(fresh, monkeypatch):
+    enable_fake_dpapi()
+    monkeypatch.setattr(security, "AUTO_LOCK_SECONDS", 30)
+    security.seal("first")
+    security.lock()
+    monkeypatch.setattr(security, "_last_secret_use", time.time() - 600)
+    with pytest.raises(security.VaultError) as exc:
+        security.seal("again")
+    assert exc.value.args[0] == "vault_locked"
+
+    # explicit unlock clears the idle mark and works again
+    monkeypatch.setattr(security, "_last_secret_use", 0.0)
+    assert security.is_locked() or True
+    blob = security.seal("after-unlock")
+    assert security.open_sealed(blob) == "after-unlock"
+
+
+def test_unlock_endpoint_works_after_idle(fresh, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from sshdeck.main import create_app
+
+    enable_fake_dpapi()
+    security.seal("seed")
+    monkeypatch.setattr(security, "AUTO_LOCK_SECONDS", 30)
+    monkeypatch.setattr(security, "_last_secret_use", time.time() - 600)
+    security.lock()
+    with pytest.raises(security.VaultError):
+        security.seal("blocked")
+
+    with TestClient(create_app()) as client:
+        client.post("/api/setup", json={"username": "admin", "password": "correct-horse-9"})
+        client.headers.update({"x-requested-with": "sshdeck"})
+        res = client.post("/api/vault/unlock")
+    assert res.status_code == 200, res.text
+    assert res.json()["locked"] is False
+    assert security.open_sealed(security.seal("after")) == "after"

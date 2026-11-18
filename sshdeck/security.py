@@ -245,11 +245,60 @@ def vault_key_status() -> dict:
     }
 
 
+_last_secret_use = 0.0
+AUTO_LOCK_SECONDS = int(os.environ.get("SSHDECK_AUTO_LOCK_SECONDS", "0"))  # 0 = off
+
+
 def fernet() -> Fernet:
-    global _cached_fernet
+    """Return the vault cipher. The key lives in memory only while unlocked."""
+    global _cached_fernet, _last_secret_use
     if _cached_fernet is None:
+        if AUTO_LOCK_SECONDS > 0 and _last_secret_use and (time.time() - _last_secret_use) > AUTO_LOCK_SECONDS:
+            # explicit re-unlock required after an idle period
+            raise VaultError("vault_locked")
         _cached_fernet = Fernet(_load_key())
+    _last_secret_use = time.time()
     return _cached_fernet
+
+
+def lock() -> None:
+    """Forget the vault key in this process; the next access re-reads it (DPAPI/0600)."""
+    global _cached_fernet
+    _cached_fernet = None
+
+
+def unlock() -> None:
+    """Explicit unlock: re-read the key and reset the idle clock."""
+    global _cached_fernet, _last_secret_use
+    _cached_fernet = Fernet(_load_key())
+    _last_secret_use = time.time()
+
+
+def is_locked() -> bool:
+    return _cached_fernet is None
+
+
+def auto_lock_expired() -> bool:
+    """True when the vault has been idle longer than AUTO_LOCK_SECONDS."""
+    if _cached_fernet is None or AUTO_LOCK_SECONDS <= 0:
+        return False
+    return (time.time() - _last_secret_use) > AUTO_LOCK_SECONDS
+
+
+def enforce_auto_lock() -> bool:
+    if auto_lock_expired():
+        lock()
+        return True
+    return False
+
+
+def vault_state() -> dict:
+    return {
+        "locked": is_locked(),
+        "auto_lock_seconds": AUTO_LOCK_SECONDS,
+        "idle_seconds": int(time.time() - _last_secret_use) if _last_secret_use else None,
+        "key": vault_key_status(),
+    }
 
 
 def seal(secret: str) -> str:

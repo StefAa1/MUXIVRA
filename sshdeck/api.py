@@ -409,6 +409,32 @@ def _credential_out(row) -> dict:
     }
 
 
+@api.get("/vault")
+def vault_state():
+    security.enforce_auto_lock()
+    return security.vault_state()
+
+
+@api.post("/vault/lock")
+def vault_lock():
+    security.lock()
+    with db.db() as conn:
+        db.log_event(None, "vault_locked", "", conn=conn)
+    return {"ok": True, "locked": True}
+
+
+@api.post("/vault/unlock")
+def vault_unlock():
+    """Re-open the vault (DPAPI/0600 key access) and prove it works."""
+    try:
+        security.unlock()
+        proof = security.seal("unlock-probe")
+        security.open_sealed(proof)
+    except security.VaultError as exc:
+        raise HTTPException(status_code=409, detail=f"vault:{exc}")
+    return {"ok": True, "locked": False, **security.vault_state()}
+
+
 @api.get("/credentials")
 def list_credentials():
     with db.db() as conn:
