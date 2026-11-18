@@ -1,0 +1,20 @@
+[Unit]
+Description=MUXIVRA — self-hosted SSH workspace
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/sshdeck
+Environment=SSHDECK_DATA=/root/sshdeck/data
+ExecStart=/root/sshdeck/.venv/bin/python -m sshdeck serve --host 127.0.0.1 --port 8722
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/root/sshdeck/data
+
+[Install]
+WantedBy=multi-user.target

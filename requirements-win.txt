@@ -1,0 +1,21 @@
+# Runtime dependencies for the portable Windows build (no test tooling).
+fastapi==0.115.6
+uvicorn==0.34.0
+websockets==14.1
+paramiko==3.5.0
+cryptography==44.0.0
+pyserial==3.5
+python-multipart==0.0.20
+# Native window = Qt6 WebEngine (bundled Chromium). No .NET / WebView2 dependency:
+# pythonnet's netfx loader fails to resolve Python.Runtime.Loader.Initialize on
+# ordinary Windows installs, so it is deliberately not shipped.
+PyQt6==6.8.1
+PyQt6-Qt6==6.8.2
+PyQt6-WebEngine==6.8.0
+PyQt6-WebEngine-Qt6==6.8.2
+QtPy==2.4.3
+bottle==0.13.4
+typing_extensions==4.12.2
+# MSVC runtime DLLs (msvcp140 etc.) that Qt6 needs on a clean Windows install.
+msvc-runtime==14.51.36231
+# proxy-tools (pywebview dependency) is sdist-only; the build script vendors it.

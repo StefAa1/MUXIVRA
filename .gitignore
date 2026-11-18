@@ -1,0 +1,28 @@
+# local data & secrets — never commit
+data/
+runtime/
+public/
+testdata/*.key
+testdata/bcryptprimitives.dll
+*.pass
+*.log
+
+# build artifacts
+dist/
+build/
+.venv/
+*.zip
+*.exe
+
+# python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+
+# editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

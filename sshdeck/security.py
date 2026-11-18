@@ -1,0 +1,284 @@
+"""Password hashing, session tokens and the encrypted secret vault."""
+import base64
+import hashlib
+import hmac
+import os
+import secrets
+import sqlite3
+import time
+
+from cryptography.fernet import Fernet, InvalidToken
+
+from . import config, db
+
+SCRYPT_N = 2 ** 14
+SCRYPT_R = 8
+SCRYPT_P = 1
+SCRYPT_LEN = 32
+
+
+class VaultError(RuntimeError):
+    pass
+
+
+# ---------------------------------------------------------------- passwords
+def hash_password(password: str, salt: bytes | None = None) -> tuple[bytes, bytes]:
+    if not password or len(password) < 8:
+        raise ValueError("password_too_short")
+    salt = salt or os.urandom(16)
+    digest = hashlib.scrypt(
+        password.encode("utf-8"), salt=salt, n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P, dklen=SCRYPT_LEN
+    )
+    return salt, digest
+
+
+def verify_password(password: str, salt: bytes, expected: bytes) -> bool:
+    digest = hashlib.scrypt(
+        password.encode("utf-8"), salt=salt, n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P, dklen=SCRYPT_LEN
+    )
+    return hmac.compare_digest(digest, expected)
+
+
+def user_exists(conn: sqlite3.Connection) -> bool:
+    return conn.execute("SELECT 1 FROM users WHERE id = 1").fetchone() is not None
+
+
+def create_user(conn: sqlite3.Connection, username: str, password: str) -> None:
+    salt, digest = hash_password(password)
+    conn.execute(
+        "INSERT INTO users(id, username, pw_salt, pw_hash, created_at) VALUES (1, ?, ?, ?, ?)",
+        (username.strip() or "admin", salt, digest, db.now()),
+    )
+
+
+def check_login(conn: sqlite3.Connection, password: str) -> bool:
+    row = conn.execute("SELECT pw_salt, pw_hash FROM users WHERE id = 1").fetchone()
+    if not row:
+        return False
+    return verify_password(password, row["pw_salt"], row["pw_hash"])
+
+
+def change_password(conn: sqlite3.Connection, password: str) -> None:
+    salt, digest = hash_password(password)
+    conn.execute("UPDATE users SET pw_salt = ?, pw_hash = ? WHERE id = 1", (salt, digest))
+
+
+# ----------------------------------------------------------------- sessions
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def create_session(conn: sqlite3.Connection, user_agent: str = "", ttl: int | None = None) -> str:
+    token = secrets.token_urlsafe(32)
+    created = db.now()
+    conn.execute(
+        "INSERT INTO sessions(token_hash, user_id, created_at, expires_at, user_agent) "
+        "VALUES (?, 1, ?, ?, ?)",
+        (_token_hash(token), created, created + (ttl or config.SESSION_TTL_SECONDS), user_agent[:300]),
+    )
+    return token
+
+
+def validate_session(conn: sqlite3.Connection, token: str | None) -> bool:
+    if not token:
+        return False
+    row = conn.execute(
+        "SELECT expires_at FROM sessions WHERE token_hash = ?", (_token_hash(token),)
+    ).fetchone()
+    if not row:
+        return False
+    if row["expires_at"] < db.now():
+        conn.execute("DELETE FROM sessions WHERE token_hash = ?", (_token_hash(token),))
+        return False
+    return True
+
+
+def drop_session(conn: sqlite3.Connection, token: str | None) -> None:
+    if token:
+        conn.execute("DELETE FROM sessions WHERE token_hash = ?", (_token_hash(token),))
+
+
+def purge_expired(conn: sqlite3.Connection) -> None:
+    conn.execute("DELETE FROM sessions WHERE expires_at < ?", (db.now(),))
+
+
+# -------------------------------------------------------------------- vault
+_cached_fernet: Fernet | None = None
+
+# Windows DPAPI: binds the vault key to the logged-in Windows user, so copying
+# data\ to another machine does not reveal the key.
+FORCE_DPAPI = False
+_DPAPI_HOOKS: dict = {}
+
+
+def _dpapi_available() -> bool:
+    return FORCE_DPAPI or os.name == "nt"
+
+
+def _blob(data: bytes):
+    import ctypes
+
+    buffer = ctypes.create_string_buffer(data, len(data))
+    return ctypes.cast(buffer, ctypes.c_void_p), buffer
+
+
+def dpapi_protect(data: bytes) -> bytes | None:
+    """Encrypt with CryptProtectData (current user). None when unavailable."""
+    if not _dpapi_available():
+        return None
+    if _DPAPI_HOOKS.get("protect"):
+        return _DPAPI_HOOKS["protect"](data)
+    import ctypes
+    from ctypes import wintypes
+
+    class DataBlob(ctypes.Structure):
+        _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    src, _keep = _blob(data)
+    out = DataBlob()
+    ok = crypt32.CryptProtectData(
+        ctypes.byref(src), None, None, None, None, 0x1, ctypes.byref(out)  # UI_FORBIDDEN
+    )
+    if not ok:
+        raise VaultError("dpapi_protect_failed")
+    try:
+        return ctypes.string_at(out.pbData, out.cbData)
+    finally:
+        kernel32.LocalFree(out.pbData)
+
+
+def dpapi_unprotect(blob: bytes) -> bytes:
+    if _DPAPI_HOOKS.get("unprotect"):
+        return _DPAPI_HOOKS["unprotect"](blob)
+    if not _dpapi_available():
+        raise VaultError("dpapi_unavailable")
+    import ctypes
+    from ctypes import wintypes
+
+    class DataBlob(ctypes.Structure):
+        _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    src, _keep = _blob(blob)
+    out = DataBlob()
+    ok = crypt32.CryptUnprotectData(
+        ctypes.byref(src), None, None, None, None, 0x1, ctypes.byref(out)
+    )
+    if not ok:
+        raise VaultError("dpapi_unprotect_failed")
+    try:
+        return ctypes.string_at(out.pbData, out.cbData)
+    finally:
+        kernel32.LocalFree(out.pbData)
+
+
+def _wrapped_key_path():
+    from pathlib import Path
+
+    return Path(str(config.VAULT_KEY_PATH) + ".dpapi")
+
+
+def _validate_key(key: bytes) -> bytes:
+    try:
+        Fernet(key.strip())
+    except Exception as exc:
+        raise VaultError("vault_key_invalid") from exc
+    return key.strip()
+
+
+def _load_key() -> bytes:
+    config.ensure_dirs()
+    plain = config.VAULT_KEY_PATH
+    wrapped = _wrapped_key_path()
+
+    if wrapped.exists():
+        return _validate_key(dpapi_unprotect(wrapped.read_bytes()))
+
+    if plain.exists():
+        key = _validate_key(plain.read_bytes())
+        if _dpapi_available():
+            wrapped.write_bytes(dpapi_protect(key) or key)
+            os.chmod(wrapped, 0o600)
+            plain.unlink(missing_ok=True)
+        return key
+
+    key = Fernet.generate_key()
+    if _dpapi_available():
+        fd = os.open(wrapped, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(dpapi_protect(key) or key)
+    else:
+        fd = os.open(plain, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(key)
+    return key
+
+
+def vault_key_status() -> dict:
+    """What protects the vault key on this machine (shown in Settings)."""
+    wrapped = _wrapped_key_path()
+    return {
+        "protected": wrapped.exists() and _dpapi_available(),
+        "mechanism": "windows-dpapi" if wrapped.exists() else "file-0600",
+        "path": str(wrapped if wrapped.exists() else config.VAULT_KEY_PATH),
+    }
+
+
+def fernet() -> Fernet:
+    global _cached_fernet
+    if _cached_fernet is None:
+        _cached_fernet = Fernet(_load_key())
+    return _cached_fernet
+
+
+def seal(secret: str) -> str:
+    return fernet().encrypt(secret.encode("utf-8")).decode("ascii")
+
+
+def open_sealed(blob: str) -> str:
+    try:
+        return fernet().decrypt(blob.encode("ascii")).decode("utf-8")
+    except (InvalidToken, ValueError) as exc:
+        raise VaultError("vault_decrypt_failed") from exc
+
+
+# ------------------------------------------------------------------ helpers
+def mask(secret: str) -> str:
+    """Display form for a secret: never the whole value."""
+    if not secret:
+        return ""
+    tail = secret[-4:] if len(secret) > 8 else ""
+    return f"••••{tail}"
+
+
+def b64(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
+
+
+def fingerprint_of(key_blob: bytes) -> str:
+    digest = hashlib.sha256(key_blob).digest()
+    return "SHA256:" + base64.b64encode(digest).decode("ascii").rstrip("=")
+
+
+__all__ = [
+    "hash_password",
+    "verify_password",
+    "user_exists",
+    "create_user",
+    "check_login",
+    "change_password",
+    "create_session",
+    "validate_session",
+    "drop_session",
+    "purge_expired",
+    "seal",
+    "open_sealed",
+    "mask",
+    "b64",
+    "fingerprint_of",
+    "VaultError",
+    "time",
+]

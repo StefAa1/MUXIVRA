@@ -1,0 +1,206 @@
+"""SQLite storage: schema, migrations and small query helpers."""
+import sqlite3
+import time
+from contextlib import contextmanager
+
+from . import config
+
+SCHEMA_VERSION = 3
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    id         INTEGER PRIMARY KEY CHECK (id = 1),
+    username   TEXT NOT NULL,
+    pw_salt    BLOB NOT NULL,
+    pw_hash    BLOB NOT NULL,
+    created_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id    INTEGER NOT NULL,
+    created_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    user_agent TEXT
+);
+
+CREATE TABLE IF NOT EXISTS credentials (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    name           TEXT NOT NULL,
+    kind           TEXT NOT NULL CHECK (kind IN ('password', 'key')),
+    username       TEXT NOT NULL DEFAULT '',
+    secret_enc     TEXT NOT NULL,
+    passphrase_enc TEXT,
+    created_at     REAL NOT NULL,
+    updated_at     REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS hosts (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    label             TEXT NOT NULL,
+    hostname          TEXT NOT NULL,
+    port              INTEGER NOT NULL DEFAULT 22,
+    username          TEXT NOT NULL,
+    credential_id     INTEGER REFERENCES credentials(id) ON DELETE SET NULL,
+    group_name        TEXT NOT NULL DEFAULT 'General',
+    tags              TEXT NOT NULL DEFAULT '',
+    color             TEXT NOT NULL DEFAULT '#3ddc97',
+    notes             TEXT NOT NULL DEFAULT '',
+    protocol          TEXT NOT NULL DEFAULT 'ssh',
+    serial_port       TEXT NOT NULL DEFAULT '',
+    baud              INTEGER NOT NULL DEFAULT 115200,
+    bytesize          INTEGER NOT NULL DEFAULT 8,
+    parity            TEXT NOT NULL DEFAULT 'N',
+    stopbits          REAL NOT NULL DEFAULT 1,
+    last_connected_at REAL,
+    created_at        REAL NOT NULL,
+    updated_at        REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS snippets (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    label      TEXT NOT NULL,
+    command    TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS events (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    host_id   INTEGER,
+    kind      TEXT NOT NULL,
+    detail    TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS sites (
+    id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS racks (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+    name    TEXT NOT NULL,
+    units   INTEGER NOT NULL DEFAULT 42
+);
+
+CREATE TABLE IF NOT EXISTS devices (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    rack_id  INTEGER NOT NULL REFERENCES racks(id) ON DELETE CASCADE,
+    name     TEXT NOT NULL,
+    kind     TEXT NOT NULL DEFAULT 'switch',
+    units    INTEGER NOT NULL DEFAULT 1,
+    position INTEGER NOT NULL DEFAULT 1,
+    note     TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS ports (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    name      TEXT NOT NULL,
+    kind      TEXT NOT NULL DEFAULT 'rj45',
+    UNIQUE(device_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS links (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    port_a   INTEGER NOT NULL REFERENCES ports(id) ON DELETE CASCADE,
+    port_b   INTEGER NOT NULL REFERENCES ports(id) ON DELETE CASCADE,
+    cable    TEXT NOT NULL DEFAULT '',
+    length_m REAL NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL DEFAULT 0
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_links_port_a ON links(port_a);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_links_port_b ON links(port_b);
+"""
+
+
+def now() -> float:
+    return time.time()
+
+
+def connect() -> sqlite3.Connection:
+    config.ensure_dirs()
+    conn = sqlite3.connect(config.DB_PATH, timeout=15)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+@contextmanager
+def db():
+    conn = connect()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+HOST_COLUMNS = {
+    "protocol": "TEXT NOT NULL DEFAULT 'ssh'",
+    "serial_port": "TEXT NOT NULL DEFAULT ''",
+    "baud": "INTEGER NOT NULL DEFAULT 115200",
+    "bytesize": "INTEGER NOT NULL DEFAULT 8",
+    "parity": "TEXT NOT NULL DEFAULT 'N'",
+    "stopbits": "REAL NOT NULL DEFAULT 1",
+}
+
+
+def migrate(conn: sqlite3.Connection) -> None:
+    """Bring an older database up to the current schema without losing data."""
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(hosts)").fetchall()}
+    for name, ddl in HOST_COLUMNS.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE hosts ADD COLUMN {name} {ddl}")
+    conn.execute(
+        "INSERT INTO settings(key, value) VALUES ('schema_version', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (str(SCHEMA_VERSION),),
+    )
+
+
+def init() -> None:
+    config.ensure_dirs()
+    with db() as conn:
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.executescript(SCHEMA)
+        migrate(conn)
+
+
+def get_setting(conn: sqlite3.Connection, key: str, default=None):
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO settings(key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
+
+
+def log_event(host_id, kind: str, detail: str = "", conn: sqlite3.Connection | None = None) -> None:
+    """Record an event. Pass the caller's connection when inside an open write
+    transaction — opening a second connection there deadlocks on the write lock."""
+    sql = "INSERT INTO events(host_id, kind, detail, created_at) VALUES (?, ?, ?, ?)"
+    params = (host_id, kind, detail[:500], now())
+    if conn is not None:
+        conn.execute(sql, params)
+        return
+    with db() as own:
+        own.execute(sql, params)

@@ -1,0 +1,22 @@
+{
+  "_comment": "Sample of the shape accepted by: sshdeck keeper-import --from-json <file>. Values are fake.",
+  "records": [
+    {
+      "uid": "SAMPLE-1",
+      "title": "sample-web-01",
+      "type": "server",
+      "fields": { "host": "10.0.0.11", "port": "22", "login": "root", "password": "not-a-real-password" },
+      "notes": "imported from Keeper (sample)"
+    },
+    {
+      "uid": "SAMPLE-2",
+      "title": "sample-fw-01",
+      "type": "sshKey",
+      "fields": {
+        "host": "10.0.0.12",
+        "login": "admin",
+        "key": "-----BEGIN OPENSSH PRIVATE KEY-----\nSAMPLE-SAMPLE-SAMPLE\n-----END OPENSSH PRIVATE KEY-----"
+      }
+    }
+  ]
+}
