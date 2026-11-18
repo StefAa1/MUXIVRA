@@ -78,110 +78,153 @@ def _device_key(conn, rack_id: int, device: dict) -> int | None:
     return cur.lastrowid
 
 
+KINDS = {"switch", "router", "patch-panel", "server", "pdu", "other"}
+PORT_KINDS = {"rj45", "sfp", "fiber", "power", "other"}
+
+
+def _validate_rows(payload: dict) -> None:
+    for collection in ("sites", "racks", "devices", "ports", "links"):
+        ids = [row.get("id") for row in payload[collection]]
+        if any(not isinstance(i, int) for i in ids):
+            raise ImportError_("bad_format", f"Κάθε εγγραφή στο «{collection}» χρειάζεται ακέραιο id.")
+        if len(set(ids)) != len(ids):
+            raise ImportError_("duplicate_id", f"Διπλά ids στο «{collection}».")
+    rack_ids = {row["id"] for row in payload["racks"]}
+    for rack in payload["racks"]:
+        if rack.get("site_id") not in {row["id"] for row in payload["sites"]}:
+            raise ImportError_("dangling_ref", f"Το rack #{rack['id']} δείχνει σε άγνωστο χώρο.")
+    for device in payload["devices"]:
+        if device.get("rack_id") not in rack_ids:
+            raise ImportError_("dangling_ref", f"Η συσκευή #{device['id']} δείχνει σε άγνωστο rack.")
+        if (device.get("kind") or "switch") not in KINDS:
+            raise ImportError_("bad_device_kind", f"Άγνωστος τύπος συσκευής: {device.get('kind')}")
+        units, position = int(device.get("units") or 1), int(device.get("position") or 1)
+        if units < 1 or position < 1:
+            raise ImportError_("bad_geometry", f"Άκυρη θέση για τη συσκευή #{device['id']}.")
+    port_ids = {row["id"] for row in payload["ports"]}
+    device_ids = {row["id"] for row in payload["devices"]}
+    for port in payload["ports"]:
+        if port.get("device_id") not in device_ids:
+            raise ImportError_("dangling_ref", f"Το port #{port['id']} δείχνει σε άγνωστη συσκευή.")
+        if (port.get("kind") or "rj45") not in PORT_KINDS:
+            raise ImportError_("bad_port_kind", f"Άγνωστος τύπος port: {port.get('kind')}")
+    for link in payload["links"]:
+        if link.get("port_a") not in port_ids or link.get("port_b") not in port_ids:
+            raise ImportError_("dangling_ref", f"Η σύνδεση #{link['id']} δείχνει σε άγνωστο port.")
+
+
 def import_payload(conn: sqlite3.Connection, payload: dict, dry_run: bool = False) -> dict:
+    """Restore documentation data. Never overwrites: existing rows are reused.
+
+    A dry run performs exactly the same work and then rolls back, so the preview
+    counts are the real ones (ids are mapped correctly at every level).
+    """
     counters = validate(payload)
-    report = {"dry_run": dry_run, "created": {"sites": 0, "racks": 0, "devices": 0, "ports": 0, "links": 0},
-              "skipped": {"devices": 0, "ports": 0, "links": 0}, "source": counters}
+    _validate_rows(payload)
+    report = {
+        "dry_run": dry_run,
+        "created": {"sites": 0, "racks": 0, "devices": 0, "ports": 0, "links": 0},
+        "skipped": {"sites": 0, "racks": 0, "devices": 0, "ports": 0, "links": 0},
+        "source": counters,
+        "conflicts": [],
+    }
 
     site_map: dict[int, int] = {}
     rack_map: dict[int, int] = {}
-    device_map: dict[int, int | None] = {}
+    device_map: dict[int, int] = {}
     port_map: dict[int, int] = {}
 
     for site in payload["sites"]:
         name = str(site.get("name") or "").strip()
         if not name:
-            continue
-        if dry_run:
-            exists = conn.execute("SELECT id FROM sites WHERE name = ?", (name,)).fetchone()
-            site_map[site["id"]] = exists["id"] if exists else -1
-            report["created"]["sites"] += 0 if exists else 1
-            continue
-        before = conn.execute("SELECT COUNT(*) AS n FROM sites").fetchone()["n"]
-        site_map[site["id"]] = _site_key(conn, name)
-        after = conn.execute("SELECT COUNT(*) AS n FROM sites").fetchone()["n"]
-        report["created"]["sites"] += after - before
+            raise ImportError_("bad_format", "Ο χώρος χρειάζεται όνομα.")
+        row = conn.execute("SELECT id FROM sites WHERE name = ?", (name,)).fetchone()
+        if row:
+            site_map[site["id"]] = row["id"]
+            report["skipped"]["sites"] += 1
+            report["conflicts"].append({"kind": "site", "name": name, "action": "kept-existing"})
+        else:
+            cur = conn.execute("INSERT INTO sites (name, note) VALUES (?, ?)", (name, site.get("note") or ""))
+            site_map[site["id"]] = cur.lastrowid
+            report["created"]["sites"] += 1
 
     for rack in payload["racks"]:
-        new_site = site_map.get(rack.get("site_id"))
-        if not new_site or new_site == -1:
-            continue
-        if dry_run:
-            exists = conn.execute(
-                "SELECT id FROM racks WHERE site_id = ? AND name = ?", (new_site, rack.get("name"))
-            ).fetchone()
-            rack_map[rack["id"]] = exists["id"] if exists else -1
-            report["created"]["racks"] += 0 if exists else 1
-            continue
-        before = conn.execute("SELECT COUNT(*) AS n FROM racks").fetchone()["n"]
-        rack_map[rack["id"]] = _rack_key(conn, new_site, str(rack.get("name") or "R1"), int(rack.get("units") or 42))
-        after = conn.execute("SELECT COUNT(*) AS n FROM racks").fetchone()["n"]
-        report["created"]["racks"] += after - before
+        new_site = site_map[rack["site_id"]]
+        name = str(rack.get("name") or "R1")
+        row = conn.execute(
+            "SELECT id FROM racks WHERE site_id = ? AND name = ?", (new_site, name)
+        ).fetchone()
+        if row:
+            rack_map[rack["id"]] = row["id"]
+            report["skipped"]["racks"] += 1
+            report["conflicts"].append({"kind": "rack", "name": name, "action": "kept-existing"})
+        else:
+            cur = conn.execute(
+                "INSERT INTO racks (site_id, name, units) VALUES (?, ?, ?)",
+                (new_site, name, int(rack.get("units") or 42)),
+            )
+            rack_map[rack["id"]] = cur.lastrowid
+            report["created"]["racks"] += 1
 
     for device in payload["devices"]:
-        new_rack = rack_map.get(device.get("rack_id"))
-        if not new_rack or new_rack == -1:
-            continue
-        if dry_run:
-            exists = conn.execute(
-                "SELECT id FROM devices WHERE rack_id = ? AND name = ?", (new_rack, device.get("name"))
-            ).fetchone()
-            device_map[device["id"]] = exists["id"] if exists else None
-            report["created"]["devices"] += 0 if exists else 1
-            report["skipped"]["devices"] += 1 if exists else 0
-            continue
-        new_id = _device_key(conn, new_rack, device)
-        device_map[device["id"]] = new_id
-        if new_id is None:
+        new_rack = rack_map[device["rack_id"]]
+        name = str(device.get("name") or "").strip()
+        row = conn.execute(
+            "SELECT id FROM devices WHERE rack_id = ? AND name = ?", (new_rack, name)
+        ).fetchone()
+        if row:
+            # existing device: reuse it so its missing ports/links can be restored.
+            # host_id is intentionally dropped: it points at a foreign database.
+            device_map[device["id"]] = row["id"]
             report["skipped"]["devices"] += 1
+            report["conflicts"].append({"kind": "device", "name": name, "action": "kept-existing"})
         else:
+            cur = conn.execute(
+                """INSERT INTO devices (rack_id, name, kind, units, position, note, host_id, vendor, model, mgmt_ip)
+                   VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)""",
+                (
+                    new_rack, name, device.get("kind") or "switch", int(device.get("units") or 1),
+                    int(device.get("position") or 1), device.get("note") or "",
+                    device.get("vendor") or "", device.get("model") or "", device.get("mgmt_ip") or "",
+                ),
+            )
+            device_map[device["id"]] = cur.lastrowid
             report["created"]["devices"] += 1
 
     for port in payload["ports"]:
-        new_device = device_map.get(port.get("device_id"))
-        if not new_device:
-            report["skipped"]["ports"] += 1
-            continue
-        exists = conn.execute(
-            "SELECT id FROM ports WHERE device_id = ? AND name = ?", (new_device, port.get("name"))
+        new_device = device_map[port["device_id"]]
+        name = str(port.get("name") or "").strip()
+        row = conn.execute(
+            "SELECT id FROM ports WHERE device_id = ? AND name = ?", (new_device, name)
         ).fetchone()
-        if exists:
-            port_map[port["id"]] = exists["id"]
+        if row:
+            port_map[port["id"]] = row["id"]
             report["skipped"]["ports"] += 1
-            continue
-        if dry_run:
-            port_map[port["id"]] = -1
+        else:
+            cur = conn.execute(
+                "INSERT INTO ports (device_id, name, kind) VALUES (?, ?, ?)",
+                (new_device, name, port.get("kind") or "rj45"),
+            )
+            port_map[port["id"]] = cur.lastrowid
             report["created"]["ports"] += 1
-            continue
-        cur = conn.execute(
-            "INSERT INTO ports (device_id, name, kind) VALUES (?, ?, ?)",
-            (new_device, str(port.get("name") or "p1"), port.get("kind") or "rj45"),
-        )
-        port_map[port["id"]] = cur.lastrowid
-        report["created"]["ports"] += 1
 
     for link in payload["links"]:
-        a, b = port_map.get(link.get("port_a")), port_map.get(link.get("port_b"))
-        if not a or not b:
-            report["skipped"]["links"] += 1
-            continue
+        a, b = port_map[link["port_a"]], port_map[link["port_b"]]
         busy = conn.execute(
             "SELECT id FROM links WHERE port_a IN (?, ?) OR port_b IN (?, ?)", (a, b, a, b)
         ).fetchone()
         if busy:
             report["skipped"]["links"] += 1
-            continue
-        if dry_run:
-            report["created"]["links"] += 1
+            report["conflicts"].append({"kind": "link", "name": f"{a}-{b}", "action": "port-already-linked"})
             continue
         conn.execute(
-            "INSERT INTO links (port_a, port_b, cable, length_m) VALUES (?, ?, ?, ?)",
-            (a, b, link.get("cable") or "", float(link.get("length_m") or 0)),
+            "INSERT INTO links (port_a, port_b, cable, length_m, created_at) VALUES (?, ?, ?, ?, ?)",
+            (a, b, link.get("cable") or "", float(link.get("length_m") or 0), time.time()),
         )
         report["created"]["links"] += 1
 
-    if not dry_run:
-        conn.commit()
+    if dry_run:
+        conn.rollback()      # identical work, nothing kept
     else:
-        conn.rollback()
+        conn.commit()
     return report

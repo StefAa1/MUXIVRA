@@ -74,6 +74,7 @@ def acquire_instance_lock():
     """One engine per data directory: a second double-click must not share SQLite."""
     from . import config
 
+    config.migrate_legacy_data()   # adopt an old <bundle>/data BEFORE creating the new dir
     config.ensure_dirs()
     handle = open(config.DATA_DIR / "instance.lock", "a+")
     try:

@@ -301,6 +301,10 @@ def build() -> Path:
     (bundle / "MUXIVRA-debug.cmd").write_bytes(LAUNCHER_DEBUG.replace("\n", "\r\n").encode("ascii"))
     (bundle / "MUXIVRA-web.cmd").write_bytes(LAUNCHER_WEB.replace("\n", "\r\n").encode("ascii"))
     (bundle / "README-WINDOWS.txt").write_text(README_WIN, encoding="utf-8")
+    native = ROOT / "docs" / "NATIVE-TESTS.md"
+    if native.exists():
+        shutil.copy2(native, bundle / "NATIVE-TESTS.md")
+        log("native test checklist shipped")
     (bundle / "data").mkdir(exist_ok=True)
 
     archive = DIST / f"{BUNDLE_NAME}.zip"

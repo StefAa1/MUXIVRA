@@ -416,7 +416,8 @@ def update_device(device_id: int, payload: DevicePatch):
     with _conn() as conn:
         device = _one(conn, "SELECT * FROM devices WHERE id = ?", (device_id,))
         rack = _one(conn, "SELECT units FROM racks WHERE id = ?", (device["rack_id"],))
-        merged = {**dict(device), **{k: v for k, v in payload.model_dump().items() if v is not None}}
+        given = payload.model_dump(exclude_unset=True)
+        merged = {**dict(device), **given}   # an explicit null (host_id) clears the field
         top = merged["position"] + merged["units"] - 1
         if top > rack["units"]:
             raise HTTPException(status_code=422, detail="device_outside_rack")
@@ -540,12 +541,13 @@ def device_connections(device_id: int):
     """The device's registered SSH/Telnet/COM profiles plus WinBox availability."""
     with _conn() as conn:
         device = _one(conn, "SELECT * FROM devices WHERE id = ?", (device_id,))
+        # explicit relations only: a shared private IP must never imply a profile
         rows = conn.execute(
-            """SELECT id, label, hostname, port, protocol, username
-                 FROM hosts
-                WHERE id = ? OR (? <> '' AND hostname = ?)
-                ORDER BY (id = ?) DESC, label""",
-            (device["host_id"] or -1, device["mgmt_ip"] or "", device["mgmt_ip"] or "", device["host_id"] or -1),
+            """SELECT h.id, h.label, h.hostname, h.port, h.protocol, h.username
+                 FROM hosts h
+                WHERE h.id = ? OR h.id IN (SELECT host_id FROM device_profiles WHERE device_id = ?)
+                ORDER BY (h.id = ?) DESC, h.label""",
+            (device["host_id"] or -1, device_id, device["host_id"] or -1),
         ).fetchall()
     module = _winbox_module()
     return {
@@ -603,3 +605,30 @@ def import_netdoc(payload: dict):
     if not dry_run:
         db.log_event(None, "netdoc_import", json.dumps(report["created"]))
     return report
+
+
+@router.post("/devices/{device_id}/profiles")
+def add_device_profile(device_id: int, payload: dict):
+    """Attach another connection profile explicitly (device ⇄ host)."""
+    host_id = int(payload.get("host_id") or 0)
+    with _conn() as conn:
+        _one(conn, "SELECT id FROM devices WHERE id = ?", (device_id,))
+        _one(conn, "SELECT id FROM hosts WHERE id = ?", (host_id,))
+        conn.execute(
+            "INSERT OR IGNORE INTO device_profiles (device_id, host_id) VALUES (?, ?)", (device_id, host_id)
+        )
+        conn.commit()
+    return {"ok": True, "host_id": host_id}
+
+
+@router.delete("/devices/{device_id}/profiles/{host_id}")
+def remove_device_profile(device_id: int, host_id: int):
+    with _conn() as conn:
+        conn.execute(
+            "DELETE FROM device_profiles WHERE device_id = ? AND host_id = ?", (device_id, host_id)
+        )
+        conn.execute(
+            "UPDATE devices SET host_id = NULL WHERE id = ? AND host_id = ?", (device_id, host_id)
+        )
+        conn.commit()
+    return {"ok": True}

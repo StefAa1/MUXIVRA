@@ -197,5 +197,27 @@ def test_apply_script_targets_this_pid_and_can_roll_back(tmp_path):
     assert 'tasklist /FI "PID eq %PID%"' in text
     assert "taskkill /IM" not in text
     assert "robocopy" in text and "restoring the previous version" in text
+    assert "chcp 65001" in text and "DisableDelayedExpansion" in text
+    assert "healthcheck" in text and "goto rollback" in text
     assert str(bundle.resolve()) in text and str(new_root.resolve()) in text
     assert script.parent == (tmp_path / "updates").resolve()
+
+
+def test_apply_script_handles_unicode_and_special_paths(tmp_path):
+    """Regression: Greek folder names raised UnicodeEncodeError (.encode('ascii'))."""
+    bundle = tmp_path / "Επιφάνεια (x) ! 100%" / "MUXIVRA-portable-win64"
+    bundle.mkdir(parents=True)
+    (bundle / "MUXIVRA.exe").write_bytes(b"MZ")
+    staged_root = tmp_path / "staging ü"
+    new_root = staged_root / "staged-1"
+    new_root.mkdir(parents=True)
+    (new_root / "MUXIVRA.exe").write_bytes(b"MZ")
+
+    script = U.write_apply_script(bundle, new_root, pid=99, staging_root=staged_root)
+    text = script.read_bytes().decode("utf-8")
+
+    assert "Επιφάνεια" in text and "ü" in text       # written, not crashed
+    assert "100%%" in text                           # % doubled for batch
+    assert "! 100" in text or "!" in text            # kept, delayed expansion is off
+    assert "DisableDelayedExpansion" in text
+    assert b"\r\n" in script.read_bytes()

@@ -246,48 +246,55 @@ def vault_key_status() -> dict:
 
 
 _last_secret_use = 0.0
+_locked = False  # explicit lock state: while True no secret operation is allowed
 AUTO_LOCK_SECONDS = int(os.environ.get("SSHDECK_AUTO_LOCK_SECONDS", "0"))  # 0 = off
 
 
 def fernet() -> Fernet:
-    """Return the vault cipher. The key lives in memory only while unlocked."""
-    global _cached_fernet, _last_secret_use
+    """Return the vault cipher. While locked, every secret operation is refused."""
+    global _cached_fernet, _last_secret_use, _locked
+    if _locked:
+        raise VaultError("vault_locked")
+    if AUTO_LOCK_SECONDS > 0 and _last_secret_use and (time.time() - _last_secret_use) > AUTO_LOCK_SECONDS:
+        _locked = True          # idle lock: never silently reload the key
+        _cached_fernet = None
+        raise VaultError("vault_locked")
     if _cached_fernet is None:
-        if AUTO_LOCK_SECONDS > 0 and _last_secret_use and (time.time() - _last_secret_use) > AUTO_LOCK_SECONDS:
-            # explicit re-unlock required after an idle period
-            raise VaultError("vault_locked")
         _cached_fernet = Fernet(_load_key())
     _last_secret_use = time.time()
     return _cached_fernet
 
 
-def lock() -> None:
-    """Forget the vault key in this process; the next access re-reads it (DPAPI/0600)."""
-    global _cached_fernet
+def lock(reason: str = "manual") -> None:
+    """Lock the vault: drop the key and refuse secret operations until unlock()."""
+    global _cached_fernet, _locked
     _cached_fernet = None
+    _locked = True
+    _last_lock_reason = reason  # noqa: F841 - kept for diagnostics
 
 
 def unlock() -> None:
-    """Explicit unlock: re-read the key and reset the idle clock."""
-    global _cached_fernet, _last_secret_use
+    """Explicit unlock: re-read the key (DPAPI/0600) and reset the idle clock."""
+    global _cached_fernet, _last_secret_use, _locked
     _cached_fernet = Fernet(_load_key())
+    _locked = False
     _last_secret_use = time.time()
 
 
 def is_locked() -> bool:
-    return _cached_fernet is None
+    return _locked
 
 
 def auto_lock_expired() -> bool:
     """True when the vault has been idle longer than AUTO_LOCK_SECONDS."""
-    if _cached_fernet is None or AUTO_LOCK_SECONDS <= 0:
+    if _locked or AUTO_LOCK_SECONDS <= 0 or not _last_secret_use:
         return False
     return (time.time() - _last_secret_use) > AUTO_LOCK_SECONDS
 
 
 def enforce_auto_lock() -> bool:
     if auto_lock_expired():
-        lock()
+        lock("idle")
         return True
     return False
 

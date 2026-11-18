@@ -237,3 +237,39 @@ def test_migration_adds_protocol_columns():
         version = conn.execute("SELECT value FROM settings WHERE key='schema_version'").fetchone()["value"]
     assert {"protocol", "serial_port", "baud", "bytesize", "parity", "stopbits"} <= columns
     assert version == str(db.SCHEMA_VERSION)
+
+
+def test_telnet_terminal_type_subnegotiation():
+    """Server asks SEND -> we answer IS + TERM (regression: previously ignored)."""
+    from sshdeck.transports import IAC, SB, SE, OPT_TTYPE, TelnetParser
+
+    parser = TelnetParser()
+    _, reply = parser.feed(bytes([IAC, SB, OPT_TTYPE, 1, IAC, SE]))
+    assert reply == bytes([IAC, SB, OPT_TTYPE, 0]) + b"xterm-256color" + bytes([IAC, SE])
+
+
+def test_serial_flow_control_is_passed_to_pyserial(monkeypatch):
+    from sshdeck import transports
+
+    captured = {}
+
+    class FakeSerial:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def close(self):
+            pass
+
+    monkeypatch.setitem(__import__("sys").modules, "serial", type("m", (), {"Serial": FakeSerial}))
+
+    class Target:
+        serial_port = "/dev/null"
+        baud, bytesize, parity, stopbits, flow = 115200, 8, "N", 1, "rtscts"
+
+    transports.SerialSession(Target())
+    assert captured["rtscts"] is True and captured["xonxoff"] is False and captured["dsrdtr"] is False
+
+    captured.clear()
+    Target.flow = "xonxoff"
+    transports.SerialSession(Target())
+    assert captured["rtscts"] is False and captured["xonxoff"] is True

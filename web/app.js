@@ -358,6 +358,10 @@ function connectTab(tab) {
       renderSidebar();
       updateStatusbar();
     } else if (msg.type === 'error') {
+      if (msg.code === 'host_key_unknown') {
+        termPromptHostKey(tab, msg);
+        return;
+      }
       tab.state = 'closed';
       tab.term.writeln(`\x1b[31m✕ ${msg.message || msg.code}\x1b[0m`);
       toast(`Σύνδεση απέτυχε: ${msg.code}`, 'err');
@@ -422,7 +426,7 @@ function renderPage() {
   renderSnippets();
   renderActivity();
   if (typeof renderRacks === 'function') renderRacks();
-  if (S.view === 'racks') decorateDeviceConnections();
+  if (S.view === 'racks') { decorateDeviceConnections(); decorateNetdocBackup(); }
   if (S.view === 'diagram' && typeof renderDiagram === 'function') renderDiagram();
   renderSettings();
   if (S.view !== 'hosts') {
@@ -507,6 +511,74 @@ function renderActivity() {
       <td>${esc(e.host_label || '—')}</td>
       <td class="mono" style="font-size:11px;color:var(--muted)">${esc(e.detail || '')}</td>
     </tr>`).join('')}</tbody></table>`;
+}
+
+async function downloadNetdocBackup() {
+  const res = await api('/netdoc/export');
+  const blob = new Blob([JSON.stringify(res, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `muxivra-netdoc-${new Date().toISOString().slice(0, 10)}.json`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  toast('Backup ετοιμάστηκε (χωρίς secrets)');
+}
+
+async function importNetdocBackup(file) {
+  const text = await file.text();
+  let payload;
+  try { payload = JSON.parse(text); } catch (_) { toast('Το αρχείο δεν είναι έγκυρο JSON', 'err'); return; }
+  const data = payload.data && payload.data.format ? payload.data : payload;
+  let preview;
+  try {
+    preview = await api('/netdoc/import', { json: { data, dry_run: true } });
+  } catch (err) { toast(err.message, 'err'); return; }
+  const created = preview.created || {};
+  const conflicts = (preview.conflicts || []).length;
+  confirmDialog(
+    'Επαναφορά backup',
+    `Θα προστεθούν: ${created.sites || 0} χώροι, ${created.racks || 0} racks, ` +
+    `${created.devices || 0} συσκευές, ${created.ports || 0} ports, ${created.links || 0} συνδέσεις. ` +
+    `Υπάρχοντα δεν αντικαθίστανται (${conflicts} αντιστοιχίσεις σε υπάρχοντα).`,
+    async () => {
+      try {
+        const done = await api('/netdoc/import', { json: { data, dry_run: false } });
+        toast(`Επαναφορά: ${done.created.devices || 0} συσκευές, ${done.created.links || 0} συνδέσεις`);
+        await loadNetdoc();
+        renderPage();
+      } catch (err) { toast(err.message, 'err'); }
+    },
+    'Επαναφορά',
+  );
+}
+
+function decorateNetdocBackup() {
+  const actions = document.querySelector('#page-racks .page-head .actions');
+  if (!actions || actions.querySelector('#nd-backup')) return;
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'application/json,.json';
+  input.id = 'nd-import-file';
+  input.className = 'hidden';
+  input.addEventListener('change', () => {
+    const file = input.files && input.files[0];
+    input.value = '';
+    if (file) importNetdocBackup(file);
+  });
+  actions.appendChild(input);
+  const backup = document.createElement('button');
+  backup.className = 'btn ghost xs';
+  backup.id = 'nd-backup';
+  backup.textContent = 'Backup JSON';
+  backup.onclick = () => downloadNetdocBackup().catch((err) => toast(err.message, 'err'));
+  const restore = document.createElement('button');
+  restore.className = 'btn ghost xs';
+  restore.id = 'nd-restore';
+  restore.textContent = 'Επαναφορά';
+  restore.onclick = () => input.click();
+  actions.appendChild(backup);
+  actions.appendChild(restore);
 }
 
 async function decorateDeviceConnections() {
@@ -613,14 +685,14 @@ function closeModal() { $('#modal-backdrop').classList.add('hidden'); $('#modal'
 
 function credOptions(selected) {
   const opts = S.creds.map((c) => `<option value="${c.id}"${c.id === selected ? ' selected' : ''}>${esc(c.name)} (${c.kind === 'key' ? 'key' : 'password'})</option>`).join('');
-  return `<option value="">— χωρίς credential (ask/agent) —</option>${opts}`;
+  return `<option value="">— χωρίς credential (ssh-agent) —</option>${opts}`;
 }
 
 function openHostModal(host) {
   const h = host || {
     label: '', protocol: 'ssh', hostname: '', port: 22, username: 'root', credential_id: null,
     group_name: 'General', tags: [], color: '#3ddc97', notes: '',
-    serial_port: '', baud: 115200, bytesize: 8, parity: 'N', stopbits: 1,
+    serial_port: '', baud: 115200, bytesize: 8, parity: 'N', stopbits: 1, flow: 'none',
   };
   const proto = h.protocol || 'ssh';
   openModal(`<h3>${host ? 'Επεξεργασία server' : 'Νέα σύνδεση'}</h3>
@@ -652,6 +724,10 @@ function openHostModal(host) {
         <label class="field"><span>Parity</span><select name="parity">
           ${[['N', 'None'], ['E', 'Even'], ['O', 'Odd'], ['M', 'Mark'], ['S', 'Space']].map(([v, l]) =>
             `<option value="${v}"${(h.parity || 'N') === v ? ' selected' : ''}>${l}</option>`).join('')}
+        </select></label>
+        <label class="field"><span>Flow control</span><select name="flow">
+          ${[["none","κανένα"],["rtscts","RTS/CTS"],["xonxoff","XON/XOFF"],["dsrdtr","DSR/DTR"]]
+            .map(([val, label]) => `<option value="${val}"${(h.flow || 'none') === val ? ' selected' : ''}>${label}</option>`).join('')}
         </select></label>
         <label class="field"><span>Stop bits</span><select name="stopbits">
           ${[1, 1.5, 2].map((v) => `<option value="${v}"${Number(h.stopbits) === v ? ' selected' : ''}>${v}</option>`).join('')}
@@ -871,6 +947,45 @@ function openImportModal() {
       toast(`Import: ${result.imported} hosts (${result.skipped} υπήρχαν)`);
     } catch (err) {
       $('#import-error').textContent = err.message === 'config_unreadable' ? 'Το αρχείο δεν είναι αναγνώσιμο.' : err.message;
+    }
+  };
+}
+
+/* First contact with a host key: the user must see and approve the fingerprint. */
+function termPromptHostKey(tab, frame) {
+  tab.state = 'closed';
+  const host = tab.host;
+  const port = host.port || 22;
+  tab.term.writeln('\r\n\x1b[33m? Άγνωστο host key — δεν έγινε σύνδεση.\x1b[0m');
+  tab.term.writeln(`  host: ${frame.hostname || host.hostname}:${port}`);
+  tab.term.writeln(`  τύπος: ${frame.key_type || 'ssh'}  αποτύπωση: ${frame.fingerprint}`);
+  tab.term.writeln('  Επιβεβαίωσε από το παράθυρο για να προστεθεί στην εμπιστοσύνη σου.');
+  renderTabs();
+
+  openModal(`<h3>Νέο host key</h3>
+    <p class="lead">Ο server δεν είναι γνωστός. Έλεγξε την αποτύπωση πριν εμπιστευτείς.</p>
+    <dl class="kv">
+      <dt>Host</dt><dd class="mono">${esc(frame.hostname || host.hostname)}:${esc(port)}</dd>
+      <dt>Τύπος</dt><dd class="mono">${esc(frame.key_type || 'ssh')}</dd>
+      <dt>Αποτύπωση</dt><dd class="mono" id="hk-fingerprint">${esc(frame.fingerprint || '')}</dd>
+    </dl>
+    <p class="hint">Σύγκρινε την αποτύπωση με αυτή του server (π.χ. <span class="mono">ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</span>).</p>
+    <p class="error-text" id="hk-error"></p>
+    <div class="modal-actions">
+      <button class="btn ghost" data-close>Άκυρο</button>
+      <button class="btn primary" id="hk-trust">Αποδοχή και επανάληψη</button>
+    </div>`);
+  $('#hk-trust').onclick = async () => {
+    try {
+      await api(`/hosts/${host.id}/trust`, { json: { fingerprint: frame.fingerprint } });
+      closeModal();
+      toast('Το host key προστέθηκε στην εμπιστοσύνη');
+      closeTab(tab.id);
+      openTerminal(host);
+    } catch (err) {
+      $('#hk-error').textContent = err.message === 'no_pending_key' || err.message.startsWith('no_pending_key')
+        ? 'Η επιβεβαίωση έληξε — ξαναδοκίμασε τη σύνδεση.'
+        : err.message;
     }
   };
 }
@@ -1307,8 +1422,8 @@ document.addEventListener('click', (event) => {
     'forget-key': async () => {
       const tab = activeTab();
       if (!tab) return;
-      await api(`/hosts/${tab.host.id}/forget-host-key`, { json: {} });
-      toast('Το host key διαγράφηκε — η επόμενη σύνδεση θα το ξαναμάθει');
+      await api(`/hosts/${tab.host.id}/trust`, { method: 'DELETE' });
+      toast(`Η εμπιστοσύνη αφαιρέθηκε για ${tab.host.hostname}:${tab.host.port || 22}`);
     },
   };
   for (const [id, fn] of Object.entries(map)) {

@@ -69,3 +69,41 @@ def test_migration_never_overwrites_existing_database(tmp_path, monkeypatch):
     imported = list(target.glob("legacy-import-*"))
     assert imported and (imported[0] / "sshdeck.db").read_bytes() == b"legacy-db"
     assert "kept existing database" in (target / "migration.txt").read_text()
+
+
+def test_migration_adopts_into_an_empty_created_target(tmp_path, monkeypatch):
+    """Regression: ensure_dirs() used to create the target first, so migration gave up."""
+    import json
+
+    legacy = tmp_path / "program" / "data"
+    legacy.mkdir(parents=True)
+    (legacy / "sshdeck.db").write_bytes(b"legacy-db")
+    (legacy / "vault.key.dpapi").write_bytes(b"legacy-key")
+
+    target = tmp_path / "userdata"
+    target.mkdir()          # empty dir, exactly what ensure_dirs() creates
+    monkeypatch.setattr(config, "_legacy_data_dir", lambda: legacy)
+    monkeypatch.setattr(config, "DATA_DIR", target)
+    monkeypatch.delenv("SSHDECK_DATA", raising=False)
+
+    config.migrate_legacy_data()
+
+    assert (target / "sshdeck.db").read_bytes() == b"legacy-db"
+    assert (target / "vault.key.dpapi").read_bytes() == b"legacy-key"
+    marker = json.loads((target / "migration.json").read_text())
+    assert marker["mode"] == "adopted"
+
+
+def test_migration_does_not_copy_twice(tmp_path, monkeypatch):
+    legacy = tmp_path / "program" / "data"
+    legacy.mkdir(parents=True)
+    (legacy / "sshdeck.db").write_bytes(b"legacy-db")
+    target = tmp_path / "userdata"
+    monkeypatch.setattr(config, "_legacy_data_dir", lambda: legacy)
+    monkeypatch.setattr(config, "DATA_DIR", target)
+    monkeypatch.delenv("SSHDECK_DATA", raising=False)
+
+    config.migrate_legacy_data()
+    config.migrate_legacy_data()   # second start: data is already there
+    assert (target / "sshdeck.db").read_bytes() == b"legacy-db"
+    assert not list(target.glob("legacy-import-*"))

@@ -225,7 +225,9 @@ def connect(target: Target, timeout: int | None = None, trust_unknown: bool = Fa
         timeout=timeout or config.CONNECT_TIMEOUT,
         banner_timeout=config.CONNECT_TIMEOUT,
         auth_timeout=config.CONNECT_TIMEOUT,
-        allow_agent=False,
+        # with no stored credential, offer the local ssh-agent (SSH_AUTH_SOCK);
+        # Pageant on Windows is not supported
+        allow_agent=target.kind == "none",
         look_for_keys=False,
     )
     if target.kind == "key":

@@ -73,6 +73,15 @@ class HostIn(BaseModel):
     bytesize: int = 8
     parity: str = "N"
     stopbits: float = 1.0
+    flow: str = "none"
+
+    @field_validator("flow")
+    @classmethod
+    def _flow(cls, v: str) -> str:
+        value = (v or "none").lower()
+        if value not in {"none", "rtscts", "xonxoff", "dsrdtr"}:
+            raise ValueError("bad_flow_control")
+        return value
 
     @field_validator("group_name")
     @classmethod

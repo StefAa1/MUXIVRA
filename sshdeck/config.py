@@ -4,6 +4,7 @@ Persistent data (database, vault key, known_hosts) lives OUTSIDE the program
 folder so an update can replace the binaries without touching user data.
 """
 import os
+import json
 import shutil
 import sys
 import time
@@ -29,6 +30,10 @@ def _looks_like_data(path: Path) -> bool:
     return any((path / name).exists() for name in ("sshdeck.db", "vault.key", "vault.key.dpapi"))
 
 
+def _migration_marker(target: Path) -> Path:
+    return target / "migration.json"
+
+
 def _migrate_legacy_data(target: Path) -> None:
     """Adopt a pre-0.4 `<bundle>/data` folder without ever overwriting data.
 
@@ -52,6 +57,22 @@ def _migrate_legacy_data(target: Path) -> None:
                 shutil.copy2(item, destination / item.name)
         (target / "migration.txt").write_text(
             f"kept existing database; copied legacy data to {destination.name}\n", encoding="utf-8"
+        )
+        return
+    if target.exists() and not _looks_like_data(target):
+        # target directory exists but holds no data (ensure_dirs() made it):
+        # adopt the legacy files into it, never overwriting something already there
+        for item in legacy.iterdir():
+            destination = target / item.name
+            if destination.exists():
+                continue
+            if item.is_dir():
+                shutil.copytree(item, destination, dirs_exist_ok=True)
+            else:
+                shutil.copy2(item, destination)
+        _migration_marker(target).write_text(
+            json.dumps({"source": str(legacy), "mode": "adopted", "at": time.strftime("%Y-%m-%dT%H:%M:%SZ")}),
+            encoding="utf-8",
         )
         return
     if target.exists():

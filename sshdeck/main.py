@@ -113,7 +113,8 @@ def create_app() -> FastAPI:
     @app.exception_handler(security.VaultError)
     async def vault_error(request: Request, exc: security.VaultError):
         log.error("vault failure on %s: %s", request.url.path, exc)
-        return JSONResponse(status_code=500, content={"detail": f"vault:{exc}"})
+        status = 423 if "vault_locked" in str(exc) else 500
+        return JSONResponse(status_code=status, content={"detail": f"vault:{exc}"})
 
     @app.exception_handler(Exception)
     async def unhandled(request: Request, exc: Exception):

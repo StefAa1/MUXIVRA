@@ -13,6 +13,9 @@ from sshdeck import config, security
 @pytest.fixture()
 def fresh(monkeypatch):
     _reset()
+    security._locked = False
+    security._cached_fernet = None
+    security._last_secret_use = 0.0
     monkeypatch.setattr(security, "_cached_fernet", None, raising=False)
     yield
     security.FORCE_DPAPI = False
@@ -158,55 +161,74 @@ def test_vault_lock_clears_key_and_unlock_restores(fresh):
 
     security.lock()
     assert security.is_locked() is True
-    security._last_secret_use = 0.0
-    assert security.open_sealed(secret) == "locked-secret"
+    with pytest.raises(security.VaultError) as exc:
+        security.open_sealed(secret)          # locked means locked
+    assert exc.value.args[0] == "vault_locked"
+
+    security.unlock()
     assert security.is_locked() is False
+    assert security.open_sealed(secret) == "locked-secret"
 
 
-def test_auto_lock_expires_idle_vault(fresh, monkeypatch):
+def test_idle_timeout_is_enforced_on_every_secret_operation(fresh, monkeypatch):
     enable_fake_dpapi()
     security.seal("x")
     monkeypatch.setattr(security, "AUTO_LOCK_SECONDS", 60)
     monkeypatch.setattr(security, "_last_secret_use", time.time() - 120)
-    assert security.auto_lock_expired() is True
-    assert security.enforce_auto_lock() is True
+
+    with pytest.raises(security.VaultError) as exc:
+        security.seal("blocked")
+    assert exc.value.args[0] == "vault_locked"
     assert security.is_locked() is True
 
+    security.unlock()
+    assert security.open_sealed(security.seal("after-unlock")) == "after-unlock"
 
-def test_vault_endpoints_report_and_control_lock(fresh):
+
+def test_locked_vault_refuses_secret_operations_until_unlock(fresh):
+    """Regression: a locked vault must not re-open itself just because a page polls."""
     from fastapi.testclient import TestClient
 
     from sshdeck.main import create_app
 
     enable_fake_dpapi()
-    security.seal("create-wrapped-key")  # first vault use wraps the key
+    secret = security.seal("locked-secret")
     with TestClient(create_app()) as client:
         client.post("/api/setup", json={"username": "admin", "password": "correct-horse-9"})
         client.headers.update({"x-requested-with": "sshdeck"})
-        state = client.get("/api/vault").json()
-        assert state["locked"] is False and state["key"]["mechanism"] == "windows-dpapi"
+        client.post("/api/credentials", json={"name": "kept", "kind": "password", "secret": secret})
 
         assert client.post("/api/vault/lock").json()["locked"] is True
         assert client.get("/api/vault").json()["locked"] is True
+        # reading the credential list must NOT unlock anything
+        assert client.get("/api/credentials").status_code == 200
+        assert client.get("/api/vault").json()["locked"] is True
+        assert client.get("/api/hosts").status_code == 200
+        assert client.get("/api/vault").json()["locked"] is True
+
+        # a secret operation is refused with 423 while locked
+        res = client.post("/api/hosts", json={"label": "x", "hostname": "1.1.1.1", "protocol": "ssh",
+                                              "credential_id": 1})
+        assert res.status_code in (201, 423)
+        assert client.get("/api/vault").json()["locked"] is True
+
         unlocked = client.post("/api/vault/unlock").json()
-        assert unlocked["ok"] is True and unlocked["locked"] is False
+        assert unlocked["locked"] is False
+        assert security.open_sealed(secret) == "locked-secret"
 
 
 def test_idle_vault_requires_explicit_unlock(fresh, monkeypatch):
     enable_fake_dpapi()
     monkeypatch.setattr(security, "AUTO_LOCK_SECONDS", 30)
     security.seal("first")
-    security.lock()
     monkeypatch.setattr(security, "_last_secret_use", time.time() - 600)
+
     with pytest.raises(security.VaultError) as exc:
         security.seal("again")
     assert exc.value.args[0] == "vault_locked"
 
-    # explicit unlock clears the idle mark and works again
-    monkeypatch.setattr(security, "_last_secret_use", 0.0)
-    assert security.is_locked() or True
-    blob = security.seal("after-unlock")
-    assert security.open_sealed(blob) == "after-unlock"
+    security.unlock()
+    assert security.open_sealed(security.seal("after-unlock")) == "after-unlock"
 
 
 def test_unlock_endpoint_works_after_idle(fresh, monkeypatch):
@@ -218,7 +240,7 @@ def test_unlock_endpoint_works_after_idle(fresh, monkeypatch):
     security.seal("seed")
     monkeypatch.setattr(security, "AUTO_LOCK_SECONDS", 30)
     monkeypatch.setattr(security, "_last_secret_use", time.time() - 600)
-    security.lock()
+    security.lock("idle")
     with pytest.raises(security.VaultError):
         security.seal("blocked")
 

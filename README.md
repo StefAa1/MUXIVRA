@@ -102,8 +102,11 @@ MUXIVRA-portable-win64/
 ```
 
 Δεν χρειάζεται admin, Python ή VC++ redist. Τα δεδομένα μένουν στο `data\` δίπλα στο exe·
-αντίγραφο του φακέλου = μεταφορά/backup (μαζί με το `vault.key`· στα Windows ισχύει μόνο
-στον ίδιο Windows λογαριασμό λόγω DPAPI).
+Τα δεδομένα **δεν** μένουν πλέον μέσα στον φάκελο της εφαρμογής: πάνε σε
+`%LOCALAPPDATA%\MUXIVRA\data` (Windows) ή `~/.local/share/muxivra/data` (Linux), ώστε μια
+ενημέρωση να αντικαθιστά μόνο τα binaries. Παλιός φάκελος `<bundle>\data` υιοθετείται στην
+πρώτη εκκίνηση· αν το νέο σημείο έχει ήδη βάση/vault, **δεν** αντικαθίσταται — τα παλιά
+αντιγράφονται σε `legacy-import-<timestamp>` και γράφεται `migration.json`.
 
 Για πραγματικό single-file `.exe` χρειάζεται Windows toolchain (PyInstaller):
 
@@ -149,11 +152,13 @@ pip install keeper-secrets-manager-core          # προαιρετικό extra
 | Path | Περιεχόμενο |
 |---|---|
 | `data/sshdeck.db` | hosts (ssh/telnet/serial), credentials (encrypted), sessions, events |
-| `data/vault.key` (Linux) / `data/vault.key.dpapi` (Windows) | κλειδί Fernet — **χωρίς αυτό τα secrets δεν ανακτώνται** |
+| `vault.key` (Linux) / `vault.key.dpapi` (Windows, δεμένο με DPAPI) | κλειδί Fernet — **χωρίς αυτό τα secrets δεν ανακτώνται** |
 | `data/known_hosts` | TOFU host keys (`0600`) |
 | `data/ksm-config.json` | bound Keeper device config (`0600`, αν χρησιμοποιείται KSM) |
 
-Backup = αντίγραφο του `data/` με σταματημένη την υπηρεσία. Το `vault.key` είναι το
+Backup: αντίγραφο του DATA_DIR με σταματημένη την υπηρεσία, ή JSON backup της τεκμηρίωσης
+(χώροι/racks/συσκευές/ports/συνδέσεις) από το UI — το JSON **δεν** περιέχει secrets.
+Το `vault.key` είναι το
 root of trust: φύλαξέ το μαζί με τη βάση, ποτέ μόνο του σε κοινόχρηστο σημείο.
 
 ## Ασφάλεια

@@ -37,10 +37,23 @@ class TelnetParser:
         self.naws_enabled = False
         self._state = "data"
         self._cmd: int | None = None
+        self._sb = bytearray()
 
     def _naws(self) -> bytes:
         c, r = max(1, self.cols), max(1, self.rows)
         return bytes([IAC, SB, OPT_NAWS, (c >> 8) & 0xFF, c & 0xFF, (r >> 8) & 0xFF, r & 0xFF, IAC, SE])
+
+    def _ttype_reply(self) -> bytes:
+        """TERMINAL-TYPE subnegotiation: answer SEND(1) with IS(0) + our TERM."""
+        term = b"xterm-256color"
+        return bytes([IAC, SB, OPT_TTYPE, 0]) + term + bytes([IAC, SE])
+
+    def _subnegotiate(self) -> bytes:
+        """Handle SB payloads we care about (currently TERMINAL-TYPE)."""
+        if len(self._sb) >= 2 and self._sb[0] == OPT_TTYPE:
+            if self._sb[1] == 1:  # SEND
+                return self._ttype_reply()
+        return b""
 
     def _negotiate(self, cmd: int, opt: int) -> bytes:
         if cmd == DO:
@@ -80,13 +93,20 @@ class TelnetParser:
                 reply.extend(self._negotiate(self._cmd or 0, byte))
                 self._state = "data"
             elif self._state == "sb":
-                self._state = "sb_iac" if byte == IAC else "sb"
+                if byte == IAC:
+                    self._state = "sb_iac"
+                else:
+                    self._sb.append(byte)
             elif self._state == "sb_iac":
                 if byte == SE:
+                    reply.extend(self._subnegotiate())
+                    self._sb.clear()
                     self._state = "data"
                 elif byte == IAC:
+                    self._sb.append(0xFF)
                     self._state = "sb"
                 else:
+                    self._sb.append(byte)
                     self._state = "sb"
         return bytes(out), bytes(reply)
 
@@ -241,6 +261,9 @@ class SerialSession(SessionBase):
         except ImportError as exc:  # pragma: no cover - packaging guard
             raise TransportError("pyserial_missing", "Το pyserial δεν είναι εγκατεστημένο.") from exc
         port = (target.serial_port or "").strip()
+        flow = str(getattr(target, "flow", "none") or "none").lower()
+        if flow not in {"none", "rtscts", "xonxoff", "dsrdtr"}:
+            flow = "none"
         if not port:
             raise TransportError("serial_port_missing", "Δεν έχει οριστεί σειριακή θύρα.")
         kwargs = dict(
@@ -249,6 +272,9 @@ class SerialSession(SessionBase):
             bytesize=BYTESIZE.get(int(target.bytesize or 8), 8),
             parity=PARITY.get((target.parity or "N").upper(), "N"),
             stopbits=STOPBITS.get(float(target.stopbits or 1), 1),
+            rtscts=flow in {"rtscts", "dsrdtr"},
+            xonxoff=flow == "xonxoff",
+            dsrdtr=flow == "dsrdtr",
             timeout=0.2,
             write_timeout=2,
         )

@@ -141,12 +141,33 @@ def cmd_desktop(args) -> int:
         return 1
 
 
+def cmd_healthcheck(args) -> int:
+    """Post-update sanity check: the new build must open its data, schema and UI."""
+    from . import db, security
+
+    try:
+        db.init()
+        with db.db() as conn:
+            conn.execute("SELECT COUNT(*) FROM hosts").fetchone()
+            conn.execute("SELECT COUNT(*) FROM racks").fetchone()
+        security.vault_key_status()
+        if not (config.WEB_DIR / "index.html").exists():
+            print("healthcheck: web assets missing")
+            return 2
+    except Exception as exc:
+        print(f"healthcheck failed: {type(exc).__name__}: {exc}")
+        return 1
+    print(f"healthcheck ok: {config.DATA_DIR}")
+    return 0
+
+
 def cmd_serve(args) -> int:
     import threading
     import webbrowser
 
     import uvicorn
 
+    config.migrate_legacy_data()
     config.ensure_dirs()
     db.init()
     if not args.no_reminder:
@@ -183,6 +204,9 @@ def cmd_serve(args) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sshdeck", description="MUXIVRA — self-hosted SSH workspace")
     sub = parser.add_subparsers(dest="cmd", required=True)
+
+    h = sub.add_parser("healthcheck", help="verify the install opens its data and UI")
+    h.set_defaults(func=cmd_healthcheck)
 
     p = sub.add_parser("serve", help="run the web server")
     p.add_argument("--host", default=config.BIND_HOST)

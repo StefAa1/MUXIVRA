@@ -5,7 +5,7 @@ from contextlib import contextmanager
 
 from . import config
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -124,6 +124,12 @@ CREATE TABLE IF NOT EXISTS links (
     created_at REAL NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS device_profiles (
+    device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    host_id   INTEGER NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
+    PRIMARY KEY (device_id, host_id)
+);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_links_port_a ON links(port_a);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_links_port_b ON links(port_b);
 
@@ -184,6 +190,7 @@ HOST_COLUMNS = {
     "bytesize": "INTEGER NOT NULL DEFAULT 8",
     "parity": "TEXT NOT NULL DEFAULT 'N'",
     "stopbits": "REAL NOT NULL DEFAULT 1",
+    "flow": "TEXT NOT NULL DEFAULT 'none'",
 }
 
 

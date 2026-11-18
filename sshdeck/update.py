@@ -292,6 +292,11 @@ def stage(archive: Path, staging_root: Path) -> Path:
 
 
 # ------------------------------------------------------------------- apply
+def _cmd_path(path: Path) -> str:
+    """Escape a path for a batch file: % is the only character batch expands."""
+    return str(path).replace("%", "%%")
+
+
 def write_apply_script(
     bundle: Path,
     new_root: Path,
@@ -299,7 +304,11 @@ def write_apply_script(
     staging_root: Path,
     backup_name: str | None = None,
 ) -> Path:
-    """Generate a .cmd that waits for THIS pid, swaps with backup/rollback, restarts."""
+    """Generate a .cmd that waits for THIS pid, swaps with backup/rollback/health check.
+
+    Written as UTF-8 with `chcp 65001` so Greek folders work, with delayed
+    expansion disabled so `!` in a path is not eaten, and `%` doubled.
+    """
     bundle = bundle.resolve()
     new_root = Path(new_root).resolve()
     staging_root = Path(staging_root).resolve()
@@ -308,40 +317,45 @@ def write_apply_script(
     script.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         "@echo off",
-        "setlocal enabledelayedexpansion",
-        f'set "OLD={bundle}"',
-        f'set "NEW={new_root}"',
-        f'set "BACKUP={backup}"',
+        "chcp 65001 >nul",
+        "setlocal DisableDelayedExpansion",
+        f'set "OLD={_cmd_path(bundle)}"',
+        f'set "NEW={_cmd_path(new_root)}"',
+        f'set "BACKUP={_cmd_path(backup)}"',
+        f'set "HEALTHLOG={_cmd_path(staging_root)}\\health.log"',
         f"set PID={int(pid)}",
-        f'echo Waiting for MUXIVRA (pid %PID%) to close...',
+        "echo Waiting for MUXIVRA (pid %PID%) to close...",
         ":wait",
-        'tasklist /FI "PID eq %PID%" | find "%PID%" >nul 2>&1',
+        'tasklist /FI "PID eq %PID%" 2>nul | find /I "%PID%" >nul',
         "if not errorlevel 1 (",
         "  timeout /t 2 /nobreak >nul",
         "  goto wait",
         ")",
         'if not exist "%NEW%\\MUXIVRA.exe" (',
-        '  echo The staged update is missing or incomplete - nothing was changed.',
+        "  echo The staged update is missing or incomplete - nothing was changed.",
         "  pause",
         "  exit /b 1",
         ")",
         'if exist "%BACKUP%" rmdir /S /Q "%BACKUP%"',
-        'move "%OLD%" "%BACKUP%" >nul || (echo Cannot move the current install - close any explorer window on it. & pause & exit /b 1)',
-        'robocopy "%NEW%" "%OLD%" /E /COPY:DAT /R:1 /W:1 >nul',
-        "if errorlevel 8 (",
-        "  echo Update failed - restoring the previous version.",
-        '  rmdir /S /Q "%OLD%"',
-        '  move "%BACKUP%" "%OLD%" >nul',
-        "  pause",
-        "  exit /b 1",
-        ")",
+        'move "%OLD%" "%BACKUP%" >nul || (echo Cannot move the current install - close explorer windows on it. & pause & exit /b 1)',
+        'robocopy "%NEW%" "%OLD%" /E /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS >nul',
+        "if errorlevel 8 goto rollback",
+        '"%OLD%\\runtime\\python\\python.exe" -m sshdeck healthcheck >"%HEALTHLOG%" 2>&1',
+        "if errorlevel 1 goto rollback",
         'start "" "%OLD%\\MUXIVRA.exe"',
-        f'echo Update applied. Previous version kept in "%BACKUP%".',
+        'echo Update applied. Previous version kept in "%BACKUP%".',
+        "goto done",
+        ":rollback",
+        "echo Update failed - restoring the previous version.",
+        'rmdir /S /Q "%OLD%"',
+        'move "%BACKUP%" "%OLD%" >nul',
+        'start "" "%OLD%\\MUXIVRA.exe"',
+        ":done",
         "timeout /t 3 >nul",
         'del "%~f0"',
         "",
     ]
-    script.write_bytes("\r\n".join(lines).encode("ascii"))
+    script.write_bytes("\r\n".join(lines).encode("utf-8"))
     return script
 
 

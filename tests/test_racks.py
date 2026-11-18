@@ -261,3 +261,98 @@ def test_import_dry_run_changes_nothing(rack):
 def test_import_rejects_bad_format(rack):
     res = rack["client"].post("/api/netdoc/import", json={"data": {"format": "nope"}})
     assert res.status_code == 422 and "bad_format" in res.json()["detail"]
+
+
+def _payload(site_note="Σημείωση χώρου"):
+    return {
+        "format": "muxivra.netdoc/1",
+        "sites": [{"id": 1, "name": "Χώρος Α", "note": site_note}],
+        "racks": [{"id": 2, "site_id": 1, "name": "R1", "units": 42}],
+        "devices": [
+            {"id": 3, "rack_id": 2, "name": "sw1", "kind": "switch", "units": 1, "position": 10,
+             "vendor": "Cisco", "model": "C9200", "mgmt_ip": "10.9.9.9", "note": "core"},
+            {"id": 4, "rack_id": 2, "name": "pp1", "kind": "patch-panel", "units": 1, "position": 11},
+        ],
+        "ports": [
+            {"id": 5, "device_id": 3, "name": "eth1", "kind": "rj45"},
+            {"id": 6, "device_id": 4, "name": "p1", "kind": "rj45"},
+        ],
+        "links": [{"id": 7, "port_a": 5, "port_b": 6, "cable": "C-1", "length_m": 2.5}],
+    }
+
+
+def test_dry_run_reports_every_level_and_changes_nothing(rack):
+    report = rack["client"].post("/api/netdoc/import", json={"data": _payload(), "dry_run": True}).json()
+    assert report["created"] == {"sites": 1, "racks": 1, "devices": 2, "ports": 2, "links": 1}, report["created"]
+    assert rack["client"].get("/api/netdoc/tree").json()["sites"][0]["name"] == "Υπόγειο Α"
+
+
+def test_import_preserves_metadata_and_note(rack):
+    rack["client"].post("/api/netdoc/import", json={"data": _payload()})
+    tree = rack["client"].get("/api/netdoc/tree").json()
+    site = next(s for s in tree["sites"] if s["name"] == "Χώρος Α")
+    device = next(d for r in site["racks"] for d in r["devices"] if d["name"] == "sw1")
+    assert device["vendor"] == "Cisco" and device["model"] == "C9200" and device["mgmt_ip"] == "10.9.9.9"
+    assert device["note"] == "core"
+    # site note survives too (check through export)
+    exported = rack["client"].get("/api/netdoc/export").json()
+    assert next(s for s in exported["sites"] if s["name"] == "Χώρος Α")["note"] == "Σημείωση χώρου"
+
+
+def test_reimport_restores_deleted_port_and_link_when_device_exists(rack):
+    rack["client"].post("/api/netdoc/import", json={"data": _payload()})
+    exported = rack["client"].get("/api/netdoc/export").json()
+    sw = next(d for d in exported["devices"] if d["name"] == "sw1")
+    port = next(p for p in exported["ports"] if p["device_id"] == sw["id"])
+
+    # delete the link and the port, keep the device
+    link = exported["links"][0]
+    assert rack["client"].delete(f"/api/netdoc/links/{link['id']}").status_code == 200
+    from sshdeck import db
+
+    with db.db() as conn:
+        conn.execute("DELETE FROM ports WHERE id = ?", (port["id"],))
+
+    report = rack["client"].post("/api/netdoc/import", json={"data": _payload()}).json()
+    assert report["created"]["ports"] == 1 and report["created"]["links"] == 1, report
+    assert report["created"]["devices"] == 0 and report["skipped"]["devices"] == 2
+    assert len(rack["client"].get("/api/netdoc/links").json()) == 1
+
+
+def test_import_rejects_dangling_reference(rack):
+    bad = _payload()
+    bad["devices"][0]["rack_id"] = 999
+    res = rack["client"].post("/api/netdoc/import", json={"data": bad})
+    assert res.status_code == 422 and "dangling_ref" in res.json()["detail"]
+
+
+def test_patch_host_id_null_removes_relation(rack):
+    host = rack["client"].post("/api/hosts", json={"label": "h1", "hostname": "10.5.5.5", "protocol": "ssh"}).json()
+    device = rack["client"].post(
+        "/api/netdoc/devices",
+        json={"rack_id": rack["rack"]["id"], "name": "sw-null", "position": 30, "host_id": host["id"]},
+    ).json()
+    assert device["host_id"] == host["id"]
+
+    cleared = rack["client"].patch(f"/api/netdoc/devices/{device['id']}", json={"host_id": None})
+    assert cleared.status_code == 200 and cleared.json()["host_id"] is None
+    conns = rack["client"].get(f"/api/netdoc/devices/{device['id']}/connections").json()
+    assert conns["hosts"] == []
+
+
+def test_same_private_ip_does_not_share_profiles(rack):
+    host = rack["client"].post("/api/hosts", json={"label": "site-a", "hostname": "192.168.1.1", "protocol": "ssh"}).json()
+    a = rack["client"].post("/api/netdoc/devices",
+                            json={"rack_id": rack["rack"]["id"], "name": "a", "position": 20, "mgmt_ip": "192.168.1.1"}).json()
+    b = rack["client"].post("/api/netdoc/devices",
+                            json={"rack_id": rack["rack"]["id"], "name": "b", "position": 21, "mgmt_ip": "192.168.1.1"}).json()
+
+    assert rack["client"].get(f"/api/netdoc/devices/{a['id']}/connections").json()["hosts"] == []
+    assert rack["client"].get(f"/api/netdoc/devices/{b['id']}/connections").json()["hosts"] == []
+
+    assert rack["client"].post(f"/api/netdoc/devices/{a['id']}/profiles", json={"host_id": host["id"]}).status_code == 200
+    assert len(rack["client"].get(f"/api/netdoc/devices/{a['id']}/connections").json()["hosts"]) == 1
+    assert rack["client"].get(f"/api/netdoc/devices/{b['id']}/connections").json()["hosts"] == []
+
+    assert rack["client"].delete(f"/api/netdoc/devices/{a['id']}/profiles/{host['id']}").status_code == 200
+    assert rack["client"].get(f"/api/netdoc/devices/{a['id']}/connections").json()["hosts"] == []
