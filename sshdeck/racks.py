@@ -205,8 +205,9 @@ def _delete_rack(conn, rack_id: int) -> None:
 
 
 @router.delete("/racks/{rack_id}")
-def delete_rack(rack_id: int):
+def delete_rack(rack_id: int, request: Request):
     with _conn() as conn:
+        _ensure_same(conn, _cid(conn, request), ("rack", rack_id))
         _one(conn, "SELECT id FROM racks WHERE id = ?", (rack_id,))
         _delete_rack(conn, rack_id)
         conn.commit()
@@ -272,8 +273,9 @@ def delete_device(device_id: int, request: Request):
 
 # ------------------------------------------------------------------- ports
 @router.get("/devices/{device_id}/ports")
-def list_ports(device_id: int):
+def list_ports(device_id: int, request: Request):
     with _conn() as conn:
+        _ensure_same(conn, _cid(conn, request), ("device", device_id))
         _one(conn, "SELECT id FROM devices WHERE id = ?", (device_id,))
         rows = conn.execute(
             """SELECT p.*,
@@ -285,8 +287,9 @@ def list_ports(device_id: int):
 
 
 @router.post("/ports")
-def create_port(payload: PortIn):
+def create_port(payload: PortIn, request: Request):
     with _conn() as conn:
+        _ensure_same(conn, _cid(conn, request), ("device", payload.device_id))
         _one(conn, "SELECT id FROM devices WHERE id = ?", (payload.device_id,))
         exists = conn.execute(
             "SELECT id FROM ports WHERE device_id = ? AND name = ?", (payload.device_id, payload.name.strip())
@@ -302,7 +305,7 @@ def create_port(payload: PortIn):
 
 
 @router.post("/ports/bulk")
-def bulk_ports(payload: dict):
+def bulk_ports(payload: dict, request: Request):
     """Create eth1..ethN in one go: {"device_id":1,"prefix":"eth","count":24,"kind":"rj45"}."""
     device_id = int(payload.get("device_id") or 0)
     prefix = str(payload.get("prefix") or "eth")[:12]
@@ -312,6 +315,7 @@ def bulk_ports(payload: dict):
         raise HTTPException(status_code=422, detail="bad_bulk_request")
     with _conn() as conn:
         _one(conn, "SELECT id FROM devices WHERE id = ?", (device_id,))
+        _ensure_same(conn, _cid(conn, request), ("device", device_id))
         created = []
         for index in range(1, count + 1):
             name = f"{prefix}{index}"
@@ -380,8 +384,10 @@ def create_link(payload: LinkIn, request: Request):
 
 
 @router.delete("/links/{link_id}")
-def delete_link(link_id: int):
+def delete_link(link_id: int, request: Request):
     with _conn() as conn:
+        _link = _one(conn, "SELECT * FROM links WHERE id = ?", (link_id,))
+        _ensure_same(conn, _cid(conn, request), ("port", _link["port_a"]), ("port", _link["port_b"]))
         _one(conn, "SELECT id FROM links WHERE id = ?", (link_id,))
         conn.execute("DELETE FROM links WHERE id = ?", (link_id,))
         conn.commit()
@@ -664,8 +670,9 @@ def add_device_profile(device_id: int, payload: dict, request: Request):
 
 
 @router.delete("/devices/{device_id}/profiles/{host_id}")
-def remove_device_profile(device_id: int, host_id: int):
+def remove_device_profile(device_id: int, host_id: int, request: Request):
     with _conn() as conn:
+        _ensure_same(conn, _cid(conn, request), ("device", device_id), ("host", host_id))
         conn.execute(
             "DELETE FROM device_profiles WHERE device_id = ? AND host_id = ?", (device_id, host_id)
         )

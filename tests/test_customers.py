@@ -182,3 +182,83 @@ def test_default_bucket_is_found_by_code_not_name(auth_client):
         assert row["name"] == "Unclassified customer"
     assert sum(1 for c in auth_client.get("/api/customers").json()
                if c["code"] == "default") == 1
+
+
+@pytest.fixture()
+def two_customers(auth_client):
+    auth_client.headers.update({"x-requested-with": "sshdeck"})
+    a = auth_client.post("/api/customers", json={"name": "A"}).json()
+    b = auth_client.post("/api/customers", json={"name": "B"}).json()
+    return auth_client, a, b
+
+
+def _seed_stack(client, customer):
+    head = h(customer)
+    site = client.post("/api/inventory/sites", headers=head, json={"name": f"S{customer['id']}"}).json()
+    rack = client.post("/api/inventory/racks", headers=head,
+                       json={"site_id": site["id"], "name": "R", "units": 42}).json()
+    host = client.post("/api/hosts", headers=head,
+                       json={"label": f"h{customer['id']}", "hostname": "10.0.0.1", "protocol": "ssh"}).json()
+    device = client.post("/api/inventory/devices", headers=head,
+                         json={"rack_id": rack["id"], "name": "d", "position": 10, "host_id": host["id"]}).json()
+    port = client.post("/api/inventory/ports", headers=head,
+                       json={"device_id": device["id"], "name": "eth1"}).json()
+    return {"site": site, "rack": rack, "host": host, "device": device, "port": port, "head": head}
+
+
+def test_r1_inventory_writes_reject_foreign_ids(two_customers):
+    client, a, b = two_customers
+    sb = _seed_stack(client, b)
+    ha = h(a)
+    rejected = [404, 409]
+
+    assert client.get(f"/api/inventory/devices/{sb['device']['id']}/ports", headers=ha).status_code in rejected
+    assert client.post("/api/inventory/ports", headers=ha,
+                       json={"device_id": sb["device"]["id"], "name": "x1"}).status_code in rejected
+    assert client.post("/api/inventory/ports/bulk", headers=ha,
+                       json={"device_id": sb["device"]["id"], "prefix": "e", "count": 2}).status_code in rejected
+    assert client.delete(f"/api/inventory/racks/{sb['rack']['id']}", headers=ha).status_code in rejected
+    assert client.delete(f"/api/inventory/devices/{sb['device']['id']}/profiles/{sb['host']['id']}",
+                         headers=ha).status_code in rejected
+
+    # τίποτα δεν άλλαξε στον Β
+    layout = client.get(f"/api/inventory/rack/{sb['rack']['id']}", headers=sb["head"]).json()
+    assert [d["name"] for d in layout["devices"]] == ["d"]
+    names = {p["name"] for p in layout["devices"][0]["ports"]}
+    assert names == {"eth1"}
+    assert client.get("/api/hosts", headers=sb["head"]).json()[0]["label"] == f"h{b['id']}"
+
+
+def test_r1_sftp_routes_respect_customer_scope(two_customers, monkeypatch):
+    from sshdeck import sshconn
+
+    client, a, b = two_customers
+    sb = _seed_stack(client, b)
+    calls = []
+
+    class FakeSftp:
+        def listdir(self, *_a, **_k): return []
+        def stat(self, *_a, **_k):
+            raise OSError("not found")
+        def open(self, *_a, **_k): raise OSError("not found")
+        def mkdir(self, *_a, **_k): calls.append("mkdir")
+        def remove(self, *_a, **_k): calls.append("remove")
+        def rename(self, *_a, **_k): calls.append("rename")
+
+    def fake_sftp(target):
+        calls.append("connect")
+        return object(), FakeSftp()
+
+    monkeypatch.setattr(sshconn, "sftp", fake_sftp)
+    ha = h(a)
+    host_id = sb["host"]["id"]
+    for method, path, payload in [
+        ("get", f"/api/hosts/{host_id}/files?path=.", None),
+        ("get", f"/api/hosts/{host_id}/download?path=/etc/passwd", None),
+        ("post", f"/api/hosts/{host_id}/mkdir", {"path": "/tmp/x"}),
+        ("post", f"/api/hosts/{host_id}/delete-path", {"path": "/tmp/x"}),
+        ("post", f"/api/hosts/{host_id}/rename", {"path": "/tmp/x", "new_path": "/tmp/y"}),
+    ]:
+        res = getattr(client, method)(path, headers=ha, **({"json": payload} if payload else {}))
+        assert res.status_code in (404, 409), (path, res.status_code, res.text)
+    assert calls == [], f"foreign SFTP must never reach the transport: {calls}"

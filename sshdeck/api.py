@@ -1017,8 +1017,8 @@ async def list_files(host_id: int, path: str = ".", request: Request = None):
 
 
 @api.get("/hosts/{host_id}/download")
-async def download_file(host_id: int, path: str):
-    target = sftp_target(host_id)
+async def download_file(host_id: int, path: str, request: Request = None):
+    target = sftp_target(host_id, request)
 
     def _read() -> bytes:
         client, sftp = sshconn.sftp(target)
@@ -1042,8 +1042,8 @@ async def download_file(host_id: int, path: str):
 
 
 @api.post("/hosts/{host_id}/upload")
-async def upload_file(host_id: int, path: str, file: UploadFile = File(...)):
-    target = sftp_target(host_id)
+async def upload_file(host_id: int, path: str, file: UploadFile = File(...), request: Request = None):
+    target = sftp_target(host_id, request)
     tmp = tempfile.NamedTemporaryFile(delete=False, dir=str(config.DATA_DIR))
     try:
         while chunk := await file.read(1024 * 256):
@@ -1068,8 +1068,8 @@ async def upload_file(host_id: int, path: str, file: UploadFile = File(...)):
 
 
 @api.post("/hosts/{host_id}/mkdir")
-async def make_dir(host_id: int, payload: PathIn):
-    target = sftp_target(host_id)
+async def make_dir(host_id: int, payload: PathIn, request: Request = None):
+    target = sftp_target(host_id, request)
 
     def _work():
         client, sftp = sshconn.sftp(target)
@@ -1084,8 +1084,8 @@ async def make_dir(host_id: int, payload: PathIn):
 
 
 @api.post("/hosts/{host_id}/delete-path")
-async def delete_path(host_id: int, payload: PathIn):
-    target = sftp_target(host_id)
+async def delete_path(host_id: int, payload: PathIn, request: Request = None):
+    target = sftp_target(host_id, request)
 
     def _work():
         client, sftp = sshconn.sftp(target)
@@ -1106,8 +1106,8 @@ async def delete_path(host_id: int, payload: PathIn):
 
 
 @api.post("/hosts/{host_id}/rename")
-async def rename_path(host_id: int, payload: RenameIn):
-    target = sftp_target(host_id)
+async def rename_path(host_id: int, payload: RenameIn, request: Request = None):
+    target = sftp_target(host_id, request)
 
     def _work():
         client, sftp = sshconn.sftp(target)
