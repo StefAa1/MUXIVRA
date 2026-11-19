@@ -570,3 +570,9 @@
 .dg-svg.dg-tiny .dg-edge-label, .dg-svg.dg-tiny text.dg-elabel { display: none; }
 .dg-col-hit { fill: transparent; cursor: grab; }
 .dg-col-hit:hover { fill: rgba(127,178,255,.05); }
+
+/* site containers: independent move + resize */
+.dg-band{cursor:move}
+.dg-band-head{fill:transparent;cursor:move}
+.dg-band-resize{fill:rgba(47,123,255,.25);stroke:#2f7bff;stroke-width:1;cursor:nwse-resize}
+.dg-band-resize:hover{fill:rgba(47,123,255,.45)}

@@ -185,7 +185,13 @@ function dgPositions() {
         const point = parsed[key];
         const x = Number(point && point.x);
         const y = Number(point && point.y);
-        if (Number.isFinite(x) && Number.isFinite(y)) DG.pos[key] = { x, y };
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+        const box = { x, y };
+        const w = Number(point && point.w);
+        const h = Number(point && point.h);
+        if (Number.isFinite(w) && w > 0) box.w = w;
+        if (Number.isFinite(h) && h > 0) box.h = h;
+        DG.pos[key] = box;
       });
     }
   } catch (_) {
@@ -329,11 +335,21 @@ function dgAutoLayout(nodes) {
     for (let i = index; i <= last; i += 1) bottom = Math.max(bottom, columns[i].bottom);
     const top = DG.TOP - DG.GROUP_PAD;
     const left = firstCol.x - 44;            // room for self-loop labels
-    bands.push({
+    const savedBand = positions[`band:${siteId}`];
+    const auto = {
       x: left,
       y: top,
       w: (lastCol.x + DG.W + 22) - left,
       h: (bottom + 18) - top,
+    };
+    bands.push({
+      siteId,
+      auto,                                  // γεωμετρία που προτείνει η διάταξη
+      x: savedBand && Number.isFinite(savedBand.x) ? savedBand.x : auto.x,
+      y: savedBand && Number.isFinite(savedBand.y) ? savedBand.y : auto.y,
+      w: savedBand && savedBand.w ? savedBand.w : auto.w,
+      h: savedBand && savedBand.h ? savedBand.h : auto.h,
+      pinned: Boolean(savedBand),
       siteName: firstCol.siteName,
     });
     index = last + 1;
@@ -341,6 +357,49 @@ function dgAutoLayout(nodes) {
 
   DG.columns = columns;
   DG.bandsData = bands;
+}
+
+/* ------------------------------------------------------------ band geometry */
+/* Το πλαίσιο του site είναι ανεξάρτητο: μετακινείται/αλλάζει μέγεθος μόνο του.
+   Απλώνει για να χωρέσει τα παιδιά του, αλλά δεν τα σέρνει μαζί του εκτός αν
+   ο χρήστης σύρει το ίδιο το site. */
+function dgBandBox(band) {
+  let x = band.x;
+  let y = band.y;
+  let right = band.x + band.w;
+  let bottom = band.y + band.h;
+  const children = DG.nodes.filter((node) => String(node.siteId) === String(band.siteId));
+  children.forEach((node) => {
+    x = Math.min(x, node.gx - 28);
+    y = Math.min(y, node.gy - 60);
+    right = Math.max(right, node.gx + DG.W + 28);
+    bottom = Math.max(bottom, node.gy + DG.H + 28);
+  });
+  return { x, y, w: Math.max(240, right - x), h: Math.max(160, bottom - y) };
+}
+
+function dgSyncBandGraphics(band) {
+  const box = dgBandBox(band);
+  band.box = box;
+  const layer = DG.layers.bands;
+  if (!layer) return;
+  layer.querySelectorAll(`[data-dg-band="${band.siteId}"]`).forEach((el) => {
+    if (el.classList.contains('dg-band') || el.classList.contains('dg-band-head')) {
+      el.setAttribute('x', dgRound(box.x));
+      el.setAttribute('y', dgRound(box.y));
+      el.setAttribute('width', dgRound(box.w));
+    }
+    if (el.classList.contains('dg-band')) el.setAttribute('height', dgRound(box.h));
+    if (el.classList.contains('dg-band-label')) {
+      el.setAttribute('x', dgRound(box.x + 16));
+      el.setAttribute('y', dgRound(box.y + 22));
+    }
+  });
+  const handle = layer.querySelector(`[data-dg-band-resize="${band.siteId}"]`);
+  if (handle) {
+    handle.setAttribute('x', dgRound(box.x + box.w - 16));
+    handle.setAttribute('y', dgRound(box.y + box.h - 16));
+  }
 }
 
 /* --------------------------------------------------------------- graph build */
@@ -905,13 +964,26 @@ function dgPaint() {
 
   const bandFragment = document.createDocumentFragment();
   DG.bandsData.forEach((band) => {
+    band.box = dgBandBox(band);            // πραγματικό πλαίσιο: χωράει πάντα τα παιδιά
     bandFragment.appendChild(dgSvg('rect', {
-      class: 'dg-band', x: dgRound(band.x), y: dgRound(band.y),
-      width: dgRound(band.w), height: dgRound(band.h), rx: 14,
+      class: 'dg-band', x: dgRound(band.box.x), y: dgRound(band.box.y),
+      width: dgRound(band.box.w), height: dgRound(band.box.h), rx: 14,
+      'data-dg-band': String(band.siteId),
+    }));
+    bandFragment.appendChild(dgSvg('rect', {
+      class: 'dg-band-head', x: dgRound(band.box.x), y: dgRound(band.box.y),
+      width: dgRound(band.box.w), height: 34, rx: 14,
+      'data-dg-band': String(band.siteId),
     }));
     bandFragment.appendChild(dgSvg('text', {
-      class: 'dg-band-label', x: dgRound(band.x + 16), y: dgRound(band.y + 22),
+      class: 'dg-band-label', x: dgRound(band.box.x + 16), y: dgRound(band.box.y + 22),
+      'data-dg-band': String(band.siteId),
     }, band.siteName));
+    bandFragment.appendChild(dgSvg('rect', {
+      class: 'dg-band-resize', x: dgRound(band.box.x + band.box.w - 16),
+      y: dgRound(band.box.y + band.box.h - 16), width: 14, height: 14, rx: 3,
+      'data-dg-band-resize': String(band.siteId),
+    }));
   });
   DG.columns.forEach((column, index) => {
     bandFragment.appendChild(dgSvg('rect', {
@@ -1105,6 +1177,42 @@ function dgFit() {
 /* ----------------------------------------------------------- drag / zoom in */
 function dgPointerDown(event) {
   if (event.button !== 0) return;
+  const resizeEl = event.target.closest ? event.target.closest('[data-dg-band-resize]') : null;
+  if (resizeEl) {
+    const band = DG.bandsData.find((b) => String(b.siteId) === resizeEl.dataset.dgBandResize);
+    if (band) {
+      band.box = band.box || dgBandBox(band);
+      DG.bandResize = {
+        band, sx: event.clientX, sy: event.clientY, w: band.box.w, h: band.box.h, moved: false,
+      };
+      try { DG.svg.setPointerCapture(event.pointerId); } catch (_) { /* older browsers */ }
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+  }
+  const bandEl = event.target.closest ? event.target.closest('[data-dg-band]') : null;
+  if (bandEl) {
+    const band = DG.bandsData.find((b) => String(b.siteId) === bandEl.dataset.dgBand);
+    if (band) {
+      band.box = band.box || dgBandBox(band);
+      DG.bandDrag = {
+        band,
+        sx: event.clientX,
+        sy: event.clientY,
+        bx: band.box.x,
+        by: band.box.y,
+        moved: false,
+        // τα παιδιά του site μετακινούνται ΜΑΖΙ με το πλαίσιο, τίποτα άλλο
+        nodes: DG.nodes.filter((n) => String(n.siteId) === String(band.siteId))
+          .map((node) => ({ node, ox: node.gx, oy: node.gy })),
+      };
+      try { DG.svg.setPointerCapture(event.pointerId); } catch (_) { /* older browsers */ }
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+  }
   const colEl = event.target.closest ? event.target.closest('.dg-col-hit') : null;
   if (colEl) {
     const index = Number(colEl.dataset.dgCol);
@@ -1156,6 +1264,37 @@ function dgPointerDown(event) {
 }
 
 function dgPointerMove(event) {
+  if (DG.bandResize) {
+    const r = DG.bandResize;
+    const k = DG.view.k || 1;
+    const dw = (event.clientX - r.sx) / k;
+    const dh = (event.clientY - r.sy) / k;
+    if (Math.abs(dw) + Math.abs(dh) > 2) r.moved = true;
+    r.band.w = Math.max(240, Math.round(r.w + dw));
+    r.band.h = Math.max(160, Math.round(r.h + dh));
+    r.band.pinned = true;
+    dgSyncBandGraphics(r.band);
+    return;
+  }
+  if (DG.bandDrag) {
+    const g = DG.bandDrag;
+    const k = DG.view.k || 1;
+    const dx = (event.clientX - g.sx) / k;
+    const dy = (event.clientY - g.sy) / k;
+    if (Math.abs(dx) + Math.abs(dy) > 2) g.moved = true;
+    g.band.x = Math.round(g.bx + dx);
+    g.band.y = Math.round(g.by + dy);
+    g.band.pinned = true;
+    g.nodes.forEach((entry) => {
+      entry.node.gx = Math.round(entry.ox + dx);
+      entry.node.gy = Math.round(entry.oy + dy);
+      const el = DG.nodeEls.get(entry.node.id);
+      if (el) el.setAttribute('transform', `translate(${dgRound(entry.node.gx)},${dgRound(entry.node.gy)})`);
+      (DG.inc.get(entry.node.id) || []).forEach((edge) => dgUpdateEdge(edge));
+    });
+    dgSyncBandGraphics(g.band);
+    return;
+  }
   if (DG.groupDrag) {
     const group = DG.groupDrag;
     const k = DG.view.k || 1;
@@ -1198,6 +1337,35 @@ function dgPointerMove(event) {
 }
 
 function dgPointerUp(event) {
+  if (DG.bandResize) {
+    const r = DG.bandResize;
+    if (r.moved) {
+      const positions = dgPositions();
+      const box = r.band.box || dgBandBox(r.band);
+      positions[`band:${r.band.siteId}`] = { x: box.x, y: box.y, w: box.w, h: box.h };
+      dgWritePositions();
+    }
+    DG.bandResize = null;
+    try { DG.svg.releasePointerCapture(event.pointerId); } catch (_) { /* ignore */ }
+    try { DG.svg.releasePointerCapture(event.pointerId); } catch (_) { /* ignore */ }
+    return;
+  }
+  if (DG.bandDrag) {
+    const g = DG.bandDrag;
+    if (g.moved) {
+      const positions = dgPositions();
+      const box = g.band.box || dgBandBox(g.band);
+      positions[`band:${g.band.siteId}`] = { x: box.x, y: box.y, w: box.w, h: box.h };
+      g.nodes.forEach((entry) => {
+        positions[entry.node.id] = { x: entry.node.gx, y: entry.node.gy };
+      });
+      dgWritePositions();
+      DG.fitted = true;
+    }
+    DG.bandDrag = null;
+    try { DG.svg.releasePointerCapture(event.pointerId); } catch (_) { /* ignore */ }
+    return;
+  }
   if (DG.groupDrag) {
     const group = DG.groupDrag;
     if (group.moved) {
@@ -1472,7 +1640,7 @@ function dgRefresh() {
   dgPaint();
 }
 
-function dgResetPositions() {
+function dgResetPositions() {   // καθαρίζει και τα αποθηκευμένα πλαίσια sites
   DG.pos = {};
   dgWritePositions();
   DG.fitted = false;
