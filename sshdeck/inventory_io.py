@@ -321,7 +321,8 @@ def import_payload(conn: sqlite3.Connection, payload: dict, dry_run: bool = Fals
                 """INSERT INTO devices (rack_id, name, kind, units, position, note, host_id, vendor, model, mgmt_ip)
                    VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)""",
                 (
-                    new_rack, name, device.get("kind") or "switch", int(device.get("units") or 1),
+                    new_rack, name, normalize_device_kind(device.get("kind") or "switch"),
+                    int(device.get("units") or 1),
                     int(device.get("position") or 1), device.get("note") or "",
                     device.get("vendor") or "", device.get("model") or "", device.get("mgmt_ip") or "",
                 ),
@@ -342,7 +343,7 @@ def import_payload(conn: sqlite3.Connection, payload: dict, dry_run: bool = Fals
         else:
             cur = conn.execute(
                 "INSERT INTO ports (device_id, name, kind) VALUES (?, ?, ?)",
-                (new_device, name, port.get("kind") or "rj45"),
+                (new_device, name, normalize_port_kind(port.get("kind") or "rj45")),
             )
             port_map[port["id"]] = cur.lastrowid
             report["created"]["ports"] += 1

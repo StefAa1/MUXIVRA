@@ -118,6 +118,10 @@ WEB_DIR = Path(os.environ.get("SSHDECK_WEB", BASE_DIR / "web"))
 
 DB_PATH = DATA_DIR / "sshdeck.db"
 VAULT_KEY_PATH = DATA_DIR / "vault.key"
+# Official distribution source: the app knows where it updates from, so a fresh
+# install never needs a repo URL or a token.
+DEFAULT_UPDATE_REPO = "StefAa1/MUXIVRA"
+
 KNOWN_HOSTS_PATH = DATA_DIR / "known_hosts"          # legacy, customer 1
 KNOWN_HOSTS_DIR = None                               # resolved lazily (DATA_DIR may change)
 

@@ -282,9 +282,21 @@ def migrate(conn: sqlite3.Connection) -> None:
     from . import kinds as _kinds
 
     for legacy, new in _kinds.LEGACY_PORT_KINDS.items():
-        conn.execute("UPDATE ports SET kind = ? WHERE kind = ?", (new, legacy))
+        conn.execute("UPDATE ports SET kind = ? WHERE lower(trim(kind)) = ?", (new, legacy))
     for legacy, new in _kinds.LEGACY_DEVICE_KINDS.items():
-        conn.execute("UPDATE devices SET kind = ? WHERE kind = ?", (new, legacy))
+        conn.execute("UPDATE devices SET kind = ? WHERE lower(trim(kind)) = ?", (new, legacy))
+    conn.execute("UPDATE ports SET kind = trim(kind) WHERE kind <> trim(kind)")
+    conn.execute("UPDATE devices SET kind = trim(kind) WHERE kind <> trim(kind)")
+    for row in conn.execute("SELECT DISTINCT kind FROM ports").fetchall():
+        normalized = _kinds.normalize_port_kind(row["kind"])
+        if normalized != row["kind"]:
+            conn.execute("UPDATE ports SET kind = ? WHERE lower(trim(kind)) = ?",
+                         (normalized, str(row["kind"]).strip().lower()))
+    for row in conn.execute("SELECT DISTINCT kind FROM devices").fetchall():
+        normalized = _kinds.normalize_device_kind(row["kind"])
+        if normalized != row["kind"]:
+            conn.execute("UPDATE devices SET kind = ? WHERE lower(trim(kind)) = ?",
+                         (normalized, str(row["kind"]).strip().lower()))
     # v8: planned vs documented equipment, configuration history, observed state
     _add_missing_columns(conn, "devices", {"origin": "TEXT DEFAULT 'documented'"})
     conn.executescript(CONFIG_SCHEMA)

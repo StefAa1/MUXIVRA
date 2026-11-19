@@ -178,6 +178,10 @@ async function loadCustomers() {
   if (add) add.onclick = openCustomerModal;
 }
 
+function json_opts_empty() {
+  return { json: {} };   // η πηγή είναι πλέον σταθερή στο backend
+}
+
 function renderCustomerPill() {
   const pill = $('#customer-pill');
   const name = $('#customer-pill-name');
@@ -833,17 +837,13 @@ function renderSettings() {
         <div class="sub">v${esc(upd.current || S.status?.version || '')} · build ${esc((S.status && S.status.build) || 'dev')} · ${esc((S.status && S.status.mode) || 'source')}</div>
         <div class="body mono" style="font-size:11.5px;word-break:break-all">data: ${esc((S.status && S.status.data_dir) || '')}</div>
         <div class="body">
-          <label class="field"><span>GitHub repo</span>
-            <input id="upd-repo" value="${esc(upd.repo || '')}" placeholder="owner/repo" autocomplete="off" /></label>
-          <label class="field"><span>GitHub token (only for a private repo)</span>
-            <input id="upd-token" type="password" placeholder="${upd.token ? 'saved — paste to replace' : 'ghp_… (read-only)'}" autocomplete="off" /></label>
-          <p class="hint">Stored encrypted. Needed only when the repository is private; a public repo works without it.</p>
+          <p class="hint">Official source: <b class="mono">${esc(upd.repo || 'StefAa1/MUXIVRA')}</b>
+            ${upd.token ? ' · private repo token saved' : ''}</p>
           <p class="hint" id="upd-status">${upd.last_check ? 'last check: ' + esc(upd.last_check) : 'no checks yet'}</p>
           <div class="actions">
-            <button class="btn xs" id="upd-save">Save</button>
-            <button class="btn xs" id="upd-token-save">Save token</button>
-            <button class="btn xs" id="upd-check">Check now</button>
-            <button class="btn primary xs${upd.asset ? '' : ' hidden'}" id="upd-prepare">Download &amp; prepare</button>
+            <button class="btn xs" id="upd-check">Check for updates</button>
+            <button class="btn primary xs${upd.asset ? '' : ' hidden'}" id="upd-prepare">Download &amp; verify</button>
+            <button class="btn primary xs hidden" id="upd-apply">Restart &amp; install</button>
           </div>
         </div></div>
       <div class="card"><h3>Vault</h3>
@@ -1650,34 +1650,11 @@ document.addEventListener('click', (event) => {
         toast(minutes ? `Auto-lock: ${minutes} min` : 'Auto-lock off');
       } catch (err) { toast(err.message, 'err'); }
     },
-    'upd-save': async () => {
-      const repo = ($('#upd-repo') || {}).value || '';
-      try {
-        await api('/update/repo', { json: { repo: repo.trim() } });
-        await loadUpdateState();
-        renderPage();
-        toast('Saved');
-      } catch (err) { toast(err.message === 'invalid_repo' ? 'Format: owner/repo' : err.message, 'err'); }
-    },
-    'upd-token-save': async () => {
-      const field = $('#upd-token');
-      const token = field ? field.value.trim() : '';
-      try {
-        const result = await api('/update/token', { json: { token } });
-        if (field) field.value = '';
-        await loadUpdateState();
-        renderPage();
-        toast(result.configured ? 'Token saved (encrypted)' : 'Token cleared');
-      } catch (err) {
-        toast(err.message === 'bad_token' ? 'That does not look like a GitHub token' : err.message, 'err');
-      }
-    },
     'upd-check': async () => {
-      const repo = ($('#upd-repo') || {}).value || '';
       const line = $('#upd-status');
       if (line) line.textContent = 'Checking…';
       try {
-        const result = await api('/update/check', { json: { repo: repo.trim() } });
+        const result = await api('/update/check', json_opts_empty());
         // κρατάμε ΟΛΟ το release (asset + manifest + signature): το prepare τα χρειάζεται
         S.updateRelease = result;
         S.update = { ...(S.update || {}), ...result, last_check: new Date().toLocaleString('en-GB') };
@@ -1686,6 +1663,14 @@ document.addEventListener('click', (event) => {
       } catch (err) {
         if (line) line.textContent = err.message;
         toast(err.message, 'err');
+      }
+    },
+    'upd-apply': async () => {
+      try {
+        const res = await api('/update/apply', { json: {} });
+        toast(res.started ? 'Restarting to install the update…' : 'Updater could not start');
+      } catch (err) {
+        toast(`Could not start the updater: ${err.message}`, 'err');
       }
     },
     'upd-prepare': async () => {
@@ -1703,8 +1688,10 @@ document.addEventListener('click', (event) => {
             signature: release.signature || null,
           },
         });
-        if (line) line.textContent = 'Ready: ' + result.script;
-        toast('Close MUXIVRA and run apply-update.cmd');
+        if (line) line.textContent = `Ready: ${result.version} · ${result.script}`;
+        const apply = $('#upd-apply');
+        if (apply) apply.classList.remove('hidden');
+        toast('Update ready — press “Restart & install”');
       } catch (err) {
         if (line) line.textContent = err.message;
         toast(err.message, 'err');

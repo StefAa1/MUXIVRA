@@ -68,6 +68,11 @@ SECRET_LINE = re.compile(
 
 def redact_line(line: str) -> str:
     """Mask the secret value(s) of one configuration line."""
+    if SECRET_LINE.search(line):
+        # escaped ή μη ισορροπημένα quotes: καμία αξιόπιστη ανάλυση → κρύψε τη γραμμή
+        if '\\"' in line or line.count('"') % 2 == 1:
+            indent = line[: len(line) - len(line.lstrip())]
+            return f"{indent}<redacted line>"
     masked = KV_SECRET.sub(lambda m: f"{m.group(1)}{m.group(2)}<redacted>", line)
     if masked != line:
         return masked
@@ -272,8 +277,9 @@ def version_text(conn, version_id: int) -> str:
 
 
 def diff(conn, left_id: int, right_id: int, context: int = 3) -> dict:
-    left = version_text(conn, left_id)
-    right = version_text(conn, right_id)
+    # redaction ΠΡΙΝ το diff: αλλιώς το "+"/"-" σπάει το anchored matching
+    left = redact(version_text(conn, left_id))
+    right = redact(version_text(conn, right_id))
     lines = list(difflib.unified_diff(
         left.splitlines(), right.splitlines(),
         fromfile=f"version-{left_id}", tofile=f"version-{right_id}", lineterm="", n=context,
@@ -283,7 +289,7 @@ def diff(conn, left_id: int, right_id: int, context: int = 3) -> dict:
         "changed": bool(lines),
         "added": sum(1 for l in lines if l.startswith("+") and not l.startswith("+++")),
         "removed": sum(1 for l in lines if l.startswith("-") and not l.startswith("---")),
-        "diff": redact("\n".join(lines)),
+        "diff": "\n".join(lines),
     }
 
 
@@ -312,7 +318,8 @@ def apply(conn, device_id: int, text: str, expected_sha256: str, runner=None,
             output = runner(command)
             results.append({"command": redact(command), "output": redact(str(output or ""))[:400]})
         except Exception as exc:                     # noqa: BLE001 - reported, not hidden
-            failed = {"command": command, "error": str(exc)}
+            # το exception μπορεί να περιέχει την ίδια την εντολή με το password
+            failed = {"command": redact(command), "error": redact(str(exc))[:300]}
             break
     return {
         "applied": [r["command"] for r in results],   # already redacted

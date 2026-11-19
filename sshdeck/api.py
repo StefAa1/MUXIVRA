@@ -866,6 +866,12 @@ def delete_snippet(snippet_id: int):
 
 
 # ---------------------------------------------------------------- updates
+def _update_repo(conn) -> str:
+    """Official repo unless a developer build explicitly configured another one."""
+    configured = (db.get_setting(conn, "update_repo", "") or "").strip()
+    return configured or config.DEFAULT_UPDATE_REPO
+
+
 def _update_token(conn) -> str:
     """Read-only GitHub token for a private repo. Stored sealed; never returned."""
     blob = db.get_setting(conn, "update_token_enc", "") or ""
@@ -893,7 +899,7 @@ def update_set_token(payload: dict):
 @api.get("/update/state")
 def update_state():
     with db.db() as conn:
-        repo = db.get_setting(conn, "update_repo", "") or ""
+        repo = _update_repo(conn)
         last = db.get_setting(conn, "update_last_check", "") or ""
         has_token = bool(_update_token(conn))
     return {
@@ -929,7 +935,7 @@ def update_set_repo(payload: UpdateRepoIn):
 @api.post("/update/check")
 async def update_check(payload: UpdateCheckIn):
     with db.db() as conn:
-        repo = payload.repo.strip() or (db.get_setting(conn, "update_repo", "") or "")
+        repo = payload.repo.strip() or _update_repo(conn)
         token = _update_token(conn)
     if not repo:
         raise HTTPException(status_code=422, detail="repo_not_set")
@@ -944,6 +950,27 @@ async def update_check(payload: UpdateCheckIn):
         if payload.repo.strip():
             db.set_setting(conn, "update_repo", repo)
     return result
+
+
+@api.post("/update/apply")
+def update_apply():
+    """Launch apply-update.cmd and let it restart us: one click, no manual file."""
+    script = config.STAGING_DIR / "apply-update.cmd"
+    if not script.exists():
+        raise HTTPException(status_code=409, detail="nothing_staged")
+    if os.name != "nt":
+        raise HTTPException(
+            status_code=409,
+            detail="apply_requires_windows: the staged updater is a Windows script. "
+                   "Run it on the Windows install that produced it.",
+        )
+    try:
+        subprocess.Popen(["cmd", "/c", "start", "", str(script)], close_fds=True,
+                         creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+    except OSError as exc:
+        raise HTTPException(status_code=502, detail=f"apply_failed: {exc}") from exc
+    db.log_event(None, "update_apply_started", str(script))
+    return {"started": True, "script": str(script)}
 
 
 @api.post("/update/prepare")

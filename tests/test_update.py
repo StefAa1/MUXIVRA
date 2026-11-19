@@ -275,3 +275,38 @@ def test_404_explains_private_repo():
         assert "private" in exc.message.lower()
     else:
         raise AssertionError("404 must be reported")
+
+
+def test_official_source_needs_no_configuration(auth_client, monkeypatch):
+    """Καθαρή εγκατάσταση: check χωρίς repo, χωρίς token."""
+    from sshdeck import api, config, update
+
+    auth_client.headers.update({"x-requested-with": "sshdeck"})
+    state = auth_client.get("/api/update/state").json()
+    assert state["repo"] == config.DEFAULT_UPDATE_REPO
+    assert state["token"] is False
+
+    seen = {}
+
+    def fake_check(repo, current, timeout=12.0, opener=None, token=None):
+        seen["repo"] = repo
+        seen["token"] = token
+        return {"repo": repo, "current": current, "latest": "9.9.9", "available": True,
+                "asset": {"name": "MUXIVRA-portable-win64.zip", "url": "https://x/y.zip", "size": 1},
+                "manifest": {"name": "release.json", "url": "https://x/release.json", "size": 1},
+                "signature": {"name": "release.json.sig", "url": "https://x/release.json.sig", "size": 1}}
+
+    monkeypatch.setattr(update, "check", fake_check)
+    res = auth_client.post("/api/update/check", json={})
+    assert res.status_code == 200, res.text
+    assert seen["repo"] == config.DEFAULT_UPDATE_REPO
+    assert seen["token"] == ""
+
+
+def test_apply_is_honest_off_windows(auth_client):
+    from sshdeck import config
+
+    auth_client.headers.update({"x-requested-with": "sshdeck"})
+    res = auth_client.post("/api/update/apply", json={})
+    assert res.status_code == 409
+    assert res.json()["detail"] in {"nothing_staged"} or "apply_requires_windows" in res.json()["detail"]

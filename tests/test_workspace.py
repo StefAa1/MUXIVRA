@@ -273,3 +273,28 @@ def test_r3_apply_never_returns_raw_secrets(auth_client):
                                  '/user add name=admin password=TopSecret123',
                                  info["sha256"], runner=lambda c: "ok", confirm=True)
     assert "TopSecret123" not in str(result)
+
+
+def test_r3_diff_and_failures_are_redacted(auth_client):
+    from sshdeck import db, workspace
+
+    auth_client.headers.update({"x-requested-with": "sshdeck"})
+    host, rack, device = device_with_profile(auth_client, {})
+    v1 = auth_client.post(f"/api/inventory/devices/{device['id']}/config/paste", json={
+        "text": "crypto isakmp key OLDKEY address 0.0.0.0\n/ip address add address=10.0.0.1/24 interface=ether1",
+        "vendor": "cisco"}).json()
+    v2 = auth_client.post(f"/api/inventory/devices/{device['id']}/config/paste", json={
+        "text": "crypto isakmp key NEWKEY address 0.0.0.0\n/ip address add address=10.0.0.2/24 interface=ether1",
+        "vendor": "cisco"}).json()
+    d = auth_client.get(f"/api/inventory/config/diff?left={v1['id']}&right={v2['id']}", headers={}).json()
+    assert d["changed"] is True
+    assert "OLDKEY" not in d["diff"] and "NEWKEY" not in d["diff"]
+    assert "10.0.0.2" in d["diff"]          # οι μη-μυστικές αλλαγές μένουν ορατές
+
+    with db.db() as conn:
+        result = workspace.apply(conn, device["id"], '/user add name=x password="left\\"AUDITTAIL"',
+                                 v2["sha256"], runner=lambda c: (_ for _ in ()).throw(RuntimeError(c)),
+                                 confirm=True)
+    assert "AUDITTAIL" not in str(result)
+    assert result["failed"] and "<redacted" in result["failed"]["command"]
+    assert "AUDITTAIL" not in result["failed"]["error"]
