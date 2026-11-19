@@ -797,12 +797,19 @@ async def update_prepare(payload: UpdateReleaseIn):
             update.download_verified, release, manifest, config.STAGING_DIR
         )
         root = await asyncio.to_thread(update.stage, archive, config.STAGING_DIR)
+        # consistent snapshot through the SQLite backup API, kept with the staged
+        # build so a rollback can restore the database that matches the old binaries
+        snapshot = config.STAGING_DIR / "db-before-update.sqlite"
+        if config.DB_PATH.exists():
+            await asyncio.to_thread(db.snapshot, snapshot)
         script = await asyncio.to_thread(
             update.write_apply_script,
             update.bundle_root(),
             root,
             os.getpid(),
             config.STAGING_DIR,
+            None,
+            snapshot if config.DB_PATH.exists() else None,
         )
     except update.UpdateError as exc:
         with db.db() as conn:
