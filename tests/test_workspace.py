@@ -156,3 +156,36 @@ def two(auth_client):
     a = auth_client.post("/api/customers", json={"name": "Πελάτης Α", "code": "A"}).json()
     b = auth_client.post("/api/customers", json={"name": "Πελάτης Β", "code": "B"}).json()
     return auth_client, a, b
+
+
+def test_vendor_detection_from_device_then_profile(auth_client):
+    from sshdeck import workspace
+
+    assert workspace.adapter_for("MikroTik RouterOS").name == "mikrotik"
+    assert workspace.adapter_for("cisco IOS 15").name == "cisco"
+    assert workspace.adapter_for("acme").name == "generic"
+    assert workspace.adapter_for("").name == "generic"
+
+
+def test_redaction_hides_secret_values_only():
+    from sshdeck import workspace
+
+    text = "/user add name=admin password=SuperSecret123\n/interface ethernet add name=ether1\n"
+    cleaned = workspace.redact(text)
+    assert "SuperSecret123" not in cleaned
+    assert "ether1" in cleaned and "admin" in cleaned
+
+
+def test_observation_survives_restart_and_distinguishes_unknown_from_absent(auth_client):
+    auth_client.headers.update({"x-requested-with": "sshdeck"})
+    host, rack, device = device_with_profile(auth_client, {})
+    text = (FIXTURES / "mikrotik_export.txt").read_text()
+    auth_client.post(f"/api/netdoc/devices/{device['id']}/config/paste",
+                     json={"text": text, "vendor": "mikrotik"})
+    observed = auth_client.get(f"/api/netdoc/devices/{device['id']}/observed").json()["observed"]
+    assert observed and observed["data"]["interfaces"]
+    # μια αποτυχημένη/κενή συλλογή ΔΕΝ σβήνει την ήδη καταγεγραμμένη καλωδίωση
+    auth_client.post("/api/netdoc/devices/{}/reconcile".format(device["id"]), json={"apply": True})
+    tree = auth_client.get("/api/netdoc/tree").json()
+    assert tree["links"] == 0
+    assert auth_client.get("/api/netdoc/links").json() == []

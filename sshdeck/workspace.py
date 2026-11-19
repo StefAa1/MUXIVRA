@@ -31,15 +31,25 @@ SECRET_LINE = re.compile(
 )
 
 
+SECRET_VALUE = re.compile(
+    r"(?i)\b(password|passwd|secret|pre-shared-key|community|key-string|snmp-community)"
+    r"=(\"[^\"]*\"|\S+)"
+)
+
+
 def redact(text: str) -> str:
-    """Strip secret-looking values before anything is logged or exported."""
+    """Mask secret VALUES only, so the rest of the line stays readable in a diff."""
     out = []
     for line in text.splitlines():
-        if SECRET_LINE.search(line):
-            head = line.split("=", 1)[0] if "=" in line else line.split(" ", 1)[0]
-            out.append(f"{head} <redacted>")
-        else:
-            out.append(line)
+        masked = SECRET_VALUE.sub(lambda m: f"{m.group(1)}=<redacted>", line)
+        if masked == line and SECRET_LINE.search(line):
+            # vendor style: "password cisco123" (space separated)
+            parts = line.split()
+            if len(parts) <= 2:
+                masked = f"{parts[0]} <redacted>"
+            else:
+                masked = " ".join(parts[:-1] + ["<redacted>"])
+        out.append(masked)
     return "\n".join(out)
 
 
