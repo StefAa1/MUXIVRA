@@ -35,11 +35,16 @@ def main() -> int:
         print("makensis not found: apt-get install nsis")
         return 2
 
-    # the installer must never carry user data or debug leftovers
-    for unwanted in ("data", "app/data"):
+    # the installer must never carry user data — an empty data/ folder is fine
+    for unwanted in ("data", "app/data", "data/sshdeck.db", "data/vault.key"):
         path = BUNDLE / unwanted
+        if path.is_dir():
+            if any(child.name not in {".", ".."} for child in path.iterdir()):
+                print(f"refusing to package {unwanted}: it contains files")
+                return 2
+            continue
         if path.exists():
-            print(f"refusing to package {unwanted}: remove it from the bundle first")
+            print(f"refusing to package {unwanted}: user data present")
             return 2
 
     ver = version()
