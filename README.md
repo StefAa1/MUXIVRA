@@ -201,3 +201,10 @@ scripts/  build_windows_portable.py live_check.py fake_device.py wine_e2e.py
           seed_demo.py point_serial_host.py
 deploy/   sshdeck.service
 ```
+
+
+## Εγκατάσταση στα Windows
+
+- **Installer**: `MUXIVRA-Setup-<version>.exe` — per-user εγκατάσταση στο
+  `%LOCALAPPDATA%\MUXIVRA`, χωρίς admin, με συντομεύσεις και uninstaller που κρατά τα δεδομένα.
+- **Portable**: `MUXIVRA-portable-win64.zip` — ξεζίπαρισμα και `MUXIVRA.exe`, χωρίς εγκατάσταση.

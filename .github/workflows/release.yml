@@ -23,6 +23,7 @@ permissions:
 
 env:
   ZIP: dist/MUXIVRA-portable-win64.zip
+  SETUP: dist/MUXIVRA-Setup-${{ github.ref_name }}.exe
   MANIFEST: dist/release.json
   SIGNATURE: dist/release.json.sig
   PUBKEY: dist/release.pubkey.txt
@@ -75,6 +76,11 @@ jobs:
 
       - name: Build portable bundle
         run: .venv/bin/python scripts/build_windows_portable.py
+
+      - name: Build Windows installer
+        run: |
+          sudo apt-get install -y -qq --no-install-recommends nsis
+          .venv/bin/python scripts/build_installer.py
 
       - name: Verify bundle matches source
         run: .venv/bin/python scripts/verify_bundle.py
@@ -247,6 +253,11 @@ jobs:
         run: |
           tag="${GITHUB_REF_NAME}"
           assets=(dist/MUXIVRA-portable-win64.zip dist/release.json dist/release.json.sig dist/release.pubkey.txt)
+          setup="$(ls dist/MUXIVRA-Setup-*.exe 2>/dev/null | head -1 || true)"
+          if [ -n "$setup" ]; then
+            sha256sum "$setup" > "${setup}.sha256"
+            assets+=("$setup" "${setup}.sha256")
+          fi
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "release $tag exists — uploading assets with --clobber"
             gh release upload "$tag" "${assets[@]}" --clobber

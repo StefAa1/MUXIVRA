@@ -68,3 +68,25 @@ manifest· αλλιώς επιστρέφει `bad_signature` / `insecure_url` / 
 Το τρέχον build είναι διαθέσιμο και τοπικά:
 `http://10.10.1.16:8080/21YeHQBmys4N/MUXIVRA-portable-win64.zip`
 μαζί με `release.json` και `release.json.sig` — ίδια αρχεία με του GitHub Release.
+
+
+## Εγκατάσταση σε Windows PC (setup.exe)
+
+Το `MUXIVRA-Setup-<version>.exe` είναι πραγματικός installer (NSIS):
+
+- εγκαθιστά **ανά χρήστη** στο `%LOCALAPPDATA%\MUXIVRA` — **χωρίς administrator**,
+- φτιάχνει συντομεύσεις σε Start Menu και Desktop,
+- γράφει καταχώρηση «Apps & features» με uninstaller,
+- **δεν αγγίζει** τον φάκελο δεδομένων `%LOCALAPPDATA%\MUXIVRA\data` σε upgrade,
+- το uninstall διαγράφει μόνο τα προγράμματα και **κρατά** τα δεδομένα (πελάτες, vault, τεκμηρίωση).
+
+Χτίζεται από το ίδιο bundle με το ZIP:
+
+```bash
+.venv/bin/python scripts/build_windows_portable.py
+.venv/bin/python scripts/build_installer.py     # → dist/MUXIVRA-Setup-<ver>.exe
+```
+
+Το workflow του release ανεβάζει στο GitHub Release: `MUXIVRA-Setup-<tag>.exe`,
+`MUXIVRA-Setup-<tag>.exe.sha256`, `MUXIVRA-portable-win64.zip`, `release.json`,
+`release.json.sig`, `release.pubkey.txt`.
