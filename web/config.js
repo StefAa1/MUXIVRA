@@ -242,7 +242,7 @@ function cfgBind() {
   el.querySelectorAll('[data-cfg-open]').forEach((button) => {
     button.onclick = async () => {
       try {
-        const payload = await cfgApi(`/netdoc/config/versions/${button.dataset.cfgOpen}`);
+        const payload = await cfgApi(`/inventory/config/versions/${button.dataset.cfgOpen}`);
         CFG.notice = `Version #${payload.id} · sha256 ${payload.sha256.slice(0, 12)}…`;
         CFG.error = '';
         cfgRender();
@@ -261,8 +261,8 @@ function cfgBind() {
 async function cfgLoad() {
   try {
     const [versions, observed] = await Promise.all([
-      cfgApi(`/netdoc/devices/${CFG.deviceId}/config/versions`),
-      cfgApi(`/netdoc/devices/${CFG.deviceId}/observed`).catch(() => ({ observed: null })),
+      cfgApi(`/inventory/devices/${CFG.deviceId}/config/versions`),
+      cfgApi(`/inventory/devices/${CFG.deviceId}/observed`).catch(() => ({ observed: null })),
     ]);
     CFG.versions = versions.versions || [];
     CFG.vendor = versions.vendor || CFG.vendor;
@@ -279,7 +279,7 @@ async function cfgFetch() {
   CFG.notice = '';
   cfgRender();
   try {
-    const result = await cfgApi(`/netdoc/devices/${CFG.deviceId}/config/fetch`, {
+    const result = await cfgApi(`/inventory/devices/${CFG.deviceId}/config/fetch`, {
       method: 'POST', json: { vendor: CFG.vendor, label: 'fetch' },
     });
     CFG.busy = false;
@@ -297,7 +297,7 @@ async function cfgPaste() {
   const vendor = CFG.el.querySelector('#cfg-paste-vendor').value;
   if (!text.trim()) { CFG.error = 'The field is empty.'; cfgRender(); return; }
   try {
-    const result = await cfgApi(`/netdoc/devices/${CFG.deviceId}/config/paste`, {
+    const result = await cfgApi(`/inventory/devices/${CFG.deviceId}/config/paste`, {
       method: 'POST', json: { text, vendor },
     });
     CFG.error = '';
@@ -313,7 +313,7 @@ async function cfgDiff() {
   if (CFG.selected.length !== 2) return;
   const [left, right] = CFG.selected.slice().sort((a, b) => a - b);
   try {
-    CFG.diff = await cfgApi(`/netdoc/config/diff?left=${left}&right=${right}`);
+    CFG.diff = await cfgApi(`/inventory/config/diff?left=${left}&right=${right}`);
     CFG.error = '';
   } catch (error) {
     CFG.error = cfgErrorText(error);
@@ -323,7 +323,7 @@ async function cfgDiff() {
 
 async function cfgReconcile(apply) {
   try {
-    const result = await cfgApi(`/netdoc/devices/${CFG.deviceId}/reconcile`, {
+    const result = await cfgApi(`/inventory/devices/${CFG.deviceId}/reconcile`, {
       method: 'POST', json: { apply: !!apply },
     });
     CFG.actions = result.actions || [];
@@ -331,8 +331,8 @@ async function cfgReconcile(apply) {
     CFG.notice = apply
       ? `Documentation updated: ${CFG.actions.length} items. No commands were sent to the device.`
       : '';
-    if (apply && typeof loadNetdoc === 'function') {
-      try { await loadNetdoc(); } catch (_) { /* το panel δείχνει ό,τι διαβάστηκε */ }
+    if (apply && typeof loadInventory === 'function') {
+      try { await loadInventory(); } catch (_) { /* το panel δείχνει ό,τι διαβάστηκε */ }
     }
     await cfgLoad();
   } catch (error) {

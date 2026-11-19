@@ -134,7 +134,7 @@ async function enterApp() {
   $('#sb-user').textContent = status.username || 'admin';
   await loadCustomers();
   await Promise.all([loadHosts(), loadCreds(), loadSnippets(), loadEvents(), loadUpdateState()]);
-  if (typeof loadNetdoc === 'function') await loadNetdoc();
+  if (typeof loadInventory === 'function') await loadInventory();
   setView('hosts');
   renderSidebar();
   renderPage();
@@ -154,7 +154,7 @@ async function loadCustomers() {
       .join('');
     select.onchange = async () => {
       S.customerId = Number(select.value);
-      await Promise.all([loadHosts(), loadCreds(), loadSnippets(), loadNetdoc()]);
+      await Promise.all([loadHosts(), loadCreds(), loadSnippets(), loadInventory()]);
       renderSidebar();
       renderPage();
       toast(`Active customer: ${S.customers.find((c) => c.id === S.customerId)?.name || ''}`);
@@ -184,7 +184,7 @@ function openCustomerModal() {
       const created = await api('/customers', { json: data });
       S.customerId = created.id;
       await loadCustomers();
-      await Promise.all([loadHosts(), loadCreds(), loadNetdoc()]);
+      await Promise.all([loadHosts(), loadCreds(), loadInventory()]);
       closeModal();
       renderSidebar();
       renderPage();
@@ -483,7 +483,7 @@ function renderPage() {
   renderSnippets();
   renderActivity();
   if (typeof renderRacks === 'function') renderRacks();
-  if (S.view === 'racks') { decorateDeviceConnections(); decorateNetdocBackup(); }
+  if (S.view === 'racks') { decorateDeviceConnections(); decorateInventoryBackup(); }
   if (S.view === 'diagram' && typeof renderDiagram === 'function') { renderDiagram(); setTimeout(watchDiagramPanel, 60); }
   renderSettings();
   showPage(S.view);
@@ -588,26 +588,26 @@ function renderActivity() {
     </tr>`).join('')}</tbody></table>`;
 }
 
-async function downloadNetdocBackup() {
-  const res = await api('/netdoc/export');
+async function downloadInventoryBackup() {
+  const res = await api('/inventory/export');
   const blob = new Blob([JSON.stringify(res, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  link.download = `muxivra-netdoc-${new Date().toISOString().slice(0, 10)}.json`;
+  link.download = `muxivra-inventory-${new Date().toISOString().slice(0, 10)}.json`;
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
   toast('Backup prepared (without secrets)');
 }
 
-async function importNetdocBackup(file) {
+async function importInventoryBackup(file) {
   const text = await file.text();
   let payload;
   try { payload = JSON.parse(text); } catch (_) { toast('The file is not valid JSON', 'err'); return; }
   const data = payload.data && payload.data.format ? payload.data : payload;
   let preview;
   try {
-    preview = await api('/netdoc/import', { json: { data, dry_run: true } });
+    preview = await api('/inventory/import', { json: { data, dry_run: true } });
   } catch (err) { toast(err.message, 'err'); return; }
   const created = preview.created || {};
   const conflicts = (preview.conflicts || []).length;
@@ -618,9 +618,9 @@ async function importNetdocBackup(file) {
     `Existing items are not replaced (${conflicts} matches to existing items).`,
     async () => {
       try {
-        const done = await api('/netdoc/import', { json: { data, dry_run: false } });
+        const done = await api('/inventory/import', { json: { data, dry_run: false } });
         toast(`Restore: ${done.created.devices || 0} devices, ${done.created.links || 0} links`);
-        await loadNetdoc();
+        await loadInventory();
         renderPage();
       } catch (err) { toast(err.message, 'err'); }
     },
@@ -628,7 +628,7 @@ async function importNetdocBackup(file) {
   );
 }
 
-function decorateNetdocBackup() {
+function decorateInventoryBackup() {
   const actions = document.querySelector('#page-racks .page-head .actions');
   if (!actions || actions.querySelector('#nd-backup')) return;
   const input = document.createElement('input');
@@ -639,14 +639,14 @@ function decorateNetdocBackup() {
   input.addEventListener('change', () => {
     const file = input.files && input.files[0];
     input.value = '';
-    if (file) importNetdocBackup(file);
+    if (file) importInventoryBackup(file);
   });
   actions.appendChild(input);
   const backup = document.createElement('button');
   backup.className = 'btn ghost xs';
   backup.id = 'nd-backup';
   backup.textContent = 'Backup JSON';
-  backup.onclick = () => downloadNetdocBackup().catch((err) => toast(err.message, 'err'));
+  backup.onclick = () => downloadInventoryBackup().catch((err) => toast(err.message, 'err'));
   const restore = document.createElement('button');
   restore.className = 'btn ghost xs';
   restore.id = 'nd-restore';
@@ -672,7 +672,7 @@ function watchDiagramPanel() {
     inFlight = true;
     let payload;
     try {
-      payload = await api(`/netdoc/devices/${deviceId}/connections`);
+      payload = await api(`/inventory/devices/${deviceId}/connections`);
     } catch (_) {
       inFlight = false;
       return;
@@ -708,7 +708,7 @@ async function decorateDeviceConnections() {
   if (!panel || panel.querySelector('.nd-conn-row')) return;
   let payload;
   try {
-    payload = await api(`/netdoc/devices/${device.id}/connections`);
+    payload = await api(`/inventory/devices/${device.id}/connections`);
     ND.connections = ND.connections || {};
     ND.connections[device.id] = payload;
   } catch (err) {
@@ -770,9 +770,13 @@ function renderSettings() {
         <div class="body">
           <label class="field"><span>GitHub repo</span>
             <input id="upd-repo" value="${esc(upd.repo || '')}" placeholder="owner/repo" autocomplete="off" /></label>
+          <label class="field"><span>GitHub token (only for a private repo)</span>
+            <input id="upd-token" type="password" placeholder="${upd.token ? 'saved — paste to replace' : 'ghp_… (read-only)'}" autocomplete="off" /></label>
+          <p class="hint">Stored encrypted. Needed only when the repository is private; a public repo works without it.</p>
           <p class="hint" id="upd-status">${upd.last_check ? 'last check: ' + esc(upd.last_check) : 'no checks yet'}</p>
           <div class="actions">
             <button class="btn xs" id="upd-save">Save</button>
+            <button class="btn xs" id="upd-token-save">Save token</button>
             <button class="btn xs" id="upd-check">Check now</button>
             <button class="btn primary xs${upd.asset ? '' : ' hidden'}" id="upd-prepare">Download &amp; prepare</button>
           </div>
@@ -1222,7 +1226,7 @@ document.addEventListener('click', async (event) => {
     try {
       const deviceId = Number(ndWinbox.dataset.ndWinbox);
       const device = ((ND.layout || {}).devices || []).find((d) => d.id === deviceId) || {};
-      const res = await api(`/netdoc/devices/${deviceId}/winbox`, { json: { address: device.mgmt_ip || '' } });
+      const res = await api(`/inventory/devices/${deviceId}/winbox`, { json: { address: device.mgmt_ip || '' } });
       toast(`WinBox: pid ${res.pid || '—'}`);
     } catch (err) {
       toast(err.message.startsWith('winbox') ? 'WinBox is not installed' : err.message, 'err');
@@ -1234,7 +1238,7 @@ document.addEventListener('click', async (event) => {
   if (ndWeb) {
     const deviceId = Number(ndWeb.dataset.ndWeb);
     try {
-      const res = await api(`/netdoc/devices/${deviceId}/web`, { method: 'POST', json: {} });
+      const res = await api(`/inventory/devices/${deviceId}/web`, { method: 'POST', json: {} });
       if (res.mode === 'window') toast(`Web management: ${res.url} — separate window`);
       else {
         toast(res.warning, 'err');
@@ -1262,9 +1266,9 @@ document.addEventListener('click', async (event) => {
       const hostId = Number($('#ndp-host').value || 0);
       if (!hostId) { $('#ndp-error').textContent = 'No host available to connect.'; return; }
       try {
-        await api(`/netdoc/devices/${deviceId}/profiles`, { json: { host_id: hostId } });
+        await api(`/inventory/devices/${deviceId}/profiles`, { json: { host_id: hostId } });
         closeModal();
-        await loadNetdoc();
+        await loadInventory();
         renderPage();
         toast('Profile added');
       } catch (err) { $('#ndp-error').textContent = err.message; }
@@ -1275,12 +1279,12 @@ document.addEventListener('click', async (event) => {
   const ndDropProfile = event.target.closest('[data-nd-drop-profile]');
   if (ndDropProfile) {
     const deviceId = Number(ndDropProfile.dataset.ndDropProfile);
-    const payload = await api(`/netdoc/devices/${deviceId}/connections`);
+    const payload = await api(`/inventory/devices/${deviceId}/connections`);
     try {
       for (const h of payload.hosts) {
-        await api(`/netdoc/devices/${deviceId}/profiles/${h.id}`, { method: 'DELETE' });
+        await api(`/inventory/devices/${deviceId}/profiles/${h.id}`, { method: 'DELETE' });
       }
-      await loadNetdoc();
+      await loadInventory();
       renderPage();
       toast('Profiles removed');
     } catch (err) { toast(err.message, 'err'); }
@@ -1310,8 +1314,8 @@ document.addEventListener('click', async (event) => {
   if (ndPorts) {
     const deviceId = Number(ndPorts.dataset.ndPorts);
     try {
-      const created = await api('/netdoc/ports/bulk', { json: { device_id: deviceId, prefix: 'eth', count: 24 } });
-      await loadNetdoc();
+      const created = await api('/inventory/ports/bulk', { json: { device_id: deviceId, prefix: 'eth', count: 24 } });
+      await loadInventory();
       renderPage();
       toast(`${created.created.length} ports added`);
     } catch (err) { toast(err.message, 'err'); }
@@ -1532,8 +1536,8 @@ document.addEventListener('click', (event) => {
       const name = (($('#nd-site-name') || {}).value || '').trim();
       if (!name) { toast('Enter a site name', 'err'); return; }
       try {
-        await api('/netdoc/sites', { json: { name } });
-        await loadNetdoc();
+        await api('/inventory/sites', { json: { name } });
+        await loadInventory();
         renderPage();
         toast('Site added');
       } catch (err) { toast(err.message, 'err'); }
@@ -1543,8 +1547,8 @@ document.addEventListener('click', (event) => {
       const name = (($('#nd-rack-name') || {}).value || '').trim();
       if (!siteId || !name) { toast('Select a site and enter a rack name', 'err'); return; }
       try {
-        const rack = await api('/netdoc/racks', { json: { site_id: siteId, name } });
-        await loadNetdoc();
+        const rack = await api('/inventory/racks', { json: { site_id: siteId, name } });
+        await loadInventory();
         await ndSelectRack(rack.id);
         toast('Rack added');
       } catch (err) { toast(err.message, 'err'); }
@@ -1556,8 +1560,8 @@ document.addEventListener('click', (event) => {
       const position = Number((($('#nd-dev-pos') || {}).value) || 1);
       if (!rackId || !name) { toast('Enter a device name', 'err'); return; }
       try {
-        await api('/netdoc/devices', { json: { rack_id: rackId, name, kind, position, units: 1 } });
-        await loadNetdoc();
+        await api('/inventory/devices', { json: { rack_id: rackId, name, kind, position, units: 1 } });
+        await loadInventory();
         await ndSelectRack(rackId);
         toast('Device added');
       } catch (err) {
@@ -1588,6 +1592,19 @@ document.addEventListener('click', (event) => {
         renderPage();
         toast('Saved');
       } catch (err) { toast(err.message === 'invalid_repo' ? 'Format: owner/repo' : err.message, 'err'); }
+    },
+    'upd-token-save': async () => {
+      const field = $('#upd-token');
+      const token = field ? field.value.trim() : '';
+      try {
+        const result = await api('/update/token', { json: { token } });
+        if (field) field.value = '';
+        await loadUpdateState();
+        renderPage();
+        toast(result.configured ? 'Token saved (encrypted)' : 'Token cleared');
+      } catch (err) {
+        toast(err.message === 'bad_token' ? 'That does not look like a GitHub token' : err.message, 'err');
+      }
     },
     'upd-check': async () => {
       const repo = ($('#upd-repo') || {}).value || '';

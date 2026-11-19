@@ -1,9 +1,9 @@
-/* --------------------------------------------------------------- NETDOC
+/* --------------------------------------------------------------- INVENTORY
    Rack documentation: sites → racks → devices (U positions) → ports → links.
    Views: Layout (visual rack), Συνδέσεις (paged table), Audit (audit).
 
    Quick Connect: pick one port (in the rack or through the cross-rack search
-   over /netdoc/ports) and then its partner; the next free cable number is
+   over /inventory/ports) and then its partner; the next free cable number is
    suggested. A port can appear in one link only, so busy ports are locked.
 
    app.js owns the handlers for [data-nd-rack], [data-nd-tab],
@@ -26,7 +26,7 @@ const ND = {
   edit: null,
 };
 
-const ND_TPL_KEY = 'sshdeck.netdoc.portTemplates';
+const ND_TPL_KEY = 'sshdeck.inventory.portTemplates';
 const ND_KIND_LABEL = {
   switch: 'switch', router: 'router', 'patch-panel': 'patch panel',
   server: 'server', pdu: 'pdu', other: 'other',
@@ -65,15 +65,15 @@ function ndDebounce(key, fn, wait) {
 function ndKindIcon(kind) { return ND_KIND_LABEL[kind] || kind || '—'; }
 
 /* ------------------------------------------------------------------- data */
-async function loadNetdoc() {
+async function loadInventory() {
   S.nd = S.nd || {};
   try {
-    S.nd.tree = await api('/netdoc/tree');
+    S.nd.tree = await api('/inventory/tree');
   } catch (_) {
     S.nd.tree = { sites: [], links: 0 };
   }
   try {
-    S.nd.links = await api('/netdoc/links');
+    S.nd.links = await api('/inventory/links');
   } catch (_) {
     S.nd.links = [];
   }
@@ -81,7 +81,7 @@ async function loadNetdoc() {
   ND.links.error = '';
   if (ND.rackId) {
     try {
-      ND.layout = await api(`/netdoc/rack/${ND.rackId}`);
+      ND.layout = await api(`/inventory/rack/${ND.rackId}`);
     } catch (_) {
       ND.layout = null;
       ND.rackId = null;
@@ -92,7 +92,7 @@ async function loadNetdoc() {
   }
   if (ND.tab === 'table') await ndLoadLinks({ silent: true });
   if (ND.tab === 'audit' && ND.audit) {
-    try { ND.audit = await api('/netdoc/audit'); } catch (_) { /* κρατάμε το παλιό */ }
+    try { ND.audit = await api('/inventory/audit'); } catch (_) { /* κρατάμε το παλιό */ }
   }
 }
 
@@ -107,7 +107,7 @@ async function ndSelectRack(rackId) {
   ND.portSearch = { q: '', rows: [], total: 0, seq: ND.portSearch.seq, loading: false, error: '' };
   ND.portForm.open = false;
   try {
-    ND.layout = await api(`/netdoc/rack/${rackId}`);
+    ND.layout = await api(`/inventory/rack/${rackId}`);
   } catch (err) {
     ND.layout = null;
     toast(ndErrorText(err, 'The rack failed to load'), 'err');
@@ -234,7 +234,7 @@ async function ndRunPortSearch(query) {
   st.loading = true;
   ndPaintPortSearch();
   try {
-    const page = await api(`/netdoc/ports?q=${encodeURIComponent(st.q.trim())}&limit=15`);
+    const page = await api(`/inventory/ports?q=${encodeURIComponent(st.q.trim())}&limit=15`);
     if (seq !== st.seq) return;
     st.rows = page.ports || [];
     st.total = Number(page.total || st.rows.length);
@@ -287,15 +287,15 @@ async function ndCreateLink(portA, portB) {
     return;
   }
   try {
-    await api('/netdoc/links', { json: { port_a: portA, port_b: portB, cable, length_m: rawLength } });
+    await api('/inventory/links', { json: { port_a: portA, port_b: portB, cable, length_m: rawLength } });
     ND.quick = null;
     ND.portSearch = { q: '', rows: [], total: 0, seq: ND.portSearch.seq, loading: false, error: '' };
-    await loadNetdoc();
+    await loadInventory();
     renderPage();
     toast('Link recorded');
   } catch (err) {
     toast(ndErrorText(err, 'Linking failed'), 'err');
-    await loadNetdoc();
+    await loadInventory();
     renderPage();
   }
 }
@@ -378,7 +378,7 @@ async function ndLoadLinks(opts = {}) {
   try {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       fetchedOffset = st.offset;
-      const page = await api(`/netdoc/links/page?q=${encodeURIComponent(queryUsed.trim())}&limit=${st.limit}&offset=${fetchedOffset}`);
+      const page = await api(`/inventory/links/page?q=${encodeURIComponent(queryUsed.trim())}&limit=${st.limit}&offset=${fetchedOffset}`);
       st.rows = page.links || [];
       st.total = Number(page.total || 0);
       st.limit = Number(page.limit || st.limit) || 50;
@@ -517,7 +517,7 @@ async function ndRunEditSearch(query) {
   e.loading = true;
   if (box) box.innerHTML = '<p class="hint">Searching…</p>';
   try {
-    const page = await api(`/netdoc/ports?q=${encodeURIComponent(e.q.trim())}&limit=12`);
+    const page = await api(`/inventory/ports?q=${encodeURIComponent(e.q.trim())}&limit=12`);
     if (seq !== e.seq) return;
     e.rows = page.ports || [];
   } catch (err) {
@@ -574,13 +574,13 @@ async function ndSubmitLinkEdit(event) {
     return;
   }
   try {
-    await api(`/netdoc/links/${e.id}`, {
+    await api(`/inventory/links/${e.id}`, {
       method: 'PATCH',
       json: { cable, length_m: rawLength, port_a: portA, port_b: portB },
     });
     ND.edit = null;
     closeModal();
-    await loadNetdoc();
+    await loadInventory();
     renderPage();
     toast('Link updated');
   } catch (err) {
@@ -595,8 +595,8 @@ function ndUnlink(linkId) {
     : `link #${linkId}`;
   confirmDialog('Unlink', `The link ${name} will be deleted. Its ports will stay free.`, async () => {
     try {
-      await api(`/netdoc/links/${linkId}`, { method: 'DELETE' });
-      await loadNetdoc();
+      await api(`/inventory/links/${linkId}`, { method: 'DELETE' });
+      await loadInventory();
       renderPage();
       toast('Link deleted');
     } catch (err) {
@@ -715,11 +715,11 @@ async function ndSubmitDevice(event) {
   if (payload.note.length > 400) { fail('Note must be 400 characters or fewer.'); return; }
 
   try {
-    const saved = await api(`/netdoc/devices/${deviceId}`, { method: 'PATCH', json: payload });
+    const saved = await api(`/inventory/devices/${deviceId}`, { method: 'PATCH', json: payload });
     const hostKept = !payload.host_id && saved && saved.host_id;
     closeModal();
     ND.deviceId = deviceId;
-    await loadNetdoc();
+    await loadInventory();
     renderPage();
     if (hostKept) {
       toast('Saved — the API does not allow removing the host, so it was kept', 'err');
@@ -736,7 +736,7 @@ async function ndDeleteDevice(deviceId) {
   const label = device ? device.name : `#${deviceId}`;
   let deps;
   try {
-    deps = await api(`/netdoc/devices/${deviceId}/dependents`);
+    deps = await api(`/inventory/devices/${deviceId}/dependents`);
   } catch (err) {
     toast(ndErrorText(err, 'Failed to load the device dependencies'), 'err');
     return;
@@ -748,9 +748,9 @@ async function ndDeleteDevice(deviceId) {
     : `The device "${label}" has ${ports} ports and no links. It will be deleted along with its ports.`;
   confirmDialog('Delete device', text, async () => {
     try {
-      await api(`/netdoc/devices/${deviceId}`, { method: 'DELETE' });
+      await api(`/inventory/devices/${deviceId}`, { method: 'DELETE' });
       ND.deviceId = null;
-      await loadNetdoc();
+      await loadInventory();
       renderPage();
       toast('Device deleted');
     } catch (err) {
@@ -793,14 +793,14 @@ async function ndSubmitPortForm(event) {
   if (prefix.length > 12) { toast('Prefix must be 12 characters or fewer', 'err'); return; }
   if (!Number.isInteger(count) || count < 1 || count > 96) { toast('Count must be 1–96', 'err'); return; }
   try {
-    const created = await api('/netdoc/ports/bulk', {
+    const created = await api('/inventory/ports/bulk', {
       json: { device_id: deviceId, prefix, count, kind: ND.portForm.kind },
     });
     const made = (created && created.created) || [];
     ndRememberTemplate({ prefix, count, kind: ND.portForm.kind });
     ND.portForm.open = false;
     ND.deviceId = deviceId;
-    await loadNetdoc();
+    await loadInventory();
     renderPage();
     toast(`${made.length} ports added`);
   } catch (err) {
@@ -1008,7 +1008,7 @@ async function ndPrint() {
   let total = Number(ND.links.total || rows.length);
   let note = '';
   try {
-    const all = await api('/netdoc/links/page?limit=500');
+    const all = await api('/inventory/links/page?limit=500');
     rows = all.links || rows;
     total = Number(all.total || rows.length);
   } catch (err) {
@@ -1035,7 +1035,7 @@ async function ndPrint() {
 
 /* -------------------------------------------------------------- audit load */
 async function ndAudit() {
-  ND.audit = await api('/netdoc/audit');
+  ND.audit = await api('/inventory/audit');
   return ND.audit;
 }
 
@@ -1253,7 +1253,7 @@ document.addEventListener('click', async (event) => {
   if (!button) return;
   event.preventDefault();
   try {
-    const response = await fetch('/api/netdoc/links.csv', {
+    const response = await fetch('/api/inventory/links.csv', {
       headers: { 'x-requested-with': 'sshdeck', 'x-customer-id': String(window.S?.customerId || '') },
       credentials: 'same-origin',
     });
@@ -1284,9 +1284,9 @@ document.addEventListener('click', async (event) => {
     const name = prompt('New site name:', site.name);
     if (!name || name.trim() === site.name) return;
     try {
-      await api(`/netdoc/sites/${siteId}`, { method: 'PATCH', json: { name: name.trim() } });
-      await loadNetdoc();
-      renderNetdoc();
+      await api(`/inventory/sites/${siteId}`, { method: 'PATCH', json: { name: name.trim() } });
+      await loadInventory();
+      renderInventory();
     } catch (error) {
       alert('Rename failed: ' + error.message);
     }
@@ -1295,7 +1295,7 @@ document.addEventListener('click', async (event) => {
 
   let deps = null;
   try {
-    deps = await api(`/netdoc/site/${siteId}/dependents`);
+    deps = await api(`/inventory/site/${siteId}/dependents`);
   } catch (error) {
     alert('Could not check dependencies: ' + error.message);
     return;
@@ -1308,10 +1308,10 @@ document.addEventListener('click', async (event) => {
   );
   if ((answer || '').trim().toUpperCase() !== 'DELETE') return;
   try {
-    await api(`/netdoc/sites/${siteId}`, { method: 'DELETE' });
+    await api(`/inventory/sites/${siteId}`, { method: 'DELETE' });
     if (ND.rackId && site.racks?.some((r) => r.id === ND.rackId)) ND.rackId = null;
-    await loadNetdoc();
-    renderNetdoc();
+    await loadInventory();
+    renderInventory();
   } catch (error) {
     alert('Delete failed: ' + error.message);
   }
@@ -1338,7 +1338,7 @@ function ndcDevices() {
   return out;
 }
 
-const NDC_PORTS = new Map();   // rack_id → devices με ports (από /netdoc/rack/{id})
+const NDC_PORTS = new Map();   // rack_id → devices με ports (από /inventory/rack/{id})
 
 function ndcPorts(deviceId) {
   const device = ndcDevices().find((item) => String(item.id) === String(deviceId));
@@ -1357,7 +1357,7 @@ async function ndcLoadPorts() {
   await Promise.all(Array.from(racks.keys()).map(async (rackId) => {
     if (NDC_PORTS.has(rackId)) return;
     try {
-      const layout = await api(`/netdoc/rack/${rackId}`);
+      const layout = await api(`/inventory/rack/${rackId}`);
       NDC_PORTS.set(rackId, layout.devices || []);
     } catch (_) { NDC_PORTS.set(rackId, []); }
   }));
@@ -1452,7 +1452,7 @@ async function ndcSave() {
   const save = document.querySelector('#ndc-save');
   if (save) { save.disabled = true; save.textContent = 'Saving…'; }
   try {
-    await api('/netdoc/links', {
+    await api('/inventory/links', {
       method: 'POST',
       json: {
         port_a: NDC.a.portId,
@@ -1462,8 +1462,8 @@ async function ndcSave() {
     });
     closeModal();
     NDC.a = null; NDC.b = null;
-    await loadNetdoc();
-    renderNetdoc();
+    await loadInventory();
+    renderInventory();
     toast('Cable recorded');
   } catch (error) {
     if (save) { save.disabled = false; save.textContent = 'Save cable'; }

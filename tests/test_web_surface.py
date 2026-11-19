@@ -73,20 +73,20 @@ def test_api_opens_surface_only_for_owned_device(auth_client, monkeypatch):
     b = auth_client.post("/api/customers", json={"name": "B"}).json()
     ha = {"x-customer-id": str(a["id"])}
     hb = {"x-customer-id": str(b["id"])}
-    site = auth_client.post("/api/netdoc/sites", headers=ha, json={"name": "S"}).json()
-    rack = auth_client.post("/api/netdoc/racks", headers=ha, json={"site_id": site["id"], "name": "R"}).json()
-    dev = auth_client.post("/api/netdoc/devices", headers=ha, json={
+    site = auth_client.post("/api/inventory/sites", headers=ha, json={"name": "S"}).json()
+    rack = auth_client.post("/api/inventory/racks", headers=ha, json={"site_id": site["id"], "name": "R"}).json()
+    dev = auth_client.post("/api/inventory/devices", headers=ha, json={
         "rack_id": rack["id"], "name": "gw", "mgmt_ip": "10.5.5.5"}).json()
 
-    ok = auth_client.post(f"/api/netdoc/devices/{dev['id']}/web", headers=ha, json={})
+    ok = auth_client.post(f"/api/inventory/devices/{dev['id']}/web", headers=ha, json={})
     assert ok.status_code == 200 and ok.json()["mode"] == "window"
     assert launched and "10.5.5.5" in launched[0][0]
 
-    cfg = auth_client.get(f"/api/netdoc/devices/{dev['id']}/web/config", headers=ha).json()
+    cfg = auth_client.get(f"/api/inventory/devices/{dev['id']}/web/config", headers=ha).json()
     assert cfg["bridge"] is False and cfg["url"].startswith("http://10.5.5.5")
 
-    assert auth_client.post(f"/api/netdoc/devices/{dev['id']}/web", headers=hb, json={}).status_code in (404, 409)
-    assert auth_client.post(f"/api/netdoc/devices/{dev['id']}/web", headers=ha,
+    assert auth_client.post(f"/api/inventory/devices/{dev['id']}/web", headers=hb, json={}).status_code in (404, 409)
+    assert auth_client.post(f"/api/inventory/devices/{dev['id']}/web", headers=ha,
                             json={"url": "file:///etc/passwd"}).status_code == 422
 
 

@@ -65,10 +65,13 @@ def is_newer(latest: str, current: str) -> bool:
     return a + (0,) * (length - len(a)) > b + (0,) * (length - len(b))
 
 
-def _open(url: str, timeout: float, accept: str = "application/vnd.github+json"):
-    request = urllib.request.Request(
-        url, headers={"accept": accept, "user-agent": "muxivra-updater"}
-    )
+def _open(url: str, timeout: float, accept: str = "application/vnd.github+json",
+          token: str | None = None):
+    headers = {"accept": accept, "user-agent": "muxivra-updater"}
+    if token:
+        # read-only token for a private repository; never logged, never stored in a URL
+        headers["authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, headers=headers)
     return urllib.request.urlopen(request, timeout=timeout)
 
 
@@ -88,15 +91,26 @@ def _assert_https(url: str) -> None:
 
 
 # ------------------------------------------------------------------ releases
-def check(repo: str, current: str, timeout: float = 12.0, opener=None) -> dict:
+def check(repo: str, current: str, timeout: float = 12.0, opener=None,
+          token: str | None = None) -> dict:
     repo = (repo or "").strip()
     if not REPO_RE.match(repo):
         raise UpdateError("invalid_repo", "The repository must be in owner/name form.")
     opener = opener or _open
     try:
-        with opener(API.format(repo=repo), timeout) as response:
+        try:
+            response = opener(API.format(repo=repo), timeout, token=token) if token else opener(API.format(repo=repo), timeout)
+        except TypeError:
+            response = opener(API.format(repo=repo), timeout)   # test openers may not take a token
+        with response:
             data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise UpdateError(
+                "repo_not_found",
+                f"GitHub returned 404 for {repo}. If the repository is private, add a "
+                "read-only token in Settings → Updates.",
+            ) from exc
         raise UpdateError("http_error", f"GitHub responded {exc.code} for {repo}.") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise UpdateError("network", f"Could not connect to GitHub: {exc}") from exc
@@ -206,7 +220,8 @@ def fetch_manifest(release: dict, opener=None, timeout: float = 30.0) -> dict:
 
 
 # ------------------------------------------------------------------ download
-def download_verified(release: dict, manifest: dict, dest_dir: Path, opener=None, timeout: float = 300.0) -> Path:
+def download_verified(release: dict, manifest: dict, dest_dir: Path, opener=None,
+                      timeout: float = 300.0, token: str | None = None) -> Path:
     """Fetch the signed archive and enforce the manifest's name and sha256."""
     asset = release.get("asset") or {}
     if not asset.get("url"):
@@ -223,7 +238,15 @@ def download_verified(release: dict, manifest: dict, dest_dir: Path, opener=None
     hasher = hashlib.sha256()
     written = 0
     opener = opener or _open
-    with opener(asset["url"], timeout, "application/octet-stream") as response, open(target, "wb") as fh:
+    stream = None
+    if token:
+        try:
+            stream = opener(asset["url"], timeout, "application/octet-stream", token=token)
+        except TypeError:
+            stream = None
+    if stream is None:
+        stream = opener(asset["url"], timeout, "application/octet-stream")
+    with stream as response, open(target, "wb") as fh:
         while chunk := response.read(1024 * 256):
             written += len(chunk)
             if written > MAX_ASSET_BYTES:

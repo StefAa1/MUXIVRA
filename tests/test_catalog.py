@@ -43,15 +43,15 @@ def test_unknown_model_is_rejected():
 
 def test_device_from_model_gets_vendor_and_ports(auth_client):
     auth_client.headers.update({"x-requested-with": "sshdeck"})
-    site = auth_client.post("/api/netdoc/sites", json={"name": "S"}).json()
-    rack = auth_client.post("/api/netdoc/racks", json={"site_id": site["id"], "name": "R", "units": 42}).json()
-    device = auth_client.post("/api/netdoc/devices", json={
+    site = auth_client.post("/api/inventory/sites", json={"name": "S"}).json()
+    rack = auth_client.post("/api/inventory/racks", json={"site_id": site["id"], "name": "R", "units": 42}).json()
+    device = auth_client.post("/api/inventory/devices", json={
         "rack_id": rack["id"], "name": "core-sw", "position": 10,
         "model_key": "mikrotik-crs328-24p",
     }).json()
     assert device["vendor"] == "mikrotik"
     assert device["model"] == "CRS328-24P-4S+RM"
-    layout = auth_client.get(f"/api/netdoc/rack/{rack['id']}").json()
+    layout = auth_client.get(f"/api/inventory/rack/{rack['id']}").json()
     ports = layout["devices"][0]["ports"]
     assert len(ports) == 28
     assert {p["name"] for p in ports} >= {"ether1", "ether24", "sfp-sfpplus1"}
@@ -65,7 +65,7 @@ def test_device_from_model_gets_vendor_and_ports(auth_client):
 
 def test_catalog_endpoint_lists_models(auth_client):
     auth_client.headers.update({"x-requested-with": "sshdeck"})
-    payload = auth_client.get("/api/netdoc/catalog").json()
+    payload = auth_client.get("/api/inventory/catalog").json()
     assert len(payload["vendors"]) == 4
-    aruba = auth_client.get("/api/netdoc/catalog/aruba").json()
+    aruba = auth_client.get("/api/inventory/catalog/aruba").json()
     assert all(m["vendor"] == "aruba" for m in aruba["models"])

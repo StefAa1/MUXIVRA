@@ -1,4 +1,4 @@
-"""Rack & cabling documentation (NETDOC-style): sites, racks, devices, ports, links.
+"""Rack & cabling documentation (INVENTORY-style): sites, racks, devices, ports, links.
 
 A port may be documented in at most one link — that is what makes duplicate
 port assignments impossible to save silently.
@@ -21,7 +21,7 @@ import sqlite3
 from . import customers, db
 from .api import guard
 
-router = APIRouter(prefix="/api/netdoc", dependencies=[Depends(guard)])
+router = APIRouter(prefix="/api/inventory", dependencies=[Depends(guard)])
 
 DeviceKind = Literal["switch", "router", "firewall", "ap", "patch-panel", "server", "pdu", "other"]
 PortKind = Literal["rj45", "sfp", "fiber", "power", "other"]
@@ -620,31 +620,31 @@ def audit(request: Request):
 
 
 @router.get("/export")
-def export_netdoc(request: Request):
+def export_inventory(request: Request):
     """Versioned JSON backup of THIS customer's documentation (no secrets)."""
-    from . import netdoc_io
+    from . import inventory_io
 
     with _conn() as conn:
-        payload = netdoc_io.export_payload(conn, _cid(conn, request))
+        payload = inventory_io.export_payload(conn, _cid(conn, request))
     return payload
 
 
 @router.post("/import")
-def import_netdoc(payload: dict, request: Request):
+def import_inventory(payload: dict, request: Request):
     """Restore a backup. dry_run=true shows what would be created, changing nothing."""
-    from . import netdoc_io
+    from . import inventory_io
 
     data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
     dry_run = bool(payload.get("dry_run"))
     with _conn() as conn:
         try:
-            report = netdoc_io.import_payload(
+            report = inventory_io.import_payload(
                 conn, data, dry_run=dry_run, customer_id=_cid(conn, request)
             )
-        except netdoc_io.ImportError_ as exc:
+        except inventory_io.ImportError_ as exc:
             raise HTTPException(status_code=422, detail=f"{exc.code}: {exc.message}")
     if not dry_run:
-        db.log_event(None, "netdoc_import", json.dumps(report["created"]))
+        db.log_event(None, "inventory_import", json.dumps(report["created"]))
     return report
 
 

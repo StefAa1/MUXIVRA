@@ -56,7 +56,7 @@ def main() -> int:
         for required in ("MUXIVRA.exe", "MUXIVRA.cmd", "BUILD.txt", "update-pubkey.txt",
                          "app/sshdeck/keeper.py", "app/sshdeck/transports.py", "app/sshdeck/update.py",
                          "app/sshdeck/buildinfo.py", "app/sshdeck/racks.py",
-                         "app/web/netdoc.js", "app/web/netdoc.css", "app/web/diagram.js", "app/web/diagram.css",
+                         "app/web/inventory.js", "app/web/inventory.css", "app/web/diagram.js", "app/web/diagram.css",
                          "runtime/python/python.exe", "runtime/libs/fastapi/__init__.py"):
             if not any(n.endswith(required) for n in names):
                 problems.append(f"archive missing {required}")

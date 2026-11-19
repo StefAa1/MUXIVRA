@@ -866,11 +866,36 @@ def delete_snippet(snippet_id: int):
 
 
 # ---------------------------------------------------------------- updates
+def _update_token(conn) -> str:
+    """Read-only GitHub token for a private repo. Stored sealed; never returned."""
+    blob = db.get_setting(conn, "update_token_enc", "") or ""
+    if not blob:
+        return ""
+    try:
+        return security.open_sealed(blob) or ""
+    except Exception:                      # noqa: BLE001 - a broken token must not break checks
+        return ""
+
+
+@api.post("/update/token")
+def update_set_token(payload: dict):
+    token = str(payload.get("token") or "").strip()
+    with db.db() as conn:
+        if token:
+            if len(token) < 20 or any(ch.isspace() for ch in token):
+                raise HTTPException(status_code=422, detail="bad_token")
+            db.set_setting(conn, "update_token_enc", security.seal(token))
+        else:
+            db.set_setting(conn, "update_token_enc", "")
+    return {"ok": True, "configured": bool(token)}
+
+
 @api.get("/update/state")
 def update_state():
     with db.db() as conn:
         repo = db.get_setting(conn, "update_repo", "") or ""
         last = db.get_setting(conn, "update_last_check", "") or ""
+        has_token = bool(_update_token(conn))
     return {
         "current": __import__("sshdeck").__version__,
         "repo": repo,
@@ -878,6 +903,7 @@ def update_state():
         "platform": "windows-portable" if (config.BASE_DIR / "runtime" / "python").exists() else "source",
         "vault_key": security.vault_key_status(),
         "signing_key": _signing_key_state(),
+        "token": has_token,
     }
 
 
@@ -904,10 +930,13 @@ def update_set_repo(payload: UpdateRepoIn):
 async def update_check(payload: UpdateCheckIn):
     with db.db() as conn:
         repo = payload.repo.strip() or (db.get_setting(conn, "update_repo", "") or "")
+        token = _update_token(conn)
     if not repo:
         raise HTTPException(status_code=422, detail="repo_not_set")
     try:
-        result = await asyncio.to_thread(update.check, repo, __import__("sshdeck").__version__)
+        result = await asyncio.to_thread(
+            update.check, repo, __import__("sshdeck").__version__, 12.0, None, token
+        )
     except update.UpdateError as exc:
         raise HTTPException(status_code=502, detail=f"{exc.code}: {exc.message}")
     with db.db() as conn:
@@ -923,9 +952,11 @@ async def update_prepare(payload: UpdateReleaseIn):
     release = payload.model_dump()
     release["latest"] = payload.latest
     try:
+        with db.db() as conn:
+            token = _update_token(conn)
         manifest = await asyncio.to_thread(update.fetch_manifest, release)
         archive = await asyncio.to_thread(
-            update.download_verified, release, manifest, config.STAGING_DIR
+            update.download_verified, release, manifest, config.STAGING_DIR, None, 300.0, token
         )
         root = await asyncio.to_thread(update.stage, archive, config.STAGING_DIR)
         # consistent snapshot through the SQLite backup API, kept with the staged

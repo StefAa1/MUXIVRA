@@ -502,8 +502,8 @@ async function wzCreateSite() {
   const name = el.querySelector('#wz-site-name').value.trim();
   if (!name) { wzShowError({ message: 'A site name is required.' }); return; }
   try {
-    const site = await wzApi('/netdoc/sites', { method: 'POST', json: { name } });
-    WZ.sites = (await wzApi('/netdoc/tree')).sites || [];
+    const site = await wzApi('/inventory/sites', { method: 'POST', json: { name } });
+    WZ.sites = (await wzApi('/inventory/tree')).sites || [];
     WZ.data.site_id = site.id;
     WZ.data.rack_id = '';
     WZ.error = '';
@@ -520,10 +520,10 @@ async function wzCreateRack() {
   if (!WZ.data.site_id) { wzShowError({ message: 'Select a site first.' }); return; }
   if (!name) { wzShowError({ message: 'A rack name is required.' }); return; }
   try {
-    const rack = await wzApi('/netdoc/racks', {
+    const rack = await wzApi('/inventory/racks', {
       method: 'POST', json: { site_id: Number(WZ.data.site_id), name, units },
     });
-    WZ.sites = (await wzApi('/netdoc/tree')).sites || [];
+    WZ.sites = (await wzApi('/inventory/tree')).sites || [];
     WZ.data.rack_id = rack.id;
     WZ.error = '';
     await wzLoadLayout();
@@ -560,7 +560,7 @@ async function wzSave() {
   try {
     host = await wzApi('/hosts', { method: 'POST', json: hostPayload });
     if (!d.planned && d.rack_id) {
-      await wzApi('/netdoc/devices', {
+      await wzApi('/inventory/devices', {
         method: 'POST',
         json: {
           rack_id: Number(d.rack_id),
@@ -603,7 +603,7 @@ async function wzNext() {
     WZ.step += 1;
     if (WZ.step === 3 && WZ.data.rack_id) await wzLoadLayout();
     if (WZ.step === 3 && WZ.sites.length === 0) {
-      try { WZ.sites = (await wzApi('/netdoc/tree')).sites || []; } catch (_) { WZ.sites = []; }
+      try { WZ.sites = (await wzApi('/inventory/tree')).sites || []; } catch (_) { WZ.sites = []; }
     }
     wzRender();
     return;
@@ -637,7 +637,7 @@ async function wzLoadLayout() {
   const rackId = WZ.data.rack_id;
   if (!rackId) { WZ.layout = null; return; }
   try {
-    WZ.layout = await wzApi(`/netdoc/rack/${rackId}`);
+    WZ.layout = await wzApi(`/inventory/rack/${rackId}`);
   } catch (_) {
     WZ.layout = null;      // χωρίς layout η φόρμα δουλεύει, ο έλεγχος γίνεται στο save
   }
@@ -677,10 +677,10 @@ async function wzMount(container, options) {
     WZ.credentials = await wzApi('/credentials');
   } catch (_) { WZ.credentials = []; }
   try {
-    WZ.catalog = await wzApi('/netdoc/catalog');
+    WZ.catalog = await wzApi('/inventory/catalog');
   } catch (_) { WZ.catalog = { vendors: [] }; }
   try {
-    WZ.sites = ((await wzApi('/netdoc/tree')) || {}).sites || [];
+    WZ.sites = ((await wzApi('/inventory/tree')) || {}).sites || [];
   } catch (_) { WZ.sites = []; }
   // προεπιλογή τρέχοντος context
   if (typeof S !== 'undefined' && S && S.nd && S.nd.tree && (S.nd.tree.sites || []).length && !WZ.data.site_id) {

@@ -4,7 +4,13 @@ from __future__ import annotations
 import sqlite3
 import time
 
-FORMAT = "muxivra.netdoc/1"
+FORMAT = "muxivra.inventory/1"
+# Files exported before the module rename still import: accept the old label,
+# always write the current one.
+def _accepted_format(value) -> bool:
+    """Current label, plus any earlier muxivra/*/1 export label (import only)."""
+    text = str(value or "")
+    return text == FORMAT or (text.startswith("muxivra.") and text.endswith("/1"))
 
 
 def export_payload(conn: sqlite3.Connection, customer_id: int | None = None) -> dict:
@@ -87,7 +93,7 @@ class ImportError_(RuntimeError):
 
 
 def validate(payload: dict) -> dict:
-    if not isinstance(payload, dict) or payload.get("format") != FORMAT:
+    if not isinstance(payload, dict) or not _accepted_format(payload.get("format")):
         raise ImportError_("bad_format", f"Expected format {FORMAT}.")
     for key in ("sites", "racks", "devices", "ports", "links"):
         if not isinstance(payload.get(key), list):

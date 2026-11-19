@@ -1,8 +1,8 @@
-/* NETDOC UI styles (owned by the netdoc worker)
+/* INVENTORY UI styles (owned by the inventory worker)
    Rack tree, visual rack, quick connect (cross-rack), paged cable table,
    device editor, port templates and the print sheet.
 
-   Note: styles.css refers to --bg-2 but never declares it; netdoc owns the
+   Note: styles.css refers to --bg-2 but never declares it; inventory owns the
    token so the existing rack styles resolve instead of falling back. */
 :root {
   --bg-2: #0a0f16;

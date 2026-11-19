@@ -61,7 +61,7 @@ tag that does not match the package version.
 ### Added
 
 - **Racks & cables** module: rooms → racks → devices (U position) → ports (bulk 24) → links with
-  cable type/length, and `links.csv` export. NETDOC parity: visual rack, quick connect, audit log.
+  cable type/length, and `links.csv` export. Documentation tooling: visual rack, quick connect, audit log.
 - **GitHub updater**: check the latest release, download the `.zip` and verify `sha256`.
 - **DPAPI key wrapping** on Windows: the vault key is wrapped per user, so a copy of `data/` on
   another machine cannot decrypt stored credentials.

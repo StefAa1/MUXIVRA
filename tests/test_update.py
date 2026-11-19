@@ -241,3 +241,37 @@ def test_apply_script_backs_up_database_and_exits_zero(tmp_path):
     assert "-db.sqlite" in text                       # DB copied aside before the swap
     assert text.rstrip().endswith("exit /b 0")        # headless fixture got 1 after del
     assert "healthcheck" in text
+
+
+def test_private_repo_token_is_stored_sealed_and_never_returned(auth_client):
+    from sshdeck import db, security
+
+    auth_client.headers.update({"x-requested-with": "sshdeck"})
+    token = "ghp_" + "x" * 32
+    assert auth_client.post("/api/update/token", json={"token": token}).json()["configured"] is True
+    state = auth_client.get("/api/update/state").json()
+    assert state["token"] is True
+    assert token not in str(state)
+    with db.db() as conn:
+        blob = db.get_setting(conn, "update_token_enc")
+    assert token not in blob                      # sealed, not plaintext
+    assert security.open_sealed(blob) == token
+    auth_client.post("/api/update/token", json={"token": ""})
+    assert auth_client.get("/api/update/state").json()["token"] is False
+
+
+def test_404_explains_private_repo():
+    import urllib.error
+
+    from sshdeck import update
+
+    def opener(url, timeout, accept="", token=None):
+        raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+    try:
+        update.check("owner/name", "0.4.9", opener=opener)
+    except update.UpdateError as exc:
+        assert exc.code == "repo_not_found"
+        assert "private" in exc.message.lower()
+    else:
+        raise AssertionError("404 must be reported")

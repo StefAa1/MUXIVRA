@@ -42,7 +42,7 @@
   `GET /api/customers/{id}/summary`.
 - Ownership checks live in `sshdeck/customers.py` (`assert_same_customer`, `*_owner`); new endpoints
   must call them rather than trusting the UI.
-- Documentation export format `muxivra.netdoc/1` is per-customer and never contains credentials.
+- Documentation export format `muxivra.inventory/1` is per-customer and never contains credentials.
 
 ## Known limits
 

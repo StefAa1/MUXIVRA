@@ -108,7 +108,7 @@ async function shFillSites() {
     if (typeof S !== 'undefined' && S && S.nd && S.nd.tree) sites = S.nd.tree.sites || [];
   } catch (_) { sites = []; }
   if (!sites.length && typeof api === 'function') {
-    try { sites = ((await api('/netdoc/tree')) || {}).sites || []; } catch (_) { sites = []; }
+    try { sites = ((await api('/inventory/tree')) || {}).sites || []; } catch (_) { sites = []; }
   }
   const current = select.value;
   select.innerHTML = '<option value="all">All sites</option>'
@@ -262,7 +262,7 @@ function shApi(path, options) {
 
 async function shOpenDeviceWeb(deviceId, deviceName) {
   try {
-    const result = await shApi(`/netdoc/devices/${deviceId}/web`, { method: 'POST', json: {} });
+    const result = await shApi(`/inventory/devices/${deviceId}/web`, { method: 'POST', json: {} });
     if (result.mode === 'window') {
       shToast(`Web management: ${result.url} — separate window, no access to the app.`);
     } else {
@@ -358,7 +358,7 @@ function shBoot() {
         window.MuxWizard.mount(host, {
           onDone: async (info) => {
             if (typeof loadHosts === 'function') { try { await loadHosts(); } catch (_) { /* ignored */ } }
-            if (typeof loadNetdoc === 'function') { try { await loadNetdoc(); } catch (_) { /* ignored */ } }
+            if (typeof loadInventory === 'function') { try { await loadInventory(); } catch (_) { /* ignored */ } }
             if (typeof showPage === 'function') showPage('hosts');
             shFillSites();
             if (info && info.name) shToast(`${info.name} was added`);

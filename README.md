@@ -1,7 +1,7 @@
 # MUXIVRA
 
-Self-hosted SSH / Telnet / serial workspace στο πρότυπο του Termius: inventory, encrypted
-vault, multi-tab terminal, SFTP, snippets — και οι τρεις τύποι σύνδεσης στο ίδιο περιβάλλον.
+Self-hosted SSH / Telnet / serial workspace: inventory, encrypted vault, multi-tab
+terminal, SFTP, snippets — και οι τρεις τύποι σύνδεσης στο ίδιο περιβάλλον.
 FastAPI + xterm.js + paramiko/pyserial, χωρίς cloud και χωρίς λογαριασμό τρίτου.
 
 ```
@@ -28,11 +28,10 @@ FastAPI + xterm.js + paramiko/pyserial, χωρίς cloud και χωρίς λο�
 - **SFTP** (μόνο SSH): περιήγηση, upload, download, mkdir, rename, delete.
 - **Snippets**: αποθηκευμένες εντολές που στέλνονται στο ενεργό session με ένα κλικ.
 - **Import**: `~/.ssh/config` και **Keeper Secrets Manager** (βλ. παρακάτω).
-- **Racks & καλώδια** (NETDOC-style, δικό μας module): χώροι → racks → συσκευές με U θέση →
+- **Racks & καλώδια** (module της εφαρμογής): χώροι → racks → συσκευές με U θέση →
   ports (bulk 24 τη φορά) → συνδέσεις με καλώδιο/μήκος. Ένα port μπορεί να είναι σε **μία μόνο**
   σύνδεση, οπότε οι διπλές καταγραφές απορρίπτονται με σαφές μήνυμα· εξαγωγή `links.csv`.
-  Για ομάδες που χρησιμοποιούν και το [netdoc.app](https://netdoc.app), υπάρχει κουμπί
-  που ανοίγει την υπηρεσία — δεν ανταλλάσσονται δεδομένα αυτόματα (δεν υπάρχει δημόσιο API).
+  Όλα τα δεδομένα μένουν τοπικά· δεν υπάρχει σύνδεση με εξωτερική υπηρεσία τεκμηρίωσης.
 - **Ενημερώσεις από GitHub**: Ρυθμίσεις → repo `owner/name` → έλεγχος release, λήψη του `.zip`
   με επαλήθευση `sha256`, και δημιουργία `apply-update.cmd` που κάνει backup, αντικατάσταση
   και επανεκκίνηση (το αρχείο τρέχει *αφού* κλείσει η εφαρμογή).

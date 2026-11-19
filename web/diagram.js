@@ -2,8 +2,8 @@
    Block diagram of the documented network.
 
    Contract with the rest of the app (no other module changes required):
-     • nodes  = devices from GET /api/netdoc/tree (sites → racks → devices)
-     • edges  = recorded port↔port links from GET /api/netdoc/links/page
+     • nodes  = devices from GET /api/inventory/tree (sites → racks → devices)
+     • edges  = recorded port↔port links from GET /api/inventory/links/page
                 (limit 500, paginated until `total` is reached)
      • nothing is inferred from IP addresses or naming conventions.
 
@@ -204,9 +204,9 @@ function dgWritePositions() {
 
 async function dgReload(force) {
   // A refresh must re-read the tree as well: devices/racks can be added while
-  // the diagram is open. loadNetdoc() refetches S.nd.tree and S.nd.links.
-  if ((force || !dgSites().length) && typeof loadNetdoc === 'function') {
-    try { await loadNetdoc(); } catch (_) { /* handled below via empty tree */ }
+  // the diagram is open. loadInventory() refetches S.nd.tree and S.nd.links.
+  if ((force || !dgSites().length) && typeof loadInventory === 'function') {
+    try { await loadInventory(); } catch (_) { /* handled below via empty tree */ }
   }
   const app = dgApp();
   const tree = (app && app.nd && app.nd.tree) ? app.nd.tree : { sites: [] };
@@ -217,7 +217,7 @@ async function dgReload(force) {
   let links = [];
   let lastError = null;
   try {
-    DG.planned = await api('/netdoc/planned-links');
+    DG.planned = await api('/inventory/planned-links');
   } catch (_) {
     DG.planned = [];        // design links are optional; cables still render
   }
@@ -225,7 +225,7 @@ async function dgReload(force) {
   try {
     let offset = 0;
     for (let page = 0; page < 40; page += 1) {
-      const res = await api(`/netdoc/links/page?limit=500&offset=${offset}`);
+      const res = await api(`/inventory/links/page?limit=500&offset=${offset}`);
       const batch = (res && Array.isArray(res.links)) ? res.links : [];
       links = links.concat(batch);
       loaded = true;
@@ -1256,7 +1256,7 @@ function dgFillPanel(rack, node) {
 function dgLoadRack(rackId) {
   DG.rackCache = DG.rackCache || new Map();
   if (!DG.rackCache.has(rackId)) {
-    const request = api(`/netdoc/rack/${rackId}`).catch(() => null);
+    const request = api(`/inventory/rack/${rackId}`).catch(() => null);
     DG.rackCache.set(rackId, request);
   }
   return DG.rackCache.get(rackId);
