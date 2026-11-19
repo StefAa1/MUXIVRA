@@ -387,7 +387,8 @@ function connectTab(tab) {
   tab.fit.fit();
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const url = `${proto}://${location.host}/api/ws/terminal/${tab.host.id}?cols=${tab.term.cols}&rows=${tab.term.rows}`;
-  const ws = new WebSocket(url);
+  const scoped = url + (url.includes('?') ? '&' : '?') + `customer=${encodeURIComponent(tab.customerId ?? S.customerId ?? '')}`;
+  const ws = new WebSocket(scoped);
   tab.ws = ws;
 
   ws.onmessage = (event) => {

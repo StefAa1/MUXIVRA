@@ -367,12 +367,23 @@ def import_payload(conn: sqlite3.Connection, payload: dict, dry_run: bool = Fals
                  "reason": "missing_uuid"}
             )
             continue
-        host = conn.execute("SELECT id FROM hosts WHERE uuid = ?", (host_uuid,)).fetchone()
+        # the UUID must resolve inside THIS customer: a foreign profile is never
+        # silently bound, it stays unresolved and the operator decides
+        host = conn.execute(
+            "SELECT id, customer_id FROM hosts WHERE uuid = ?", (host_uuid,)
+        ).fetchone()
         if not host:
             report["skipped"]["profiles"] += 1
             report["unresolved_profiles"].append(
                 {"device_id": profile.get("device_id"), "host_label": profile.get("host_label"),
                  "reason": "host_not_found"}
+            )
+            continue
+        if customer_id is not None and host["customer_id"] != customer_id:
+            report["skipped"]["profiles"] += 1
+            report["unresolved_profiles"].append(
+                {"device_id": profile.get("device_id"), "host_label": profile.get("host_label"),
+                 "reason": "foreign_customer"}
             )
             continue
         if (device_new, host["id"]) in seen_pairs:

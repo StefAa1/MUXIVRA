@@ -144,6 +144,8 @@ def assert_same_customer(conn: sqlite3.Connection, customer_id: int, *pairs) -> 
         "rack": rack_owner,
         "device": device_owner,
         "port": port_owner,
+        "host_cred": lambda c, i: (c.execute("SELECT customer_id FROM credentials WHERE id = ?", (i,)).fetchone() or {"customer_id": None})["customer_id"]
+        if c.execute("SELECT 1 FROM credentials WHERE id = ?", (i,)).fetchone() else None,
         "host": lambda c, i: (c.execute("SELECT customer_id FROM hosts WHERE id = ?", (i,)).fetchone() or {})["customer_id"]
         if c.execute("SELECT 1 FROM hosts WHERE id = ?", (i,)).fetchone() else None,
     }

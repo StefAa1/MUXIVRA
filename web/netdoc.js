@@ -1044,7 +1044,13 @@ function renderRacks() {
 
   const treeHtml = sites.length ? sites.map((site) => `
       <div class="nd-site">
-        <div class="nd-site-head"><span>${esc(site.name)}</span></div>
+        <div class="nd-site-head">
+          <span>${esc(site.name)}</span>
+          <span class="nd-site-actions">
+            <button class="btn ghost xs" data-nd-site-edit="${site.id}" title="Μετονομασία χώρου">Μετονομασία</button>
+            <button class="btn ghost xs danger" data-nd-site-del="${site.id}" title="Διαγραφή χώρου">Διαγραφή</button>
+          </span>
+        </div>
         ${(site.racks || []).length ? (site.racks || []).map((r) => `
           <button class="nd-rack${r.id === ND.rackId ? ' on' : ''}" data-nd-rack="${r.id}">
             <b>${esc(r.name)}</b><span>${(r.devices || []).length} συσκευές · ${r.units}U</span>
@@ -1068,7 +1074,7 @@ function renderRacks() {
       <div><h2>Racks &amp; Καλώδια</h2><p>Χώροι, racks, συσκευές, ports και συνδέσεις — με έλεγχο διπλών ports.</p></div>
       <div class="actions">
         <button class="btn ghost xs" data-nd-print>Εκτύπωση / PDF</button>
-        <a class="btn ghost xs" href="/api/netdoc/links.csv">CSV</a>
+        <button class="btn ghost xs" data-nd-csv>CSV</button>
       </div>
     </div>
     <div class="nd-split">
@@ -1221,3 +1227,73 @@ document.addEventListener('submit', (event) => {
     ndSubmitPortForm(event);
   }
 }, true);
+
+// CSV download με το customer context του api() (ένα σκέτο href δεν στέλνει header)
+document.addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-nd-csv]');
+  if (!button) return;
+  event.preventDefault();
+  try {
+    const response = await fetch('/api/netdoc/links.csv', {
+      headers: { 'x-requested-with': 'sshdeck', 'x-customer-id': String(window.S?.customerId || '') },
+      credentials: 'same-origin',
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const blob = await response.blob();
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'links.csv';
+    link.click();
+    URL.revokeObjectURL(link.href);
+  } catch (error) {
+    alert('Η εξαγωγή CSV απέτυχε: ' + error.message);
+  }
+});
+
+
+// --- χώροι: ορατή μετονομασία και διαγραφή με προεπισκόπηση εξαρτήσεων ---
+document.addEventListener('click', async (event) => {
+  const edit = event.target.closest('[data-nd-site-edit]');
+  const del = event.target.closest('[data-nd-site-del]');
+  if (!edit && !del) return;
+  event.preventDefault();
+  const siteId = Number((edit || del).dataset.ndSiteEdit || (edit || del).dataset.ndSiteDel);
+  const site = (nd.tree?.sites || []).find((s) => s.id === siteId);
+  if (!site) return;
+
+  if (edit) {
+    const name = prompt('Νέο όνομα χώρου:', site.name);
+    if (!name || name.trim() === site.name) return;
+    try {
+      await api(`/netdoc/sites/${siteId}`, { method: 'PATCH', json: { name: name.trim() } });
+      await loadNetdoc();
+      renderNetdoc();
+    } catch (error) {
+      alert('Η μετονομασία απέτυχε: ' + error.message);
+    }
+    return;
+  }
+
+  let deps = null;
+  try {
+    deps = await api(`/netdoc/site/${siteId}/dependents`);
+  } catch (error) {
+    alert('Δεν ήταν δυνατός ο έλεγχος εξαρτήσεων: ' + error.message);
+    return;
+  }
+  const answer = prompt(
+    `Διαγραφή «${site.name}»;\n\nΘα αφαιρεθούν:\n` +
+    `• ${deps.racks} racks\n• ${deps.devices} συσκευές\n• ${deps.ports} θύρες\n• ${deps.links} καλώδια\n\n` +
+    'Γράψε ΔΙΑΓΡΑΦΗ για επιβεβαίωση. Καμία εντολή δεν στέλνεται σε πραγματική συσκευή.',
+    ''
+  );
+  if ((answer || '').trim().toUpperCase() !== 'ΔΙΑΓΡΑΦΗ') return;
+  try {
+    await api(`/netdoc/sites/${siteId}`, { method: 'DELETE' });
+    if (ND.rackId && site.racks?.some((r) => r.id === ND.rackId)) ND.rackId = null;
+    await loadNetdoc();
+    renderNetdoc();
+  } catch (error) {
+    alert('Η διαγραφή απέτυχε: ' + error.message);
+  }
+});

@@ -275,13 +275,35 @@ def load_target(conn, host_id: int) -> Target:
     )
 
 
-def target_or_404(host_id: int) -> Target:
+def require_credential(cid: int, conn, credential_id: int) -> None:
+    try:
+        customers.assert_same_customer(conn, cid, ("host_cred", credential_id))
+    except customers.CustomerError as exc:
+        raise HTTPException(status_code=409 if exc.code == "cross_customer" else 404, detail=exc.code)
+
+
+def require_customer(request: Request | None, *pairs) -> int:
+    """Ownership guard for a request: raises 404/409 instead of leaking data."""
+    with db.db() as conn:
+        cid = customers.request_customer(conn, request)
+        try:
+            customers.assert_same_customer(conn, cid, *pairs)
+        except customers.CustomerError as exc:
+            raise HTTPException(
+                status_code=409 if exc.code == "cross_customer" else 404, detail=exc.code
+            )
+        return cid
+
+
+def target_or_404(host_id: int, request: Request | None = None) -> Target:
+    if request is not None:
+        require_customer(request, ("host", host_id))
     with db.db() as conn:
         return load_target(conn, host_id)
 
 
-def sftp_target(host_id: int) -> Target:
-    target = target_or_404(host_id)
+def sftp_target(host_id: int, request: Request | None = None) -> Target:
+    target = target_or_404(host_id, request)
     if target.protocol != "ssh":
         raise HTTPException(status_code=400, detail="sftp_requires_ssh")
     return target
@@ -552,7 +574,8 @@ def create_credential(payload: CredentialIn, request: Request):
 
 
 @api.put("/credentials/{credential_id}")
-def update_credential(credential_id: int, payload: CredentialIn):
+def update_credential(credential_id: int, payload: CredentialIn, request: Request):
+    require_customer(request, ("host_cred", credential_id))
     with db.db() as conn:
         row = conn.execute("SELECT * FROM credentials WHERE id = ?", (credential_id,)).fetchone()
         if not row:
@@ -577,7 +600,8 @@ def update_credential(credential_id: int, payload: CredentialIn):
 
 
 @api.delete("/credentials/{credential_id}")
-def delete_credential(credential_id: int):
+def delete_credential(credential_id: int, request: Request):
+    require_customer(request, ("host_cred", credential_id))
     with db.db() as conn:
         used = conn.execute("SELECT COUNT(*) c FROM hosts WHERE credential_id = ?", (credential_id,)).fetchone()["c"]
         if used:
@@ -606,6 +630,10 @@ def list_hosts(request: Request):
 def create_host(payload: HostIn, request: Request):
     now = db.now()
     with db.db() as conn:
+        cid = customers.request_customer(conn, request)
+        if payload.credential_id:
+            # a host may only reference a credential of its own customer
+            require_credential(cid, conn, payload.credential_id)
         cur = conn.execute(
             "INSERT INTO hosts(label, protocol, hostname, port, username, credential_id, group_name, tags, "
             "color, notes, serial_port, baud, bytesize, parity, stopbits, flow, uuid, customer_id,"
@@ -638,10 +666,26 @@ def create_host(payload: HostIn, request: Request):
         return row_to_host(row, credential_name_for(conn, row["credential_id"]))
 
 
+@api.get("/hosts/{host_id}")
+def get_host(host_id: int, request: Request):
+    require_customer(request, ("host", host_id))
+    with db.db() as conn:
+        row = conn.execute(
+            "SELECT h.*, c.name AS credential_name FROM hosts h "
+            "LEFT JOIN credentials c ON c.id = h.credential_id WHERE h.id = ?", (host_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="not_found")
+        return _host_out(row)
+
+
 @api.put("/hosts/{host_id}")
-def update_host(host_id: int, payload: HostIn):
+def update_host(host_id: int, payload: HostIn, request: Request):
+    require_customer(request, ("host", host_id))
     with db.db() as conn:
         fetch_host(conn, host_id)
+        if payload.credential_id:
+            require_credential(customers.request_customer(conn, request), conn, payload.credential_id)
         conn.execute(
             "UPDATE hosts SET label = ?, protocol = ?, hostname = ?, port = ?, username = ?, "
             "credential_id = ?, group_name = ?, tags = ?, color = ?, notes = ?, serial_port = ?, "
@@ -672,7 +716,8 @@ def update_host(host_id: int, payload: HostIn):
 
 
 @api.delete("/hosts/{host_id}")
-def delete_host(host_id: int):
+def delete_host(host_id: int, request: Request):
+    require_customer(request, ("host", host_id))
     with db.db() as conn:
         fetch_host(conn, host_id)
         conn.execute("DELETE FROM hosts WHERE id = ?", (host_id,))
@@ -717,8 +762,8 @@ def host_trust_state(host_id: int):
 
 
 @api.post("/hosts/{host_id}/ping")
-async def ping_host(host_id: int):
-    target = target_or_404(host_id)
+async def ping_host(host_id: int, request: Request):
+    target = target_or_404(host_id, request)
     if target.protocol == "serial":
         known = {p["device"] for p in transports.serial_ports()}
         exists = target.serial_port in known or os.path.exists(target.serial_port)
@@ -889,8 +934,8 @@ async def update_prepare(payload: UpdateReleaseIn):
 
 # --------------------------------------------------------------------- SFTP
 @api.get("/hosts/{host_id}/files")
-async def list_files(host_id: int, path: str = "."):
-    target = sftp_target(host_id)
+async def list_files(host_id: int, path: str = ".", request: Request = None):
+    target = sftp_target(host_id, request)
 
     def _work():
         client, sftp = sshconn.sftp(target)
@@ -1104,10 +1149,24 @@ def _ws_authorized(ws: WebSocket) -> bool:
         return security.validate_session(conn, ws.cookies.get(config.COOKIE_NAME))
 
 
-async def terminal_endpoint(ws: WebSocket, host_id: int, cols: int = 120, rows: int = 32) -> None:
+async def terminal_endpoint(ws: WebSocket, host_id: int, cols: int = 120, rows: int = 32,
+                            customer: str | None = None) -> None:
     if not _ws_authorized(ws):
         await ws.close(code=4401)
         return
+    # a socket carries its own immutable scope: the tab keeps its customer even
+    # if the operator switches the selector afterwards
+    scope = customer or ws.query_params.get("customer") or ws.headers.get("x-customer-id")
+    if scope:
+        if not str(scope).isdigit():
+            await ws.close(code=4404)
+            return
+        try:
+            with db.db() as conn:
+                customers.assert_same_customer(conn, int(scope), ("host", host_id))
+        except customers.CustomerError:
+            await ws.close(code=4404)   # not this customer's host
+            return
     try:
         target = target_or_404(host_id)
     except HTTPException:

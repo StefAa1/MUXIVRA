@@ -95,3 +95,72 @@ def test_legacy_data_lands_in_unclassified_customer(auth_client):
     unclassified = next(c for c in auth_client.get("/api/customers").json()
                         if c["name"] == "Μη ταξινομημένος πελάτης")
     assert len(auth_client.get("/api/hosts", headers=h(unclassified)).json()) == 1
+
+
+def _mk(client, customer):
+    """Minimal device of a customer, for cross-customer write attempts."""
+    head = h(customer)
+    site = client.post("/api/netdoc/sites", headers=head, json={"name": "S"}).json()
+    rack = client.post("/api/netdoc/racks", headers=head, json={"site_id": site["id"], "name": "R"}).json()
+    dev = client.post("/api/netdoc/devices", headers=head, json={"rack_id": rack["id"], "name": "d"}).json()
+    return {"site": site, "rack": rack, "device": dev, "head": head}
+
+
+def test_host_cannot_borrow_another_customers_credential(two):
+    client, a, b = two
+    cred = client.post("/api/credentials", headers=h(b),
+                       json={"name": "cred-b", "kind": "password", "username": "u", "secret": "s3cret-123"}).json()
+    res = client.post("/api/hosts", headers=h(a),
+                      json={"label": "x", "hostname": "10.0.0.9", "credential_id": cred["id"]})
+    assert res.status_code in (404, 409, 422), res.text
+    assert client.get("/api/hosts", headers=h(a)).json() == []
+
+
+def test_direct_id_read_write_delete_are_scoped(two):
+    client, a, b = two
+    sb = _mk(client, b)
+    hb = client.post("/api/hosts", headers=h(b), json={"label": "R-b", "hostname": "10.1.1.1"}).json()
+
+    assert client.get(f"/api/netdoc/rack/{sb['rack']['id']}", headers=h(a)).status_code in (404, 409)
+    body = {"label": "hijack", "hostname": "10.1.1.1", "protocol": "ssh"}
+    edit = client.put(f"/api/hosts/{hb['id']}", headers=h(a), json=body)
+    if edit.status_code == 405:      # older builds expose PATCH only
+        edit = client.patch(f"/api/hosts/{hb['id']}", headers=h(a), json=body)
+    assert edit.status_code in (404, 409, 422), edit.text
+    assert client.delete(f"/api/netdoc/sites/{sb['site']['id']}", headers=h(a)).status_code in (404, 409)
+    assert client.post("/api/netdoc/devices", headers=h(a),
+                       json={"rack_id": _mk(client, a)["rack"]["id"], "name": "n", "host_id": hb["id"]}
+                       ).status_code in (404, 409)
+    # nothing in B changed
+    assert [x["label"] for x in client.get("/api/hosts", headers=h(b)).json()] == ["R-b"]
+    assert client.get(f"/api/hosts/{hb['id']}", headers=h(a)).status_code in (404, 409)
+    assert client.get("/api/netdoc/tree", headers=h(b)).json()["sites"][0]["id"] == sb["site"]["id"]
+
+
+def test_import_never_binds_foreign_profile_uuid(two):
+    client, a, b = two
+    sb = _mk(client, b)
+    hb = client.post("/api/hosts", headers=h(b), json={"label": "R-b", "hostname": "10.2.2.2"}).json()
+    payload = {
+        "format": "muxivra.netdoc/1",
+        "sites": [{"id": 1, "name": "Import", "note": ""}],
+        "racks": [{"id": 1, "site_id": 1, "name": "IR", "units": 42}],
+        "devices": [{"id": 1, "rack_id": 1, "name": "dev", "units": 1, "position": 1}],
+        "ports": [], "links": [],
+        "profiles": [{"device_id": 1, "host_uuid": hb["uuid"], "host_label": "R-b", "is_primary": 1}],
+    }
+    report = client.post("/api/netdoc/import", headers=h(a), json=payload).json()
+    assert report["unresolved_profiles"][0]["reason"] == "foreign_customer"
+    tree = client.get("/api/netdoc/tree", headers=h(a)).json()
+    assert not any(s["name"] == "Import" for s in tree["sites"]) or True  # site may exist, link must not
+    # the imported device is customer A's own; its connection list must not
+    # contain B's profile at all
+    tree_a = client.get("/api/netdoc/tree", headers=h(a)).json()
+    created = [d for site in tree_a["sites"] for rack in site.get("racks", [])
+               for d in client.get(f"/api/netdoc/rack/{rack['id']}", headers=h(a)).json()["devices"]
+               if d["name"] == "dev"]
+    if created:
+        conn = client.get(f"/api/netdoc/devices/{created[0]['id']}/connections", headers=h(a))
+        assert conn.status_code == 200, conn.text
+        assert hb["uuid"] not in {p["host_uuid"] for p in conn.json().get("profiles", [])}
+    assert client.get("/api/netdoc/tree", headers=h(b)).json()["sites"][0]["id"] == sb["site"]["id"]

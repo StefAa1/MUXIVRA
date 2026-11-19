@@ -133,10 +133,42 @@ def create_site(payload: SiteIn, request: Request):
         return dict(conn.execute("SELECT * FROM sites WHERE id = ?", (cur.lastrowid,)).fetchone())
 
 
-@router.delete("/sites/{site_id}")
-def delete_site(site_id: int):
+@router.patch("/sites/{site_id}")
+def update_site(site_id: int, payload: dict, request: Request):
     with _conn() as conn:
         _one(conn, "SELECT id FROM sites WHERE id = ?", (site_id,))
+        _ensure_same(conn, _cid(conn, request), ("site", site_id))
+        fields, values = [], []
+        if "name" in payload:
+            name = str(payload["name"]).strip()
+            if not name:
+                raise HTTPException(status_code=422, detail="empty_name")
+            fields.append("name = ?")
+            values.append(name[:80])
+        if "note" in payload:
+            fields.append("note = ?")
+            values.append(str(payload["note"])[:400])
+        if "customer_id" in payload:
+            # explicit transfer between customers of the same operator
+            try:
+                customers.resolve(conn, int(payload["customer_id"]))
+            except customers.CustomerError as exc:
+                raise HTTPException(status_code=422, detail=exc.code) from exc
+            fields.append("customer_id = ?")
+            values.append(int(payload["customer_id"]))
+        if not fields:
+            return dict(_one(conn, "SELECT * FROM sites WHERE id = ?", (site_id,)))
+        values.append(site_id)
+        conn.execute(f"UPDATE sites SET {', '.join(fields)} WHERE id = ?", values)
+        conn.commit()
+        return dict(conn.execute("SELECT * FROM sites WHERE id = ?", (site_id,)).fetchone())
+
+
+@router.delete("/sites/{site_id}")
+def delete_site(site_id: int, request: Request):
+    with _conn() as conn:
+        _one(conn, "SELECT id FROM sites WHERE id = ?", (site_id,))
+        _ensure_same(conn, _cid(conn, request), ("site", site_id))
         rack_ids = [r["id"] for r in conn.execute("SELECT id FROM racks WHERE site_id = ?", (site_id,))]
         for rack_id in rack_ids:
             _delete_rack(conn, rack_id)
@@ -192,6 +224,7 @@ def create_device(payload: DeviceIn, request: Request):
             raise HTTPException(status_code=409, detail=f"position_taken:{clash['name']}")
         if payload.host_id is not None:
             _one(conn, "SELECT id FROM hosts WHERE id = ?", (payload.host_id,))
+            _ensure_same(conn, _cid(conn, request), ("host", payload.host_id))
         cur = conn.execute(
             """INSERT INTO devices (rack_id, name, kind, units, position, note, host_id, vendor, model, mgmt_ip)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -272,7 +305,7 @@ def bulk_ports(payload: dict):
 
 # ------------------------------------------------------------------- links
 @router.get("/links")
-def list_links():
+def list_links(request: Request):
     with _conn() as conn:
         rows = conn.execute(
             """SELECT l.id, l.cable, l.length_m, l.port_a, l.port_b,
@@ -289,7 +322,11 @@ def list_links():
                JOIN racks rb ON rb.id = db.rack_id
                ORDER BY l.id DESC"""
         ).fetchall()
-    return [dict(r) for r in rows]
+        cid = _cid(conn, request)
+        rack_ids = {r["id"] for r in conn.execute(
+            "SELECT r.id FROM racks r JOIN sites s ON s.id = r.site_id WHERE s.customer_id = ?", (cid,)
+        )}
+    return [dict(r) for r in rows if r["rack_a_id"] in rack_ids and r["rack_b_id"] in rack_ids]
 
 
 @router.post("/links")
@@ -331,25 +368,32 @@ def delete_link(link_id: int):
     return {"ok": True}
 
 
-@router.get("/links.csv", response_class=PlainTextResponse)
-def export_links():
-    rows = list_links()
-    buffer = io.StringIO()
-    writer = csv.writer(buffer)
-    writer.writerow(["id", "device_a", "port_a", "device_b", "port_b", "rack_a", "rack_b", "cable", "length_m"])
-    for row in rows:
-        writer.writerow([
-            row["id"], row["device_a"], row["port_a_name"], row["device_b"],
-            row["port_b_name"], row["rack_a"], row["rack_b"], row["cable"], row["length_m"],
-        ])
-    return PlainTextResponse(buffer.getvalue(), headers={"content-disposition": 'attachment; filename="links.csv"'})
+@router.get("/site/{site_id}/dependents")
+def site_dependents(site_id: int, request: Request):
+    """What a site delete would remove — shown before confirming, never guessed."""
+    with _conn() as conn:
+        _ensure_same(conn, _cid(conn, request), ("site", site_id))
+        racks = conn.execute("SELECT COUNT(*) AS n FROM racks WHERE site_id = ?", (site_id,)).fetchone()["n"]
+        devices = conn.execute(
+            "SELECT COUNT(*) AS n FROM devices WHERE rack_id IN (SELECT id FROM racks WHERE site_id = ?)",
+            (site_id,)).fetchone()["n"]
+        ports = conn.execute(
+            """SELECT COUNT(*) AS n FROM ports WHERE device_id IN (
+                 SELECT d.id FROM devices d JOIN racks r ON r.id = d.rack_id WHERE r.site_id = ?)""",
+            (site_id,)).fetchone()["n"]
+        links = conn.execute(
+            """SELECT COUNT(*) AS n FROM links WHERE port_a IN (
+                 SELECT p.id FROM ports p JOIN devices d ON d.id = p.device_id
+                  JOIN racks r ON r.id = d.rack_id WHERE r.site_id = ?)""",
+            (site_id,)).fetchone()["n"]
+    return {"site_id": site_id, "racks": racks, "devices": devices, "ports": ports, "links": links}
 
 
-# ------------------------------------------------------------------- views
 @router.get("/rack/{rack_id}")
-def rack_layout(rack_id: int):
+def rack_layout(rack_id: int, request: Request):
     """Everything the visual rack view needs: devices in U order with their ports."""
     with _conn() as conn:
+        _ensure_same(conn, _cid(conn, request), ("rack", rack_id))
         rack = _one(conn, "SELECT * FROM racks WHERE id = ?", (rack_id,))
         site = _one(conn, "SELECT name FROM sites WHERE id = ?", (rack["site_id"],))
         devices = [
@@ -362,7 +406,7 @@ def rack_layout(rack_id: int):
             )
         ]
         for device in devices:
-            ports = [
+            device["ports"] = [
                 dict(r)
                 for r in conn.execute(
                     """SELECT p.id, p.name, p.kind,
@@ -379,129 +423,17 @@ def rack_layout(rack_id: int):
                     (device["id"],),
                 )
             ]
-            device["ports"] = ports
     return {"rack": dict(rack), "site": site["name"], "devices": devices}
 
 
-@router.get("/audit")
-def audit():
-    """Documentation problems worth fixing: overlaps, orphans, duplicates."""
-    issues = []
-    with _conn() as conn:
-        racks = [dict(r) for r in conn.execute("SELECT * FROM racks")]
-        for rack in racks:
-            devices = [dict(r) for r in conn.execute(
-                "SELECT * FROM devices WHERE rack_id = ? ORDER BY position", (rack["id"],))]
-            occupied: list[tuple[int, str]] = []
-            for device in devices:
-                top = device["position"] + device["units"] - 1
-                if top > rack["units"]:
-                    issues.append({
-                        "kind": "outside_rack", "rack": rack["name"], "device": device["name"],
-                        "detail": f"U{device['position']}–U{top} > {rack['units']}U",
-                    })
-                for unit in range(device["position"], top + 1):
-                    for owner_unit, owner in occupied:
-                        if owner_unit == unit:
-                            issues.append({
-                                "kind": "overlap", "rack": rack["name"], "device": device["name"],
-                                "detail": f"U{unit} μοιράζεται με {owner}",
-                            })
-                    occupied.append((unit, device["name"]))
-            names: dict[str, int] = {}
-            for device in devices:
-                names[device["name"]] = names.get(device["name"], 0) + 1
-            for name, count in names.items():
-                if count > 1:
-                    issues.append({
-                        "kind": "duplicate_device", "rack": rack["name"], "device": name,
-                        "detail": f"{count} συσκευές με το ίδιο όνομα",
-                    })
-        orphans = conn.execute(
-            """SELECT d.name AS device, r.name AS rack, COUNT(p.id) AS ports
-                 FROM devices d JOIN racks r ON r.id = d.rack_id
-                 LEFT JOIN ports p ON p.device_id = d.id AND p.id NOT IN (
-                    SELECT port_a FROM links UNION SELECT port_b FROM links)
-                GROUP BY d.id HAVING ports > 0 ORDER BY ports DESC LIMIT 50"""
-        ).fetchall()
-        for row in orphans:
-            issues.append({
-                "kind": "unlinked_ports", "rack": row["rack"], "device": row["device"],
-                "detail": f"{row['ports']} ports χωρίς σύνδεση",
-            })
-        duplicates = conn.execute(
-            """SELECT port_a AS port FROM links GROUP BY port_a HAVING COUNT(*) > 1
-               UNION SELECT port_b FROM links GROUP BY port_b HAVING COUNT(*) > 1"""
-        ).fetchall()
-        for row in duplicates:
-            issues.append({"kind": "duplicate_port", "rack": "", "device": "", "detail": f"port #{row['port']}"})
-        total_ports = conn.execute("SELECT COUNT(*) AS n FROM ports").fetchone()["n"]
-        total_links = conn.execute("SELECT COUNT(*) AS n FROM links").fetchone()["n"]
-    return {
-        "issues": issues,
-        "summary": {
-            "racks": len(racks), "ports": total_ports, "links": total_links,
-            "issues": len(issues), "unlinked": sum(i["detail"].count("ports") for i in issues if i["kind"] == "unlinked_ports"),
-        },
-    }
-
-
-@router.patch("/devices/{device_id}")
-def update_device(device_id: int, payload: DevicePatch, request: Request):
-    with _conn() as conn:
-        device = _one(conn, "SELECT * FROM devices WHERE id = ?", (device_id,))
-        _ensure_same(conn, _cid(conn, request), ("device", device_id))
-        rack = _one(conn, "SELECT units FROM racks WHERE id = ?", (device["rack_id"],))
-        given = payload.model_dump(exclude_unset=True)
-        merged = {**dict(device), **given}   # an explicit null (host_id) clears the field
-        top = merged["position"] + merged["units"] - 1
-        if top > rack["units"]:
-            raise HTTPException(status_code=422, detail="device_outside_rack")
-        clash = conn.execute(
-            """SELECT name FROM devices
-                WHERE rack_id = ? AND id <> ? AND position < ? AND (position + units) > ?""",
-            (device["rack_id"], device_id, top + 1, merged["position"]),
-        ).fetchone()
-        if clash:
-            raise HTTPException(status_code=409, detail=f"position_taken:{clash['name']}")
-        if merged.get("host_id") is not None:
-            _one(conn, "SELECT id FROM hosts WHERE id = ?", (merged["host_id"],))
-        conn.execute(
-            """UPDATE devices SET name = ?, kind = ?, units = ?, position = ?, note = ?,
-                      host_id = ?, vendor = ?, model = ?, mgmt_ip = ?
-                WHERE id = ?""",
-            (
-                merged["name"], merged["kind"], merged["units"], merged["position"], merged["note"],
-                merged.get("host_id"), merged.get("vendor") or "", merged.get("model") or "",
-                merged.get("mgmt_ip") or "", device_id,
-            ),
-        )
-        conn.commit()
-        return dict(conn.execute("SELECT * FROM devices WHERE id = ?", (device_id,)).fetchone())
-
-
-@router.get("/devices/{device_id}/dependents")
-def device_dependents(device_id: int):
-    """What disappears if this device is deleted — shown before confirming."""
-    with _conn() as conn:
-        _one(conn, "SELECT id FROM devices WHERE id = ?", (device_id,))
-        ports = conn.execute("SELECT COUNT(*) AS n FROM ports WHERE device_id = ?", (device_id,)).fetchone()["n"]
-        links = conn.execute(
-            """SELECT COUNT(*) AS n FROM links
-                WHERE port_a IN (SELECT id FROM ports WHERE device_id = ?)
-                   OR port_b IN (SELECT id FROM ports WHERE device_id = ?)""",
-            (device_id, device_id),
-        ).fetchone()["n"]
-    return {"ports": ports, "links": links}
-
-
 @router.get("/ports")
-def search_ports(q: str = "", limit: int = 200, offset: int = 0):
-    """Port lookup across every rack — feeds cross-rack Quick Connect."""
+def search_ports(request: Request, q: str = "", limit: int = 200, offset: int = 0):
+    """Port lookup inside the active customer — feeds cross-rack Quick Connect."""
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
     like = f"%{q.strip()}%"
     with _conn() as conn:
+        cid = _cid(conn, request)
         rows = conn.execute(
             """SELECT p.id, p.name, p.kind, d.id AS device_id, d.name AS device,
                       r.id AS rack_id, r.name AS rack, s.name AS site,
@@ -510,51 +442,48 @@ def search_ports(q: str = "", limit: int = 200, offset: int = 0):
                  JOIN devices d ON d.id = p.device_id
                  JOIN racks r ON r.id = d.rack_id
                  JOIN sites s ON s.id = r.site_id
-                WHERE (? = '%%' OR d.name LIKE ? OR p.name LIKE ? OR r.name LIKE ? OR s.name LIKE ?)
+                WHERE s.customer_id = ?
+                  AND (? = '%%' OR d.name LIKE ? OR p.name LIKE ? OR r.name LIKE ? OR s.name LIKE ?)
                 ORDER BY s.name, r.name, d.name, p.id
                 LIMIT ? OFFSET ?""",
-            (like, like, like, like, like, limit, offset),
+            (cid, like, like, like, like, like, limit, offset),
         ).fetchall()
         total = conn.execute(
             """SELECT COUNT(*) AS n FROM ports p JOIN devices d ON d.id = p.device_id
                  JOIN racks r ON r.id = d.rack_id JOIN sites s ON s.id = r.site_id
-                WHERE (? = '%%' OR d.name LIKE ? OR p.name LIKE ? OR r.name LIKE ? OR s.name LIKE ?)""",
-            (like, like, like, like, like),
+                WHERE s.customer_id = ?
+                  AND (? = '%%' OR d.name LIKE ? OR p.name LIKE ? OR r.name LIKE ? OR s.name LIKE ?)""",
+            (cid, like, like, like, like, like),
         ).fetchone()["n"]
     return {"ports": [dict(r) for r in rows], "total": total, "limit": limit, "offset": offset}
 
 
-@router.patch("/links/{link_id}")
-def update_link(link_id: int, payload: dict):
-    """Relabel or re-route a cable (both endpoints must stay free)."""
+@router.get("/links.csv", response_class=PlainTextResponse)
+def export_links(request: Request):
     with _conn() as conn:
-        link = _one(conn, "SELECT * FROM links WHERE id = ?", (link_id,))
-        cable = str(payload.get("cable", link["cable"]))[:80]
-        length = float(payload.get("length_m", link["length_m"]) or 0)
-        port_a = int(payload.get("port_a", link["port_a"]))
-        port_b = int(payload.get("port_b", link["port_b"]))
-        if port_a == port_b:
-            raise HTTPException(status_code=422, detail="same_port")
-        for port_id in (port_a, port_b):
-            _one(conn, "SELECT id FROM ports WHERE id = ?", (port_id,))
-        try:
-            conn.execute(
-                "UPDATE links SET port_a = ?, port_b = ?, cable = ?, length_m = ? WHERE id = ?",
-                (port_a, port_b, cable, length, link_id),
-            )
-        except sqlite3.IntegrityError as exc:
-            raise HTTPException(status_code=409, detail=f"port_already_linked:{port_b}") from exc
-        conn.commit()
-        return dict(conn.execute("SELECT * FROM links WHERE id = ?", (link_id,)).fetchone())
+        cid = _cid(conn, request)
+        rack_ids = {r["id"] for r in conn.execute(
+            "SELECT r.id FROM racks r JOIN sites s ON s.id = r.site_id WHERE s.customer_id = ?", (cid,)
+        )}
+    rows = [r for r in list_links(request) if r.get("rack_a_id") in rack_ids and r.get("rack_b_id") in rack_ids]
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["id", "device_a", "port_a", "device_b", "port_b", "rack_a", "rack_b", "cable", "length_m"])
+    for row in rows:
+        writer.writerow([
+            row["id"], row["device_a"], row["port_a_name"], row["device_b"],
+            row["port_b_name"], row["rack_a"], row["rack_b"], row["cable"], row["length_m"],
+        ])
+    return PlainTextResponse(buffer.getvalue(), headers={"content-disposition": 'attachment; filename="links.csv"'})
 
 
 @router.get("/links/page")
-def page_links(q: str = "", limit: int = 100, offset: int = 0):
+def page_links(request: Request, q: str = "", limit: int = 100, offset: int = 0):
     """Paged cable table for search/filter UI (never silently hides rows)."""
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
     like = f"%{q.strip()}%"
-    rows = list_links()
+    rows = list_links(request)
     if q.strip():
         rows = [r for r in rows if like.strip("%").lower() in " ".join(
             str(v) for v in (r["device_a"], r["port_a_name"], r["device_b"], r["port_b_name"], r["cable"])
@@ -573,10 +502,11 @@ def _winbox_module():
 
 
 @router.get("/devices/{device_id}/connections")
-def device_connections(device_id: int):
+def device_connections(device_id: int, request: Request):
     """The device's registered SSH/Telnet/COM profiles plus WinBox availability."""
     with _conn() as conn:
         device = _one(conn, "SELECT * FROM devices WHERE id = ?", (device_id,))
+        _ensure_same(conn, _cid(conn, request), ("device", device_id))
         # explicit relations only: a shared private IP must never imply a profile
         rows = conn.execute(
             """SELECT h.id, h.label, h.hostname, h.port, h.protocol, h.username
@@ -594,11 +524,12 @@ def device_connections(device_id: int):
 
 
 @router.post("/devices/{device_id}/winbox")
-def launch_winbox(device_id: int, payload: dict | None = None):
+def launch_winbox(device_id: int, request: Request, payload: dict | None = None):
     """Open the official WinBox client in its own window for this device."""
     payload = payload or {}
     with _conn() as conn:
         device = _one(conn, "SELECT * FROM devices WHERE id = ?", (device_id,))
+        _ensure_same(conn, _cid(conn, request), ("device", device_id))
     module = _winbox_module()
     if module is None:
         raise HTTPException(status_code=409, detail="winbox:module_missing")
@@ -616,6 +547,58 @@ def launch_winbox(device_id: int, payload: dict | None = None):
 
 
 # --------------------------------------------------------- backup / import
+@router.get("/audit")
+def audit(request: Request):
+    """Documentation problems worth fixing, inside the active customer."""
+    issues = []
+    with _conn() as conn:
+        cid = _cid(conn, request)
+        racks = [dict(r) for r in conn.execute(
+            "SELECT r.* FROM racks r JOIN sites s ON s.id = r.site_id WHERE s.customer_id = ?", (cid,)
+        )]
+        for rack in racks:
+            devices = [dict(r) for r in conn.execute(
+                "SELECT * FROM devices WHERE rack_id = ? ORDER BY position", (rack["id"],))]
+            occupied: list[tuple[int, str]] = []
+            for device in devices:
+                top = device["position"] + device["units"] - 1
+                if top > rack["units"]:
+                    issues.append({"kind": "outside_rack", "rack": rack["name"], "device": device["name"],
+                                   "detail": f"U{device['position']}–U{top} > {rack['units']}U"})
+                for unit in range(device["position"], top + 1):
+                    for owner_unit, owner in occupied:
+                        if owner_unit == unit:
+                            issues.append({"kind": "overlap", "rack": rack["name"], "device": device["name"],
+                                           "detail": f"U{unit} μοιράζεται με {owner}"})
+                    occupied.append((unit, device["name"]))
+        orphans = conn.execute(
+            """SELECT d.name AS device, r.name AS rack, COUNT(p.id) AS ports
+                 FROM devices d JOIN racks r ON r.id = d.rack_id
+                 JOIN sites s ON s.id = r.site_id
+                 LEFT JOIN ports p ON p.device_id = d.id AND p.id NOT IN (
+                    SELECT port_a FROM links UNION SELECT port_b FROM links)
+                WHERE s.customer_id = ?
+                GROUP BY d.id HAVING ports > 0 ORDER BY ports DESC LIMIT 50""",
+            (cid,),
+        ).fetchall()
+        for row in orphans:
+            issues.append({"kind": "unlinked_ports", "rack": row["rack"], "device": row["device"],
+                           "detail": f"{row['ports']} ports χωρίς σύνδεση"})
+        total_ports = conn.execute(
+            """SELECT COUNT(*) AS n FROM ports p JOIN devices d ON d.id = p.device_id
+                 JOIN racks r ON r.id = d.rack_id JOIN sites s ON s.id = r.site_id
+                WHERE s.customer_id = ?""", (cid,)).fetchone()["n"]
+        total_links = conn.execute(
+            """SELECT COUNT(*) AS n FROM links l JOIN ports p ON p.id = l.port_a
+                 JOIN devices d ON d.id = p.device_id JOIN racks r ON r.id = d.rack_id
+                 JOIN sites s ON s.id = r.site_id WHERE s.customer_id = ?""", (cid,)).fetchone()["n"]
+    return {
+        "issues": issues,
+        "summary": {"racks": len(racks), "ports": total_ports, "links": total_links,
+                    "issues": len(issues)},
+    }
+
+
 @router.get("/export")
 def export_netdoc(request: Request):
     """Versioned JSON backup of THIS customer's documentation (no secrets)."""
@@ -671,3 +654,75 @@ def remove_device_profile(device_id: int, host_id: int):
         )
         conn.commit()
     return {"ok": True}
+
+@router.patch("/devices/{device_id}")
+def update_device(device_id: int, payload: DevicePatch, request: Request):
+    with _conn() as conn:
+        device = _one(conn, "SELECT * FROM devices WHERE id = ?", (device_id,))
+        _ensure_same(conn, _cid(conn, request), ("device", device_id))
+        rack = _one(conn, "SELECT units FROM racks WHERE id = ?", (device["rack_id"],))
+        given = payload.model_dump(exclude_unset=True)
+        merged = {**dict(device), **given}   # an explicit null (host_id) clears the field
+        top = merged["position"] + merged["units"] - 1
+        if top > rack["units"]:
+            raise HTTPException(status_code=422, detail="device_outside_rack")
+        clash = conn.execute(
+            """SELECT name FROM devices
+                WHERE rack_id = ? AND id <> ? AND position < ? AND (position + units) > ?""",
+            (device["rack_id"], device_id, top + 1, merged["position"]),
+        ).fetchone()
+        if clash:
+            raise HTTPException(status_code=409, detail=f"position_taken:{clash['name']}")
+        if merged.get("host_id") is not None:
+            _one(conn, "SELECT id FROM hosts WHERE id = ?", (merged["host_id"],))
+            _ensure_same(conn, _cid(conn, request), ("host", merged["host_id"]))
+        conn.execute(
+            """UPDATE devices SET name = ?, kind = ?, units = ?, position = ?, note = ?,
+                      host_id = ?, vendor = ?, model = ?, mgmt_ip = ?
+                WHERE id = ?""",
+            (merged["name"], merged["kind"], merged["units"], merged["position"], merged["note"],
+             merged.get("host_id"), merged.get("vendor") or "", merged.get("model") or "",
+             merged.get("mgmt_ip") or "", device_id),
+        )
+        conn.commit()
+        return dict(conn.execute("SELECT * FROM devices WHERE id = ?", (device_id,)).fetchone())
+
+
+@router.get("/devices/{device_id}/dependents")
+def device_dependents(device_id: int, request: Request):
+    """What disappears if this device is deleted — shown before confirming."""
+    with _conn() as conn:
+        _one(conn, "SELECT id FROM devices WHERE id = ?", (device_id,))
+        _ensure_same(conn, _cid(conn, request), ("device", device_id))
+        ports = conn.execute("SELECT COUNT(*) AS n FROM ports WHERE device_id = ?", (device_id,)).fetchone()["n"]
+        links = conn.execute(
+            """SELECT COUNT(*) AS n FROM links
+                WHERE port_a IN (SELECT id FROM ports WHERE device_id = ?)
+                   OR port_b IN (SELECT id FROM ports WHERE device_id = ?)""",
+            (device_id, device_id),
+        ).fetchone()["n"]
+    return {"ports": ports, "links": links}
+
+
+@router.patch("/links/{link_id}")
+def update_link(link_id: int, payload: dict, request: Request):
+    """Relabel or re-route a cable (both endpoints must stay free and ours)."""
+    with _conn() as conn:
+        link = _one(conn, "SELECT * FROM links WHERE id = ?", (link_id,))
+        cid = _cid(conn, request)
+        _ensure_same(conn, cid, ("port", link["port_a"]), ("port", link["port_b"]))
+        cable = str(payload.get("cable", link["cable"]))[:80]
+        length = float(payload.get("length_m", link["length_m"]) or 0)
+        port_a = int(payload.get("port_a", link["port_a"]))
+        port_b = int(payload.get("port_b", link["port_b"]))
+        if port_a == port_b:
+            raise HTTPException(status_code=422, detail="same_port")
+        for port_id in (port_a, port_b):
+            _one(conn, "SELECT id FROM ports WHERE id = ?", (port_id,))
+        try:
+            conn.execute("UPDATE links SET port_a = ?, port_b = ?, cable = ?, length_m = ? WHERE id = ?",
+                         (port_a, port_b, cable, length, link_id))
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status_code=409, detail=f"port_already_linked:{port_b}") from exc
+        conn.commit()
+        return dict(conn.execute("SELECT * FROM links WHERE id = ?", (link_id,)).fetchone())

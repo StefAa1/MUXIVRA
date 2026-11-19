@@ -6,9 +6,9 @@
 <title>MUXIVRA — SSH workspace</title>
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
 <link rel="stylesheet" href="/static/vendor/xterm.css?v=0.1.0" />
-<link rel="stylesheet" href="/static/styles.css?v=0.4.5" />
-  <link rel="stylesheet" href="/static/netdoc.css?v=0.4.5" />
-  <link rel="stylesheet" href="/static/diagram.css?v=0.4.5" />
+<link rel="stylesheet" href="/static/styles.css?v=0.4.6" />
+  <link rel="stylesheet" href="/static/netdoc.css?v=0.4.6" />
+  <link rel="stylesheet" href="/static/diagram.css?v=0.4.6" />
 </head>
 <body>
 <!-- ============================ AUTH ============================ -->
@@ -50,11 +50,6 @@
 
   <aside class="sidebar">
     <header class="sb-head">
-      <div class="cust-bar">
-        <label class="cust-pick"><span>Πελάτης</span>
-          <select id="customer-select" aria-label="Ενεργός πελάτης"></select></label>
-        <button class="btn ghost xs" id="customer-add" title="Προσθήκη πελάτη">+ Πελάτης</button>
-      </div>
       <div class="search">
         <span class="search-icon">⌕</span>
         <input id="search" placeholder="Αναζήτηση server ή tag…" autocomplete="off" />
@@ -73,6 +68,15 @@
   </aside>
 
   <main class="main">
+    <div class="context-strip" id="context-strip">
+      <div class="cust-bar">
+        <label class="cust-pick"><span>Πελάτης</span>
+          <select id="customer-select" aria-label="Ενεργός πελάτης"></select></label>
+        <button class="btn ghost xs" id="customer-add" title="Προσθήκη πελάτη">+ Πελάτης</button>
+      </div>
+      <div class="ctx-crumb" id="ctx-crumb"></div>
+    </div>
+
     <div class="tabs" id="tabs">
       <div class="tabs-list" id="tabs-list"></div>
       <button class="tab-add" id="tab-add" title="Νέο session">+</button>
@@ -155,7 +159,7 @@
 <script src="/static/vendor/xterm.js?v=0.1.0"></script>
 <script src="/static/vendor/addon-fit.js?v=0.1.0"></script>
 <script src="/static/app.js?v=0.3.1"></script>
-<script src="/static/netdoc.js?v=0.4.5"></script>
-<script src="/static/diagram.js?v=0.4.5"></script>
+<script src="/static/netdoc.js?v=0.4.6"></script>
+<script src="/static/diagram.js?v=0.4.6"></script>
 </body>
 </html>
