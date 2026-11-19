@@ -90,3 +90,32 @@ manifest· αλλιώς επιστρέφει `bad_signature` / `insecure_url` / 
 Το workflow του release ανεβάζει στο GitHub Release: `MUXIVRA-Setup-<tag>.exe`,
 `MUXIVRA-Setup-<tag>.exe.sha256`, `MUXIVRA-portable-win64.zip`, `release.json`,
 `release.json.sig`, `release.pubkey.txt`.
+
+
+## Πού ζουν τα δεδομένα (και γιατί εμφανίζονται οι παλιοί πελάτες)
+
+Το πρόγραμμα **δεν** περιέχει δεδομένα. Ο installer και το portable ZIP έχουν
+**μηδέν** αρχεία `data/` — ελέγχεται με `7z l dist/MUXIVRA-Setup-*.exe | grep data/`.
+
+Ό,τι βλέπεις (πελάτες, hosts, vault, τεκμηρίωση) βρίσκεται στον φάκελο χρήστη:
+
+```
+%LOCALAPPDATA%\MUXIVRA\data\          <- Windows
+~/.local/share/muxivra/data/             <- Linux
+```
+
+Και οι δύο διανομές (portable + installer) δείχνουν **στον ίδιο** φάκελο, ώστε μια
+αναβάθμιση να μη χάνει δεδομένα. Γι' αυτό, αν έχεις ξανατρέξει παλιότερη έκδοση στον
+ίδιο λογαριασμό Windows, ο installer «βλέπει» τους ίδιους πελάτες — δεν τους έφερε
+μαζί του.
+
+**Καθαρή εγκατάσταση** (χωρίς τα παλιά δεδομένα):
+
+```powershell
+# κλείσε το MUXIVRA πρώτα
+Rename-Item "$env:LOCALAPPDATA\MUXIVRA\data" "data-old-$(Get-Date -Format yyyyMMdd)"
+# άνοιξε το MUXIVRA: δημιουργεί νέο, άδειο data\ με νέο vault
+```
+
+Για προχωρημένους, άλλος φάκελος δεδομένων: `set SSHDECK_DATA=D:\muxivra-data` πριν την εκκίνηση.
+Η ενεργή διαδρομή φαίνεται πάντα στο Settings → Updates (`data: …`).
