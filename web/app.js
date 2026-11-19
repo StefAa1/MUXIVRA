@@ -79,7 +79,17 @@ async function api(path, opts = {}) {
   if (!res.ok) {
     let detail = res.statusText;
     try { const data = await res.json(); detail = data.detail || detail; } catch (_) { /* ignore */ }
-    throw new Error(detail);
+    // το detail μπορεί να είναι λίστα σφαλμάτων validation, όχι string
+    let text = detail;
+    if (Array.isArray(detail)) {
+      text = detail.map((item) => (item && item.msg ? `${(item.loc || []).slice(1).join('.')}: ${item.msg}` : String(item))).join('; ');
+    } else if (detail && typeof detail === 'object') {
+      text = detail.message || detail.code || JSON.stringify(detail);
+    }
+    const error = new Error(`${text || res.status}${res.status && typeof text !== 'string' ? '' : ` (HTTP ${res.status})`}`);
+    error.detail = detail;
+    error.status = res.status;
+    throw error;
   }
   const type = res.headers.get('content-type') || '';
   return type.includes('application/json') ? res.json() : res;
@@ -1668,7 +1678,9 @@ document.addEventListener('click', (event) => {
       if (line) line.textContent = 'Checking…';
       try {
         const result = await api('/update/check', { json: { repo: repo.trim() } });
-        S.update = { ...(S.update || {}), ...result, asset: result.asset, last_check: new Date().toLocaleString('el-GR') };
+        // κρατάμε ΟΛΟ το release (asset + manifest + signature): το prepare τα χρειάζεται
+        S.updateRelease = result;
+        S.update = { ...(S.update || {}), ...result, last_check: new Date().toLocaleString('en-GB') };
         renderPage();
         toast(result.available ? `New version: ${result.latest}` : `You are on the latest (${result.latest || result.current})`);
       } catch (err) {
@@ -1677,12 +1689,20 @@ document.addEventListener('click', (event) => {
       }
     },
     'upd-prepare': async () => {
-      const asset = (S.update || {}).asset;
+      const release = S.updateRelease || (S.update || {});
+      const asset = release.asset;
       if (!asset) { toast('Run a check first', 'err'); return; }
       const line = $('#upd-status');
       if (line) line.textContent = 'Downloading and verifying…';
       try {
-        const result = await api('/update/prepare', { json: asset });
+        const result = await api('/update/prepare', {
+          json: {
+            latest: release.latest,
+            asset: release.asset,
+            manifest: release.manifest || null,
+            signature: release.signature || null,
+          },
+        });
         if (line) line.textContent = 'Ready: ' + result.script;
         toast('Close MUXIVRA and run apply-update.cmd');
       } catch (err) {

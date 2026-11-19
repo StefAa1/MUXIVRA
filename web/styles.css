@@ -716,3 +716,8 @@ select:focus option:checked { background: #2f7bff; color: #04101f; }
 .ctx-item.on { background: rgba(47,123,255,.2); }
 .ctx-item small { color: var(--muted); font-size: 11px; }
 .ctx-item-new { color: var(--accent); border-top: 1px solid var(--line); border-radius: 0 0 8px 8px; margin-top: 4px; }
+
+/* ενέργειες σε κάρτες: να μη κόβονται τα κουμπιά σε στενό πλαίσιο */
+.card .actions { flex-wrap: wrap; row-gap: 8px; }
+.card .actions .btn { max-width: 100%; }
+#upd-status { overflow-wrap: anywhere; }
