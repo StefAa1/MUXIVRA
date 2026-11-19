@@ -267,6 +267,7 @@ def migrate(conn: sqlite3.Connection) -> None:
     _add_missing_columns(conn, "credentials", {"customer_id": "INTEGER REFERENCES customers(id)"})
     from . import customers as _customers
 
+    _customers.rename_unclassified(conn)
     _customers.backfill_ownership(conn)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sites_customer ON sites(customer_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_hosts_customer ON hosts(customer_id)")

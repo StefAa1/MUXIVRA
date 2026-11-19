@@ -88,13 +88,13 @@ class ImportError_(RuntimeError):
 
 def validate(payload: dict) -> dict:
     if not isinstance(payload, dict) or payload.get("format") != FORMAT:
-        raise ImportError_("bad_format", f"Αναμένεται format {FORMAT}.")
+        raise ImportError_("bad_format", f"Expected format {FORMAT}.")
     for key in ("sites", "racks", "devices", "ports", "links"):
         if not isinstance(payload.get(key), list):
-            raise ImportError_("bad_format", f"Λείπει η λίστα «{key}».")
+            raise ImportError_("bad_format", f'Missing "{key}" list.')
     counters = {k: len(payload.get(k) or []) for k in ("sites", "racks", "devices", "ports", "links")}
     if counters["links"] and not counters["ports"]:
-        raise ImportError_("bad_format", "Υπάρχουν links χωρίς ports.")
+        raise ImportError_("bad_format", "There are links without ports.")
     return counters
 
 
@@ -144,14 +144,14 @@ def _num(value, field: str, row_id, default=None):
     """Coerce a JSON number, raising a clean 422 instead of a 500."""
     if value in (None, ""):
         if default is None:
-            raise ImportError_("bad_number", f"Το «{field}» λείπει στη γραμμή #{row_id}.")
+            raise ImportError_("bad_number", f'The "{field}" is missing in row #{row_id}.')
         return default
     try:
         number = float(value)
     except (TypeError, ValueError):
-        raise ImportError_("bad_number", f"Το «{field}» δεν είναι αριθμός στη γραμμή #{row_id}.")
+        raise ImportError_("bad_number", f'The "{field}" is not a number in row #{row_id}.')
     if number != number or number in (float("inf"), float("-inf")):
-        raise ImportError_("bad_number", f"Το «{field}» δεν είναι έγκυρος αριθμός (#{row_id}).")
+        raise ImportError_("bad_number", f'The "{field}" is not a valid number (#{row_id}).')
     return number
 PORT_KINDS = {"rj45", "sfp", "fiber", "power", "other"}
 
@@ -162,13 +162,13 @@ def _validate_rows(payload: dict) -> None:
         if rows is None:
             continue
         if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
-            raise ImportError_("bad_format", f"Το «{collection}» πρέπει να είναι λίστα από αντικείμενα.")
+            raise ImportError_("bad_format", f'The "{collection}" must be a list of objects.')
     for collection in ("sites", "racks", "devices", "ports", "links"):
         ids = [row.get("id") for row in payload[collection]]
         if any(not isinstance(i, int) for i in ids):
-            raise ImportError_("bad_format", f"Κάθε εγγραφή στο «{collection}» χρειάζεται ακέραιο id.")
+            raise ImportError_("bad_format", f'Every entry in "{collection}" needs an integer id.')
         if len(set(ids)) != len(ids):
-            raise ImportError_("duplicate_id", f"Διπλά ids στο «{collection}».")
+            raise ImportError_("duplicate_id", f'Duplicate ids in "{collection}".')
     rack_ids = {row["id"] for row in payload["racks"]}
     # geometry is validated against the MERGED state: an existing rack may be
     # smaller than the payload claims, and it may already be occupied
@@ -176,37 +176,37 @@ def _validate_rows(payload: dict) -> None:
     for rack in payload["racks"]:
         units = int(_num(rack.get("units"), "units", rack["id"], 42))
         if not 1 <= units <= 60:
-            raise ImportError_("bad_geometry", f"Το rack #{rack['id']} έχει άκυρο ύψος.")
+            raise ImportError_("bad_geometry", f"Rack #{rack['id']} has an invalid height.")
         rack_units[rack["id"]] = units
 
     for device in payload["devices"]:
         if device.get("rack_id") not in rack_ids:
-            raise ImportError_("dangling_ref", f"Η συσκευή #{device['id']} δείχνει σε άγνωστο rack.")
+            raise ImportError_("dangling_ref", f"Device #{device['id']} points to an unknown rack.")
         if (device.get("kind") or "switch") not in KINDS:
-            raise ImportError_("bad_device_kind", f"Άγνωστος τύπος συσκευής: {device.get('kind')}")
+            raise ImportError_("bad_device_kind", f"Unknown device kind: {device.get('kind')}")
         if _num(device.get("position"), "position", device["id"], 1) < 1 or _num(
             device.get("units"), "units", device["id"], 1
         ) < 1:
-            raise ImportError_("bad_geometry", f"Άκυρη θέση για τη συσκευή #{device['id']}.")
+            raise ImportError_("bad_geometry", f"Invalid position for device #{device['id']}.")
 
     port_ids = {row["id"] for row in payload["ports"]}
     device_ids = {row["id"] for row in payload["devices"]}
     for port in payload["ports"]:
         if port.get("device_id") not in device_ids:
-            raise ImportError_("dangling_ref", f"Το port #{port['id']} δείχνει σε άγνωστη συσκευή.")
+            raise ImportError_("dangling_ref", f"Port #{port['id']} points to an unknown device.")
         if (port.get("kind") or "rj45") not in PORT_KINDS:
-            raise ImportError_("bad_port_kind", f"Άγνωστος τύπος port: {port.get('kind')}")
+            raise ImportError_("bad_port_kind", f"Unknown port kind: {port.get('kind')}")
     for link in payload["links"]:
         if link.get("port_a") not in port_ids or link.get("port_b") not in port_ids:
-            raise ImportError_("dangling_ref", f"Η σύνδεση #{link['id']} δείχνει σε άγνωστο port.")
+            raise ImportError_("dangling_ref", f"Link #{link['id']} points to an unknown port.")
         if link.get("port_a") == link.get("port_b"):
-            raise ImportError_("self_link", f"Η σύνδεση #{link['id']} ενώνει το port με τον εαυτό του.")
+            raise ImportError_("self_link", f"Link #{link['id']} connects a port to itself.")
         try:
             length = _num(link.get("length_m"), "length_m", link["id"], 0)
         except ImportError_ as exc:
             raise ImportError_("bad_length", exc.message)
         if not 0 <= length <= 10000:
-            raise ImportError_("bad_length", f"Άκυρο μήκος στη σύνδεση #{link['id']}.")
+            raise ImportError_("bad_length", f"Invalid length on link #{link['id']}.")
 
 
 def import_payload(conn: sqlite3.Connection, payload: dict, dry_run: bool = False,
@@ -234,7 +234,7 @@ def import_payload(conn: sqlite3.Connection, payload: dict, dry_run: bool = Fals
     for site in payload["sites"]:
         name = str(site.get("name") or "").strip()
         if not name:
-            raise ImportError_("bad_format", "Ο χώρος χρειάζεται όνομα.")
+            raise ImportError_("bad_format", "The site needs a name.")
         row = conn.execute(
             "SELECT id FROM sites WHERE name = ? AND (customer_id IS ? OR ? IS NULL)",
             (name, customer_id, customer_id),
@@ -301,12 +301,12 @@ def import_payload(conn: sqlite3.Connection, payload: dict, dry_run: bool = Fals
             if top > actual_units:
                 raise ImportError_(
                     "device_outside_rack",
-                    f"Η συσκευή «{name}» βγαίνει έξω από το rack ({actual_units}U).",
+                    f'Device "{name}" extends beyond the rack ({actual_units}U).',
                 )
             for start_u, end_u, owner in _occupied(new_rack):
                 if int(device.get("position") or 1) <= end_u and start_u <= top:
                     raise ImportError_(
-                        "position_taken", f"Η θέση της «{name}» είναι πιασμένη από «{owner}»."
+                        "position_taken", f'Position of "{name}" is already taken by "{owner}".'
                     )
             cur = conn.execute(
                 """INSERT INTO devices (rack_id, name, kind, units, position, note, host_id, vendor, model, mgmt_ip)

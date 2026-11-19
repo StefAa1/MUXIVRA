@@ -1,6 +1,6 @@
 /* ------------------------------------------------------- MUXIVRA · wizard
-   Καθοδηγούμενη προσθήκη συσκευής σε τρία βήματα:
-     1 Στοιχεία → 2 Πρόσβαση → 3 Τοποθέτηση
+   Guided device creation in three steps:
+     1 Details → 2 Access → 3 Placement
 
    Κανόνες που τηρούνται εδώ:
    • μία μόνο τελική αποθήκευση· αν η τοποθέτηση αποτύχει, η εγγραφή του
@@ -24,6 +24,8 @@ const WZ = {
   },
   credentials: [],
   sites: [],
+  catalog: [],
+  modelKey: '',
   layout: null,            // τρέχον rack layout: ποιες θέσεις U είναι πιασμένες
   busy: false,
   error: '',
@@ -35,7 +37,7 @@ const WZ = {
 
 const WZ_KINDS = [
   ['switch', 'Switch'], ['router', 'Router'], ['firewall', 'Firewall'], ['ap', 'Access point'],
-  ['patch-panel', 'Patch panel'], ['server', 'Server'], ['pdu', 'PDU'], ['other', 'Άλλο'],
+  ['patch-panel', 'Patch panel'], ['server', 'Server'], ['pdu', 'PDU'], ['other', 'Other'],
 ];
 const WZ_PROTOCOLS = [['ssh', 'SSH'], ['telnet', 'Telnet'], ['serial', 'Serial / COM']];
 
@@ -77,46 +79,46 @@ function wzToast(message) {
 function wzValidateStep(step) {
   const d = WZ.data;
   if (step === 1) {
-    if (!d.name.trim()) return { field: 'wz-name', message: 'Χρειάζεται όνομα συσκευής.' };
+    if (!d.name.trim()) return { field: 'wz-name', message: 'A device name is required.' };
     if (!d.planned && !d.mgmt_ip.trim() && !d.serial_port.trim()) {
-      return { field: 'wz-ip', message: 'Δώσε management IP/hostname ή θύρα COM, ή δήλωσέ την ως σχεδιαζόμενη.' };
+      return { field: 'wz-ip', message: 'Enter a management IP/hostname or COM port, or mark it as planned.' };
     }
     if (d.mgmt_ip.trim() && /\s/.test(d.mgmt_ip.trim())) {
-      return { field: 'wz-ip', message: 'Το hostname/IP δεν μπορεί να έχει κενά.' };
+      return { field: 'wz-ip', message: 'The hostname/IP cannot contain spaces.' };
     }
     return null;
   }
   if (step === 2) {
     if (d.protocol !== 'serial') {
-      if (!d.username.trim()) return { field: 'wz-user', message: 'Χρειάζεται όνομα χρήστη για σύνδεση.' };
-      if (!d.credential_id) return { field: 'wz-cred', message: 'Διάλεξε ή δημιούργησε credential.' };
+      if (!d.username.trim()) return { field: 'wz-user', message: 'A username is required to connect.' };
+      if (!d.credential_id) return { field: 'wz-cred', message: 'Select or create a credential.' };
       const port = Number(d.port);
       if (!Number.isFinite(port) || port < 1 || port > 65535) {
-        return { field: 'wz-port', message: 'Η θύρα θέλει τιμή 1–65535.' };
+        return { field: 'wz-port', message: 'The port must be between 1 and 65535.' };
       }
     } else {
-      if (!d.serial_port.trim()) return { field: 'wz-com', message: 'Δώσε θύρα COM (π.χ. COM3).' };
+      if (!d.serial_port.trim()) return { field: 'wz-com', message: 'Enter a COM port (for example COM3).' };
       const baud = Number(d.baud);
-      if (!Number.isFinite(baud) || baud < 50) return { field: 'wz-baud', message: 'Baud ≥ 50.' };
+      if (!Number.isFinite(baud) || baud < 50) return { field: 'wz-baud', message: 'Baud must be at least 50.' };
     }
     return null;
   }
   if (d.planned) return null;
-  if (!d.rack_id) return { field: 'wz-rack', message: 'Διάλεξε rack ή δημιούργησε νέο.' };
+  if (!d.rack_id) return { field: 'wz-rack', message: 'Select a rack or create a new one.' };
   const position = Number(d.position);
   const units = Number(d.units) || 1;
-  if (!Number.isFinite(position) || position < 1) return { field: 'wz-position', message: 'Θέση U ≥ 1.' };
-  if (position + units - 1 > 60) return { field: 'wz-position', message: 'Η συσκευή βγαίνει έξω από το rack.' };
+  if (!Number.isFinite(position) || position < 1) return { field: 'wz-position', message: 'U position must be at least 1.' };
+  if (position + units - 1 > 60) return { field: 'wz-position', message: 'The device does not fit in the rack.' };
   if (WZ.layout) {
     const taken = wzOccupied();
     for (let unit = position; unit <= position + units - 1; unit += 1) {
       if (taken.has(unit)) {
-        return { field: 'wz-position', message: `Το U${unit} είναι πιασμένο — ${wzFreeHint()}` };
+        return { field: 'wz-position', message: `U${unit} ${'is occupied'} — ${wzFreeHint()}` };
       }
     }
     const total = Number((WZ.layout.rack && WZ.layout.rack.units) || 0);
     if (total && position + units - 1 > total) {
-      return { field: 'wz-position', message: `Το rack έχει ${total}U.` };
+      return { field: 'wz-position', message: `The rack has ${total}U.` };
     }
   }
   return null;
@@ -141,7 +143,7 @@ function wzShowError(error) {
 
 /* -------------------------------------------------------------------- shell */
 function wzStepsHtml() {
-  const labels = [['1', 'Στοιχεία'], ['2', 'Πρόσβαση'], ['3', 'Τοποθέτηση']];
+  const labels = [['1', 'Details'], ['2', 'Access'], ['3', 'Placement']];
   return labels.map(([num, label]) => {
     const state = Number(num) === WZ.step ? ' on' : (Number(num) < WZ.step ? ' done' : '');
     return `<span class="wz-step${state}"><b>${num}</b>${wzEsc(label)}</span>`;
@@ -152,55 +154,95 @@ function wzStepOneHtml() {
   const d = WZ.data;
   return `
     <div class="wz-grid">
-      <label class="wz-field"><span>Όνομα συσκευής *</span>
-        <input id="wz-name" value="${wzEsc(d.name)}" placeholder="Router υποκαταστήματος" autocomplete="off" /></label>
-      <label class="wz-field"><span>Τύπος</span>
+      <label class="wz-field"><span>Device name *</span>
+        <input id="wz-name" value="${wzEsc(d.name)}" placeholder="Branch router" autocomplete="off" /></label>
+      <label class="wz-field"><span>Type</span>
         <select id="wz-kind">${WZ_KINDS.map(([v, l]) => `<option value="${v}"${d.kind === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
-      <label class="wz-field"><span>Κατασκευαστής (προαιρετικό)</span>
-        <input id="wz-vendor" value="${wzEsc(d.vendor)}" placeholder="MikroTik" autocomplete="off" /></label>
-      <label class="wz-field"><span>Μοντέλο (προαιρετικό)</span>
-        <input id="wz-model" value="${wzEsc(d.model)}" placeholder="hEX S" autocomplete="off" /></label>
-      <label class="wz-field wide"><span>Management IP ή hostname</span>
+      <label class="wz-field"><span>Vendor</span>
+        <select id="wz-vendor">${wzVendorOptions()}</select></label>
+      <label class="wz-field"><span>Model</span>
+        <select id="wz-model">${wzModelOptions()}</select>
+        <em id="wz-model-note">${wzEsc(wzModelNote())}</em></label>
+      <label class="wz-field wide"><span>Management IP or hostname</span>
         <input id="wz-ip" value="${wzEsc(d.mgmt_ip)}" placeholder="192.168.88.1" autocomplete="off" spellcheck="false" />
-        <em>Χρησιμοποιείται για σύνδεση και για το web management.</em></label>
-      <label class="wz-field"><span>Θύρα COM (αν είναι serial)</span>
+        <em>Used for SSH/Telnet and for web management.</em></label>
+      <label class="wz-field"><span>COM port (for serial)</span>
         <input id="wz-com-serial" value="${wzEsc(d.serial_interface)}" placeholder="COM3" autocomplete="off" /></label>
       <label class="wz-check wide"><input type="checkbox" id="wz-planned"${d.planned ? ' checked' : ''} />
-        <span>Σχεδιαζόμενη συσκευή — χωρίς τοποθέτηση σε rack</span></label>
-      <label class="wz-field wide"><span>Σημειώσεις</span>
-        <textarea id="wz-note" rows="2" placeholder="π.χ. πάροχος, τηλέφωνο, κωδικός πελάτη">${wzEsc(d.note)}</textarea></label>
+        <span>Planned device — no rack placement</span></label>
+      <label class="wz-field wide"><span>Notes</span>
+        <textarea id="wz-note" rows="2" placeholder="e.g. ISP, phone, customer reference">${wzEsc(d.note)}</textarea></label>
     </div>`;
+}
+
+function wzVendors() {
+  return (WZ.catalog && WZ.catalog.vendors) ? WZ.catalog.vendors : [];
+}
+
+function wzVendorOptions() {
+  const current = (WZ.data.vendor || '').toLowerCase();
+  const vendors = wzVendors();
+  const options = vendors.map((vendor) => `<option value="${vendor.key}"${current === vendor.key ? ' selected' : ''}>${wzEsc(vendor.name)}</option>`).join('');
+  return `<option value=""${current ? '' : ' selected'}>— other —</option>${options}`;
+}
+
+function wzModelsFor(vendorKey) {
+  const vendor = wzVendors().find((item) => item.key === vendorKey);
+  return vendor ? vendor.models : [];
+}
+
+function wzModelOptions() {
+  const models = wzModelsFor((WZ.data.vendor || '').toLowerCase());
+  const current = WZ.modelKey || '';
+  if (!models.length) return '<option value="">— type model by hand —</option>';
+  return '<option value="">— select model (ports come with it) —</option>'
+    + models.map((model) => `<option value="${model.key}"${current === model.key ? ' selected' : ''}>${wzEsc(model.name)} · ${model.ports} ports</option>`).join('');
+}
+
+function wzModelById(key) {
+  for (const vendor of wzVendors()) {
+    const found = (vendor.models || []).find((model) => model.key === key);
+    if (found) return found;
+  }
+  return null;
+}
+
+function wzModelNote() {
+  const model = wzModelById(WZ.modelKey);
+  if (!model) return 'Pick a model and its real ports are created automatically.';
+  const groups = (model.groups || []).map((group) => `${group.count}× ${group.kind.toUpperCase()}`).join(' + ');
+  return `${model.kind} · ${model.units}U · ${groups}`;
 }
 
 function wzStepTwoHtml() {
   const d = WZ.data;
   const credentials = WZ.credentials.length
     ? WZ.credentials.map((c) => `<option value="${c.id}"${String(d.credential_id) === String(c.id) ? ' selected' : ''}>${wzEsc(c.name)}${c.username ? ` · ${wzEsc(c.username)}` : ''}</option>`).join('')
-    : '<option value="">— κανένα credential —</option>';
+    : '<option value="">— no credential —</option>';
   const serial = d.protocol === 'serial';
   return `
     <div class="wz-grid">
-      <label class="wz-field"><span>Πρωτόκολλο</span>
+      <label class="wz-field"><span>Protocol</span>
         <select id="wz-proto">${WZ_PROTOCOLS.map(([v, l]) => `<option value="${v}"${d.protocol === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
-      <label class="wz-field"><span>Όνομα χρήστη</span>
+      <label class="wz-field"><span>Username</span>
         <input id="wz-user" value="${wzEsc(d.username)}" placeholder="admin" autocomplete="off" ${serial ? 'disabled' : ''} /></label>
       <label class="wz-field"><span>Credential</span>
         <select id="wz-cred" ${serial ? 'disabled' : ''}>${credentials}</select></label>
-      <label class="wz-field"><span>Θύρα</span>
+      <label class="wz-field"><span>Port</span>
         <input id="wz-port" type="number" min="1" max="65535" value="${wzEsc(d.port)}" ${serial ? 'disabled' : ''} />
         <em>SSH 22, Telnet 23.</em></label>
       <div class="wz-inline wide">
-        <button type="button" class="btn ghost xs" id="wz-new-cred">+ Νέο credential</button>
-        <span class="wz-hint">Δημιουργείται εδώ χωρίς να χαθεί η φόρμα. Το μυστικό πηγαίνει μόνο στο vault.</span>
+        <button type="button" class="btn ghost xs" id="wz-new-cred">+ New credential</button>
+        <span class="wz-hint">Created inline without losing the form. The secret goes only to the vault.</span>
       </div>
       <div id="wz-cred-form" class="wz-sub hidden">
-        <label class="wz-field"><span>Όνομα</span><input id="wz-cred-name" placeholder="admin-router" autocomplete="off" /></label>
-        <label class="wz-field"><span>Χρήστης</span><input id="wz-cred-user" placeholder="admin" autocomplete="off" /></label>
-        <label class="wz-field"><span>Μυστικό</span><input id="wz-cred-secret" type="password" autocomplete="new-password" /></label>
-        <button type="button" class="btn primary xs" id="wz-cred-save">Αποθήκευση credential</button>
+        <label class="wz-field"><span>Name</span><input id="wz-cred-name" placeholder="admin-router" autocomplete="off" /></label>
+        <label class="wz-field"><span>Username</span><input id="wz-cred-user" placeholder="admin" autocomplete="off" /></label>
+        <label class="wz-field"><span>Secret</span><input id="wz-cred-secret" type="password" autocomplete="new-password" /></label>
+        <button type="button" class="btn primary xs" id="wz-cred-save">Save credential</button>
       </div>
       <div class="wz-serial${serial ? '' : ' hidden'}">
-        <label class="wz-field"><span>Θύρα COM</span><input id="wz-com" value="${wzEsc(d.serial_port)}" placeholder="COM3" autocomplete="off" /></label>
+        <label class="wz-field"><span>Port COM</span><input id="wz-com" value="${wzEsc(d.serial_port)}" placeholder="COM3" autocomplete="off" /></label>
         <label class="wz-field"><span>Baud</span><input id="wz-baud" type="number" min="50" value="${wzEsc(d.baud)}" /></label>
         <label class="wz-field"><span>Bits</span>
           <select id="wz-bytesize">${[8, 7, 6, 5].map((n) => `<option value="${n}"${Number(d.bytesize) === n ? ' selected' : ''}>${n}</option>`).join('')}</select></label>
@@ -210,12 +252,12 @@ function wzStepTwoHtml() {
           <select id="wz-stopbits">${[1, 2].map((n) => `<option value="${n}"${Number(d.stopbits) === n ? ' selected' : ''}>${n}</option>`).join('')}</select></label>
         <label class="wz-field"><span>Flow control</span>
           <select id="wz-flow">
-            <option value="none"${d.flow === 'none' ? ' selected' : ''}>Κανένα</option>
+            <option value="none"${d.flow === 'none' ? ' selected' : ''}>None</option>
             <option value="rtscts"${d.flow === 'rtscts' ? ' selected' : ''}>RTS/CTS</option>
             <option value="xonxoff"${d.flow === 'xonxoff' ? ' selected' : ''}>XON/XOFF</option>
             <option value="dsrdtr"${d.flow === 'dsrdtr' ? ' selected' : ''}>DSR/DTR</option>
           </select></label>
-        <p class="wz-hint wide">Τα 115200 8N1 είναι η συνηθισμένη ρύθμιση σε console θύρα. Αν δεν βλέπεις έξοδο, δοκίμασε 9600.</p>
+        <p class="wz-hint wide">115200 8N1 is the usual console setting. If you see no output, try 9600.</p>
       </div>
     </div>`;
 }
@@ -224,12 +266,12 @@ function wzStepThreeHtml() {
   const d = WZ.data;
   if (d.planned) {
     return `<div class="wz-planned-note">
-      <b>Σχεδιαζόμενη συσκευή</b>
-      <p>Θα καταχωρηθεί χωρίς rack. Εμφανίζεται στο διάγραμμα με διακεκομμένο περίγραμμα και δεν συνδέεται σε κανένα φυσικό καλώδιο μέχρι να την τοποθετήσεις.</p></div>`;
+      <b>Planned device</b>
+      <p>It is recorded without a rack, appears dashed in the diagram, and gets no physical cable until you place it.</p></div>`;
   }
   const sites = WZ.sites.length
     ? WZ.sites.map((s) => `<option value="${s.id}"${String(d.site_id) === String(s.id) ? ' selected' : ''}>${wzEsc(s.name)}</option>`).join('')
-    : '<option value="">— κανένας χώρος —</option>';
+    : '<option value="">— no site —</option>';
   const racks = [];
   WZ.sites.forEach((site) => {
     if (String(site.id) !== String(d.site_id)) return;
@@ -237,37 +279,37 @@ function wzStepThreeHtml() {
   });
   const rackOptions = racks.length
     ? racks.map((r) => `<option value="${r.id}"${String(d.rack_id) === String(r.id) ? ' selected' : ''}>${wzEsc(r.name)} · ${r.units}U</option>`).join('')
-    : '<option value="">— κανένα rack —</option>';
+    : '<option value="">— no rack —</option>';
   return `
     <div class="wz-grid">
-      <label class="wz-field"><span>Χώρος / εγκατάσταση</span>
+      <label class="wz-field"><span>Site / installation</span>
         <select id="wz-site">${sites}</select></label>
-      <div class="wz-inline"><button type="button" class="btn ghost xs" id="wz-new-site">+ Νέος χώρος</button></div>
+      <div class="wz-inline"><button type="button" class="btn ghost xs" id="wz-new-site">+ New site</button></div>
       <label class="wz-field"><span>Rack</span>
         <select id="wz-rack">${rackOptions}</select></label>
-      <div class="wz-inline"><button type="button" class="btn ghost xs" id="wz-new-rack">+ Νέο rack</button></div>
-      <label class="wz-field"><span>Θέση U</span>
+      <div class="wz-inline"><button type="button" class="btn ghost xs" id="wz-new-rack">+ New rack</button></div>
+      <label class="wz-field"><span>U position</span>
         <input id="wz-position" type="number" min="1" max="60" value="${wzEsc(d.position)}" />
-        <em>U1 = κάτω. Ένα 1U switch σε U10 πιάνει το U10.</em>
+        <em>U1 is the bottom. A 1U switch at U10 occupies U10.</em>
         ${WZ.layout ? `<em class="wz-free">${wzEsc(wzFreeHint())}</em>` : ''}</label>
-      <label class="wz-field"><span>Ύψος (U)</span>
+      <label class="wz-field"><span>Height (U)</span>
         <input id="wz-units" type="number" min="1" max="48" value="${wzEsc(d.units)}" /></label>
       <div id="wz-site-form" class="wz-sub hidden">
-        <label class="wz-field"><span>Όνομα χώρου</span><input id="wz-site-name" placeholder="Κεντρικό Αθήνας" autocomplete="off" /></label>
-        <button type="button" class="btn primary xs" id="wz-site-save">Δημιουργία χώρου</button>
+        <label class="wz-field"><span>Site name</span><input id="wz-site-name" placeholder="Athens HQ" autocomplete="off" /></label>
+        <button type="button" class="btn primary xs" id="wz-site-save">Create site</button>
       </div>
       <div id="wz-rack-form" class="wz-sub hidden">
-        <label class="wz-field"><span>Όνομα rack</span><input id="wz-rack-name" placeholder="Rack δικτύου" autocomplete="off" /></label>
-        <label class="wz-field"><span>Ύψος rack (U)</span><input id="wz-rack-units" type="number" min="1" max="60" value="42" /></label>
-        <button type="button" class="btn primary xs" id="wz-rack-save">Δημιουργία rack</button>
+        <label class="wz-field"><span>Name rack</span><input id="wz-rack-name" placeholder="Network rack" autocomplete="off" /></label>
+        <label class="wz-field"><span>Rack height (U)</span><input id="wz-rack-units" type="number" min="1" max="60" value="42" /></label>
+        <button type="button" class="btn primary xs" id="wz-rack-save">Create rack</button>
       </div>
       <div class="wz-summary wide">
-        <h4>Σύνοψη</h4>
+        <h4>Summary</h4>
         <dl>
-          <dt>Συσκευή</dt><dd>${wzEsc(d.name || '—')} · ${wzEsc((WZ_KINDS.find(([v]) => v === d.kind) || [])[1] || d.kind)}</dd>
-          <dt>Διεύθυνση</dt><dd>${wzEsc(d.mgmt_ip || d.serial_port || '—')}</dd>
-          <dt>Πρόσβαση</dt><dd>${wzEsc(d.protocol.toUpperCase())}${d.protocol === 'serial' ? ` · ${wzEsc(d.serial_port || '—')} · ${wzEsc(d.baud)} baud` : ` · ${wzEsc(d.username)}`}</dd>
-          <dt>Τοποθέτηση</dt><dd>${wzEsc(wzSiteName())} / ${wzEsc(wzRackName())} · U${wzEsc(d.position)}</dd>
+          <dt>Device</dt><dd>${wzEsc(d.name || '—')} · ${wzEsc((WZ_KINDS.find(([v]) => v === d.kind) || [])[1] || d.kind)}</dd>
+          <dt>Address</dt><dd>${wzEsc(d.mgmt_ip || d.serial_port || '—')}</dd>
+          <dt>Access</dt><dd>${wzEsc(d.protocol.toUpperCase())}${d.protocol === 'serial' ? ` · ${wzEsc(d.serial_port || '—')} · ${wzEsc(d.baud)} baud` : ` · ${wzEsc(d.username)}`}</dd>
+          <dt>Placement</dt><dd>${wzEsc(wzSiteName())} / ${wzEsc(wzRackName())} · U${wzEsc(d.position)}</dd>
         </dl>
       </div>
     </div>`;
@@ -292,21 +334,21 @@ function wzRackName() {
 function wzRender() {
   if (!WZ.el) return;
   const body = WZ.step === 1 ? wzStepOneHtml() : (WZ.step === 2 ? wzStepTwoHtml() : wzStepThreeHtml());
-  WZ.el.innerHTML = `<div class="wz-panel" role="dialog" aria-label="Προσθήκη συσκευής">
+  WZ.el.innerHTML = `<div class="wz-panel" role="dialog" aria-label="Add device">
     <header class="wz-head">
       <div>
-        <h3>Προσθήκη συσκευής</h3>
+        <h3>Add device</h3>
         <div class="wz-steps">${wzStepsHtml()}</div>
       </div>
-      <button type="button" class="icon-btn" id="wz-cancel" title="Άκυρο (Esc)">✕</button>
+      <button type="button" class="icon-btn" id="wz-cancel" title="Cancel (Esc)">✕</button>
     </header>
     <p class="wz-error hidden" id="wz-error"></p>
     <div class="wz-body">${body}</div>
     <footer class="wz-foot">
-      <button type="button" class="btn ghost" id="wz-back"${WZ.step === 1 ? ' disabled' : ''}>← Πίσω</button>
-      <span class="wz-foot-hint">${WZ.step === 3 ? 'Μία τελική αποθήκευση — τίποτα δεν γράφεται πριν.' : 'Enter για συνέχεια, Esc για άκυρο.'}</span>
+      <button type="button" class="btn ghost" id="wz-back"${WZ.step === 1 ? ' disabled' : ''}>← Back</button>
+      <span class="wz-foot-hint">${WZ.step === 3 ? 'One final save — nothing is written before it.' : 'Enter to continue, Esc to cancel.'}</span>
       <button type="button" class="btn primary" id="wz-next"${WZ.busy ? ' disabled' : ''}>
-        ${WZ.step === 3 ? 'Αποθήκευση συσκευής' : 'Συνέχεια →'}</button>
+        ${WZ.step === 3 ? 'Save device' : 'Continue →'}</button>
     </footer>
   </div>`;
   wzBind();
@@ -320,8 +362,10 @@ function wzReadStep() {
   if (WZ.step === 1) {
     d.name = get('wz-name').value;
     d.kind = get('wz-kind').value;
-    d.vendor = get('wz-vendor').value;
-    d.model = get('wz-model').value;
+    const vendorField = get('wz-vendor');
+    if (vendorField) d.vendor = vendorField.value;
+    const modelField = get('wz-model');
+    if (modelField) WZ.modelKey = modelField.value;
     d.mgmt_ip = get('wz-ip').value;
     d.serial_interface = get('wz-com-serial').value;
     d.planned = get('wz-planned').checked;
@@ -362,6 +406,28 @@ function wzBind() {
   if (back) back.onclick = () => { wzReadStep(); if (WZ.step > 1) { WZ.step -= 1; WZ.error = ''; wzRender(); } };
   const next = el.querySelector('#wz-next');
   if (next) next.onclick = wzNext;
+
+  const vendorSel = el.querySelector('#wz-vendor');
+  if (vendorSel) vendorSel.onchange = () => {
+    wzReadStep();
+    WZ.data.vendor = vendorSel.value;
+    WZ.modelKey = '';
+    WZ.data.model = '';
+    wzRender();
+  };
+  const modelSel = el.querySelector('#wz-model');
+  if (modelSel) modelSel.onchange = () => {
+    wzReadStep();
+    WZ.modelKey = modelSel.value;
+    const model = wzModelById(modelSel.value);
+    if (model) {
+      WZ.data.model = model.name;
+      WZ.data.vendor = model.vendor;
+      WZ.data.kind = model.kind;
+      WZ.data.units = model.units;
+    }
+    wzRender();
+  };
 
   const proto = el.querySelector('#wz-proto');
   if (proto) proto.onchange = () => { wzReadStep(); wzRender(); };
@@ -414,7 +480,7 @@ async function wzCreateCredential() {
   const name = el.querySelector('#wz-cred-name').value.trim();
   const user = el.querySelector('#wz-cred-user').value.trim();
   const secret = el.querySelector('#wz-cred-secret').value;
-  if (!name || !secret) { wzShowError({ message: 'Χρειάζεται όνομα και μυστικό.' }); return; }
+  if (!name || !secret) { wzShowError({ message: 'Name and secret are required.' }); return; }
   try {
     const created = await wzApi('/credentials', {
       method: 'POST',
@@ -425,16 +491,16 @@ async function wzCreateCredential() {
     if (user) WZ.data.username = WZ.data.username || user;
     WZ.error = '';
     wzRender();
-    wzToast(`Το credential «${created.name}» αποθηκεύτηκε στο vault`);
+    wzToast(`Credential «${created.name}» saved to the vault`);
   } catch (error) {
-    wzShowError({ message: `Το credential δεν αποθηκεύτηκε: ${error.message}` });
+    wzShowError({ message: `Credential was not saved: ${error.message}` });
   }
 }
 
 async function wzCreateSite() {
   const el = WZ.el;
   const name = el.querySelector('#wz-site-name').value.trim();
-  if (!name) { wzShowError({ message: 'Χρειάζεται όνομα χώρου.' }); return; }
+  if (!name) { wzShowError({ message: 'A site name is required.' }); return; }
   try {
     const site = await wzApi('/netdoc/sites', { method: 'POST', json: { name } });
     WZ.sites = (await wzApi('/netdoc/tree')).sites || [];
@@ -443,7 +509,7 @@ async function wzCreateSite() {
     WZ.error = '';
     wzRender();
   } catch (error) {
-    wzShowError({ message: `Ο χώρος δεν δημιουργήθηκε: ${error.message}` });
+    wzShowError({ message: `Site was not created: ${error.message}` });
   }
 }
 
@@ -451,8 +517,8 @@ async function wzCreateRack() {
   const el = WZ.el;
   const name = el.querySelector('#wz-rack-name').value.trim();
   const units = Number(el.querySelector('#wz-rack-units').value) || 42;
-  if (!WZ.data.site_id) { wzShowError({ message: 'Διάλεξε πρώτα χώρο.' }); return; }
-  if (!name) { wzShowError({ message: 'Χρειάζεται όνομα rack.' }); return; }
+  if (!WZ.data.site_id) { wzShowError({ message: 'Select a site first.' }); return; }
+  if (!name) { wzShowError({ message: 'A rack name is required.' }); return; }
   try {
     const rack = await wzApi('/netdoc/racks', {
       method: 'POST', json: { site_id: Number(WZ.data.site_id), name, units },
@@ -463,7 +529,7 @@ async function wzCreateRack() {
     await wzLoadLayout();
     wzRender();
   } catch (error) {
-    wzShowError({ message: `Το rack δεν δημιουργήθηκε: ${error.message}` });
+    wzShowError({ message: `Rack was not created: ${error.message}` });
   }
 }
 
@@ -504,17 +570,18 @@ async function wzSave() {
           position: Number(d.position) || 1,
           note: d.note.trim(),
           host_id: host.id,
-          vendor: d.vendor.trim(),
-          model: d.model.trim(),
+          vendor: (d.vendor || '').trim(),
+          model: (d.model || '').trim(),
           mgmt_ip: d.mgmt_ip.trim(),
           origin: 'documented',
+          model_key: WZ.modelKey || '',
         },
       });
     }
     WZ.busy = false;
     const name = d.name;
     wzReset();
-    wzToast(`Η «${name}» προστέθηκε`);
+    wzToast(`${name} added`);
     if (typeof WZ.onDone === 'function') WZ.onDone({ host, name });
     else if (typeof loadHosts === 'function') await loadHosts();
   } catch (error) {
@@ -523,7 +590,7 @@ async function wzSave() {
       // no half-written record: undo the profile we just created
       try { await wzApi(`/hosts/${host.id}`, { method: 'DELETE' }); } catch (_) { /* reported below */ }
     }
-    wzShowError({ message: `Η αποθήκευση απέτυχε: ${error.message}` });
+    wzShowError({ message: `Save failed: ${error.message}` });
   }
 }
 
@@ -547,6 +614,7 @@ async function wzNext() {
 /* -------------------------------------------------------------------- mount */
 function wzReset() {
   WZ.step = 1;
+  WZ.modelKey = '';
   WZ.error = '';
   WZ.busy = false;
   WZ.data = {
@@ -591,9 +659,9 @@ function wzFreeHint() {
   const total = Number((WZ.layout.rack && WZ.layout.rack.units) || 0) || 42;
   const free = [];
   for (let unit = total; unit >= 1; unit -= 1) if (!taken.has(unit)) free.push(unit);
-  if (!free.length) return 'Το rack είναι γεμάτο — διάλεξε άλλο rack.';
+  if (!free.length) return 'The rack is full — choose another rack.';
   const head = free.slice(0, 8).join(', ');
-  return `Ελεύθερες θέσεις (από πάνω): ${head}${free.length > 8 ? '…' : ''}`;
+  return `Free units (top down): ${head}${free.length > 8 ? '…' : ''}`;
 }
 
 async function wzMount(container, options) {
@@ -608,6 +676,9 @@ async function wzMount(container, options) {
   try {
     WZ.credentials = await wzApi('/credentials');
   } catch (_) { WZ.credentials = []; }
+  try {
+    WZ.catalog = await wzApi('/netdoc/catalog');
+  } catch (_) { WZ.catalog = { vendors: [] }; }
   try {
     WZ.sites = ((await wzApi('/netdoc/tree')) || {}).sites || [];
   } catch (_) { WZ.sites = []; }

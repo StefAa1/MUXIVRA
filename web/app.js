@@ -44,10 +44,10 @@ function fmtSize(bytes) {
 function fmtWhen(ts) {
   if (!ts) return '—';
   const diff = Date.now() / 1000 - ts;
-  if (diff < 60) return 'μόλις τώρα';
-  if (diff < 3600) return `${Math.floor(diff / 60)}λ πριν`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}ω πριν`;
-  if (diff < 86400 * 7) return `${Math.floor(diff / 86400)}μ πριν`;
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 86400 * 7) return `${Math.floor(diff / 86400)}d ago`;
   return new Date(ts * 1000).toLocaleDateString('el-GR');
 }
 
@@ -93,11 +93,11 @@ function showAuth(setupMode) {
   const setup = setupMode || !(S.status && S.status.initialized);
   $('#auth-confirm-wrap').classList.toggle('hidden', !setup);
   $('#auth-password2').required = setup;
-  $('#auth-label').textContent = setup ? 'Νέο master password' : 'Master password';
-  $('#auth-submit').textContent = setup ? 'Δημιουργία vault' : 'Σύνδεση';
+  $('#auth-label').textContent = setup ? 'New master password' : 'Master password';
+  $('#auth-submit').textContent = setup ? 'Create vault' : 'Sign in';
   $('#auth-tag').textContent = setup
-    ? 'Πρώτη εκκίνηση: όρισε το master password που προστατεύει το vault σου.'
-    : 'Το προσωπικό σου SSH control room.';
+    ? 'First run: set the master password that protects your vault.'
+    : 'Your personal SSH control room.';
   $('#auth-message').textContent = '';
   setTimeout(() => $('#auth-password').focus(), 120);
 }
@@ -110,10 +110,10 @@ async function handleAuthSubmit(event) {
   message.textContent = '';
   try {
     if (setup) {
-      if (password.length < 8) throw new Error('Χρειάζονται τουλάχιστον 8 χαρακτήρες.');
-      if (password !== $('#auth-password2').value) throw new Error('Τα δύο passwords δεν ταιριάζουν.');
+      if (password.length < 8) throw new Error('At least 8 characters are required.');
+      if (password !== $('#auth-password2').value) throw new Error('The two passwords do not match.');
       await api('/setup', { json: { username: 'admin', password } });
-      toast('Το vault δημιουργήθηκε.');
+      toast('Vault created.');
     } else {
       await api('/login', { json: { password } });
     }
@@ -121,7 +121,7 @@ async function handleAuthSubmit(event) {
     $('#auth-password2').value = '';
     await enterApp();
   } catch (err) {
-    message.textContent = err.message === 'bad_password' ? 'Λάθος password.' : err.message;
+    message.textContent = err.message === 'bad_password' ? 'Wrong password.' : err.message;
   }
 }
 
@@ -157,7 +157,7 @@ async function loadCustomers() {
       await Promise.all([loadHosts(), loadCreds(), loadSnippets(), loadNetdoc()]);
       renderSidebar();
       renderPage();
-      toast(`Ενεργός πελάτης: ${S.customers.find((c) => c.id === S.customerId)?.name || ''}`);
+      toast(`Active customer: ${S.customers.find((c) => c.id === S.customerId)?.name || ''}`);
     };
   }
   const add = $('#customer-add');
@@ -165,14 +165,14 @@ async function loadCustomers() {
 }
 
 function openCustomerModal() {
-  openModal(`<h3>Προσθήκη πελάτη</h3>
+  openModal(`<h3>Add customer</h3>
     <form id="customer-form">
-      <label class="field"><span>Όνομα</span><input name="name" required placeholder="Κεντρικό Αθήνας" /></label>
-      <label class="field"><span>Κωδικός (προαιρετικό)</span><input name="code" maxlength="12" placeholder="ATH" /></label>
-      <label class="field"><span>Σημειώσεις</span><input name="notes" placeholder="Στοιχεία επικοινωνίας, σύμβαση" /></label>
+      <label class="field"><span>Name</span><input name="name" required placeholder="Athens HQ" /></label>
+      <label class="field"><span>Code (optional)</span><input name="code" maxlength="12" placeholder="ATH" /></label>
+      <label class="field"><span>Notes</span><input name="notes" placeholder="Contact details, contract" /></label>
       <p class="error-text" id="customer-error"></p>
-      <div class="modal-actions"><button type="button" class="btn ghost" data-close>Άκυρο</button>
-      <button class="btn primary" id="customer-save">Δημιουργία</button></div>
+      <div class="modal-actions"><button type="button" class="btn ghost" data-close>Cancel</button>
+      <button class="btn primary" id="customer-save">Create</button></div>
     </form>`);
   $('#customer-save').onclick = async (event) => {
     event.preventDefault();
@@ -185,10 +185,10 @@ function openCustomerModal() {
       closeModal();
       renderSidebar();
       renderPage();
-      toast(`Ο πελάτης «${created.name}» προστέθηκε`);
+      toast(`Customer "${created.name}" added`);
     } catch (err) {
       $('#customer-error').textContent = err.message === 'duplicate_name'
-        ? 'Υπάρχει ήδη πελάτης με αυτό το όνομα.' : err.message;
+        ? 'A customer with that name already exists.' : err.message;
     }
   };
 }
@@ -211,8 +211,8 @@ function renderSidebar() {
   const hosts = filteredHosts();
   if (!hosts.length) {
     list.innerHTML = `<div class="empty" style="margin:10px 4px;padding:22px 14px">
-      <b>${S.hosts.length ? 'Κανένα αποτέλεσμα' : 'Κανένας server ακόμα'}</b>
-      ${S.hosts.length ? 'Δοκίμασε άλλο όρο.' : 'Πρόσθεσε τον πρώτο server ή κάνε import το ~/.ssh/config.'}
+      <b>${S.hosts.length ? 'No results' : 'No servers yet'}</b>
+      ${S.hosts.length ? 'Try a different term.' : 'Add your first server or import ~/.ssh/config.'}
     </div>`;
     return;
   }
@@ -251,8 +251,8 @@ function hostRowHtml(host) {
       ${protoChip || cred || tags ? `<div class="host-tags">${protoChip}${cred}${tags}</div>` : ''}
     </div>
     <div class="host-actions">
-      <button class="icon-btn" data-act="edit" data-id="${host.id}" title="Επεξεργασία">✎</button>
-      <button class="icon-btn" data-act="del" data-id="${host.id}" title="Διαγραφή">🗑</button>
+      <button class="icon-btn" data-act="edit" data-id="${host.id}" title="Edit">✎</button>
+      <button class="icon-btn" data-act="del" data-id="${host.id}" title="Delete">🗑</button>
     </div>
   </div>`;
 }
@@ -326,7 +326,7 @@ function renderTabs() {
 function updateStatusbar() {
   const tab = activeTab();
   if (!tab) {
-    $('#status-main').textContent = 'Έτοιμο';
+    $('#status-main').textContent = 'Ready';
     $('#status-fp').textContent = '';
     $('#status-size').textContent = '';
     return;
@@ -415,7 +415,7 @@ function connectTab(tab) {
       }
       tab.state = 'closed';
       tab.term.writeln(`\x1b[31m✕ ${msg.message || msg.code}\x1b[0m`);
-      toast(`Σύνδεση απέτυχε: ${msg.code}`, 'err');
+      toast(`Connection failed: ${msg.code}`, 'err');
       renderTabs();
     } else if (msg.type === 'closed') {
       tab.state = 'closed';
@@ -426,7 +426,7 @@ function connectTab(tab) {
   ws.onclose = () => {
     if (tab.state !== 'closed') {
       tab.state = 'closed';
-      tab.term.writeln('\r\n\x1b[38;5;244m— σύνδεση έκλεισε —\x1b[0m');
+      tab.term.writeln('\r\n\x1b[38;5;244m— connection closed —\x1b[0m');
       renderTabs();
     }
   };
@@ -516,18 +516,18 @@ function renderHero() {
     `<div class="stat"><b>${value}</b><span>${label}</span></div>`).join('');
   const recent = S.events.slice(0, 6);
   $('#hero-recent').innerHTML = recent.length
-    ? `<h4>Πρόσφατη δραστηριότητα</h4>` + recent.map((e) => `<div class="event-row">
+    ? `<h4>Recent activity</h4>` + recent.map((e) => `<div class="event-row">
         <time>${fmtWhen(e.created_at)}</time><span>${esc(e.kind)}</span>
         <b>${esc(e.host_label || e.detail || '')}</b></div>`).join('')
     : '';
 }
 
 const KIND_LABEL = {
-  login_ok: 'Σύνδεση στο panel', login_failed: 'Αποτυχημένη σύνδεση',
-  host_created: 'Νέα σύνδεση', host_deleted: 'Διαγραφή server',
-  credential_created: 'Νέο credential', credential_deleted: 'Διαγραφή credential',
-  session_open: 'Άνοιγμα session', session_close: 'Κλείσιμο session',
-  host_key_learned: 'Νέο host key', host_key_forgotten: 'Διαγραφή host key',
+  login_ok: 'Signed in to panel', login_failed: 'Failed sign-in',
+  host_created: 'New connection', host_deleted: 'Delete server',
+  credential_created: 'New credential', credential_deleted: 'Delete credential',
+  session_open: 'Session opened', session_close: 'Session closed',
+  host_key_learned: 'New host key', host_key_forgotten: 'Delete host key',
   ssh_config_imported: 'Import ssh config',
 };
 
@@ -539,41 +539,41 @@ function renderKeys() {
     <td class="mono" style="font-size:11px">${esc(c.preview)}</td>
     <td class="mono" style="font-size:11px">${fmtWhen(c.updated_at)}</td>
     <td><div class="actions">
-      <button class="icon-btn" data-cred-edit="${c.id}" title="Επεξεργασία">✎</button>
-      <button class="icon-btn" data-cred-del="${c.id}" title="Διαγραφή">🗑</button>
+      <button class="icon-btn" data-cred-edit="${c.id}" title="Edit">✎</button>
+      <button class="icon-btn" data-cred-del="${c.id}" title="Delete">🗑</button>
     </div></td></tr>`).join('');
   $('#page-keys').innerHTML = `<div class="page-head">
-      <div><h2>Keychain</h2><p>Passwords και private keys, κρυπτογραφημένα με AES στο vault.</p></div>
-      <button class="btn primary" id="key-add">+ Νέο credential</button>
+      <div><h2>Keychain</h2><p>Passwords and private keys, encrypted with AES in the vault.</p></div>
+      <button class="btn primary" id="key-add">+ New credential</button>
     </div>
     ${S.creds.length ? `<table class="table"><thead><tr>
-      <th>Όνομα</th><th>Τύπος</th><th>Username</th><th>Secret</th><th>Ενημέρωση</th><th></th>
+      <th>Name</th><th>Type</th><th>Username</th><th>Secret</th><th>Updated</th><th></th>
     </tr></thead><tbody>${rows}</tbody></table>`
-    : `<div class="empty"><b>Κανένα credential</b>Πρόσθεσε password ή private key για να συνδέεσαι χωρίς prompts.</div>`}`;
+    : `<div class="empty"><b>No credentials</b>Add a password or private key to connect without prompts.</div>`}`;
 }
 
 function renderSnippets() {
   $('#page-snippets').innerHTML = `<div class="page-head">
-      <div><h2>Snippets</h2><p>Έτοιμες εντολές, ένα κλικ μέσα στο ενεργό terminal.</p></div>
-      <button class="btn primary" id="snippet-add">+ Νέο snippet</button>
+      <div><h2>Snippets</h2><p>Ready-made commands, one click into the active terminal.</p></div>
+      <button class="btn primary" id="snippet-add">+ New snippet</button>
     </div>
     ${S.snippets.length ? `<div class="card-grid">${S.snippets.map((s) => `<div class="card">
         <h3>${esc(s.label)}</h3>
         <div class="body"><pre class="code">${esc(s.command)}</pre></div>
         <div class="actions">
-          <button class="btn xs" data-snip-run="${s.id}">▶ Εκτέλεση</button>
-          <button class="btn ghost xs" data-snip-edit="${s.id}">Επεξεργασία</button>
-          <button class="btn ghost xs danger" data-snip-del="${s.id}">Διαγραφή</button>
+          <button class="btn xs" data-snip-run="${s.id}">▶ Run</button>
+          <button class="btn ghost xs" data-snip-edit="${s.id}">Edit</button>
+          <button class="btn ghost xs danger" data-snip-del="${s.id}">Delete</button>
         </div></div>`).join('')}</div>`
-    : `<div class="empty"><b>Κανένα snippet</b>π.χ. <span class="mono">docker ps</span> ή <span class="mono">journalctl -u nginx -f</span>.</div>`}`;
+    : `<div class="empty"><b>No snippets</b>e.g. <span class="mono">docker ps</span> or <span class="mono">journalctl -u nginx -f</span>.</div>`}`;
 }
 
 function renderActivity() {
   $('#page-activity').innerHTML = `<div class="page-head">
-      <div><h2>Ιστορικό</h2><p>Συνδέσεις, αλλαγές vault και host keys.</p></div>
-      <button class="btn ghost" id="events-refresh">⟳ Ανανέωση</button>
+      <div><h2>History</h2><p>Connections, vault changes and host keys.</p></div>
+      <button class="btn ghost" id="events-refresh">⟳ Refresh</button>
     </div>
-    <table class="table"><thead><tr><th>Πότε</th><th>Γεγονός</th><th>Server</th><th>Λεπτομέρεια</th></tr></thead>
+    <table class="table"><thead><tr><th>When</th><th>Event</th><th>Server</th><th>Detail</th></tr></thead>
     <tbody>${S.events.map((e) => `<tr>
       <td class="mono" style="font-size:11px">${fmtWhen(e.created_at)}</td>
       <td>${esc(KIND_LABEL[e.kind] || e.kind)}</td>
@@ -591,13 +591,13 @@ async function downloadNetdocBackup() {
   link.download = `muxivra-netdoc-${new Date().toISOString().slice(0, 10)}.json`;
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
-  toast('Backup ετοιμάστηκε (χωρίς secrets)');
+  toast('Backup prepared (without secrets)');
 }
 
 async function importNetdocBackup(file) {
   const text = await file.text();
   let payload;
-  try { payload = JSON.parse(text); } catch (_) { toast('Το αρχείο δεν είναι έγκυρο JSON', 'err'); return; }
+  try { payload = JSON.parse(text); } catch (_) { toast('The file is not valid JSON', 'err'); return; }
   const data = payload.data && payload.data.format ? payload.data : payload;
   let preview;
   try {
@@ -606,19 +606,19 @@ async function importNetdocBackup(file) {
   const created = preview.created || {};
   const conflicts = (preview.conflicts || []).length;
   confirmDialog(
-    'Επαναφορά backup',
-    `Θα προστεθούν: ${created.sites || 0} χώροι, ${created.racks || 0} racks, ` +
-    `${created.devices || 0} συσκευές, ${created.ports || 0} ports, ${created.links || 0} συνδέσεις. ` +
-    `Υπάρχοντα δεν αντικαθίστανται (${conflicts} αντιστοιχίσεις σε υπάρχοντα).`,
+    'Restore backup',
+    `Will be added: ${created.sites || 0} sites, ${created.racks || 0} racks, ` +
+    `${created.devices || 0} devices, ${created.ports || 0} ports, ${created.links || 0} links. ` +
+    `Existing items are not replaced (${conflicts} matches to existing items).`,
     async () => {
       try {
         const done = await api('/netdoc/import', { json: { data, dry_run: false } });
-        toast(`Επαναφορά: ${done.created.devices || 0} συσκευές, ${done.created.links || 0} συνδέσεις`);
+        toast(`Restore: ${done.created.devices || 0} devices, ${done.created.links || 0} links`);
         await loadNetdoc();
         renderPage();
       } catch (err) { toast(err.message, 'err'); }
     },
-    'Επαναφορά',
+    'Restore',
   );
 }
 
@@ -644,7 +644,7 @@ function decorateNetdocBackup() {
   const restore = document.createElement('button');
   restore.className = 'btn ghost xs';
   restore.id = 'nd-restore';
-  restore.textContent = 'Επαναφορά';
+  restore.textContent = 'Restore';
   restore.onclick = () => input.click();
   actions.appendChild(backup);
   actions.appendChild(restore);
@@ -683,9 +683,9 @@ function watchDiagramPanel() {
     const row = document.createElement('div');
     row.className = 'nd-conn-row';
     row.dataset.forDevice = String(deviceId);
-    row.innerHTML = `<span class="hint">Σύνδεση</span>${
+    row.innerHTML = `<span class="hint">Connection</span>${
       (payload.hosts || []).map((h) => `<button class="btn ghost xs" data-nd-open="${h.id}">${esc((h.protocol || 'ssh').toUpperCase())} · ${esc(h.label)}</button>`).join('')
-        || '<span class="hint">χωρίς profile</span>'
+        || '<span class="hint">no profile</span>'
     }${payload.device && payload.device.mgmt_ip ? `<button class="btn ghost xs" data-nd-winbox="${deviceId}">WinBox</button>` : ''}`;
     const target = panel.querySelector('[data-dg-act="open-rack"]');
     if (target && target.parentElement) target.parentElement.insertBefore(row, target);
@@ -710,16 +710,16 @@ async function decorateDeviceConnections() {
   const hosts = payload.hosts || [];
   const buttons = hosts.map((h) => `<button class="btn ghost xs" data-nd-open="${h.id}" title="${esc(h.hostname)}:${h.port}">${esc((h.protocol || 'ssh').toUpperCase())} · ${esc(h.label)}</button>`).join('');
   const winbox = device.mgmt_ip
-    ? `<button class="btn ghost xs" data-nd-winbox="${device.id}">WinBox${payload.winbox && payload.winbox.available ? '' : ' (λείπει)'}</button>`
+    ? `<button class="btn ghost xs" data-nd-winbox="${device.id}">WinBox${payload.winbox && payload.winbox.available ? '' : ' (missing)'}</button>`
     : '';
   const row = document.createElement('div');
   row.className = 'nd-conn-row';
   row.dataset.deviceId = device.id;
-  row.innerHTML = `<span class="hint">Συνδέσεις συσκευής</span>${
-    buttons || '<span class="hint">χωρίς profile</span>'
-  }<button class="btn ghost xs" data-nd-add-profile="${device.id}" title="Προσθήκη profile">+ profile</button>${
-    hosts.length ? `<button class="btn ghost xs" data-nd-drop-profile="${device.id}" title="Αφαίρεση όλων των profiles">× όλα</button>` : ''
-  }${winbox}<button class="btn ghost xs" data-nd-web="${device.id}" title="Web management σε ξεχωριστό παράθυρο, χωρίς browser">Web</button>`;
+  row.innerHTML = `<span class="hint">Device connections</span>${
+    buttons || '<span class="hint">no profile</span>'
+  }<button class="btn ghost xs" data-nd-add-profile="${device.id}" title="Add profile">+ profile</button>${
+    hosts.length ? `<button class="btn ghost xs" data-nd-drop-profile="${device.id}" title="Remove all profiles">× all</button>` : ''
+  }${winbox}<button class="btn ghost xs" data-nd-web="${device.id}" title="Web management in a separate window, without a browser">Web</button>`;
   panel.insertBefore(row, panel.querySelector('.nd-port-grid'));
 }
 
@@ -729,8 +729,8 @@ async function renderVaultState() {
   const label = $('#vault-state');
   if (label) {
     label.textContent = state.locked
-      ? 'Κατάσταση: κλειδωμένο — τα secrets δεν διαβάζονται'
-      : 'Κατάσταση: ξεκλείδωτο';
+      ? 'Status: locked — secrets cannot be read'
+      : 'Status: unlocked';
   }
   const input = $('#vault-autolock');
   if (input) input.value = Math.round((state.auto_lock_seconds || 0) / 60);
@@ -741,56 +741,56 @@ function renderSettings() {
   const upd = S.update || {};
   const tab = activeTab();
   $('#page-settings').innerHTML = `<div class="page-head">
-      <div><h2>Ρυθμίσεις</h2><p>Λογαριασμός, vault και host keys.</p></div>
+      <div><h2>Settings</h2><p>Account, vault and host keys.</p></div>
     </div>
     <div class="card-grid">
-      <div class="card"><h3>Λογαριασμός</h3>
+      <div class="card"><h3>Account</h3>
         <div class="sub">${esc(status.username || 'admin')} · v${esc(status.version || '')}</div>
-        <div class="body">Άλλαξε το master password. Όλες οι ενεργές συνεδρίες θα κλείσουν.</div>
-        <div class="actions"><button class="btn xs" id="pw-change">Αλλαγή password</button>
-        <button class="btn ghost xs" id="logout2">Έξοδος</button></div></div>
+        <div class="body">Change the master password. All active sessions will be closed.</div>
+        <div class="actions"><button class="btn xs" id="pw-change">Change password</button>
+        <button class="btn ghost xs" id="logout2">Sign out</button></div></div>
       <div class="card"><h3>Host keys (TOFU)</h3>
-        <div class="body">Το πρώτο host key αποθηκεύεται και ελέγχεται σε κάθε σύνδεση.
-        Αν αλλάξει, η σύνδεση απορρίπτεται.</div>
-        <div class="actions">${tab ? `<button class="btn ghost xs" id="forget-key">Διαγραφή key για ${esc(tab.host.label)}</button>`
-          : '<span class="muted" style="font-size:12px">Άνοιξε session για να δεις fingerprint.</span>'}</div></div>
+        <div class="body">The first host key is stored and checked on every connection.
+        If it changes, the connection is rejected.</div>
+        <div class="actions">${tab ? `<button class="btn ghost xs" id="forget-key">Delete key for ${esc(tab.host.label)}</button>`
+          : '<span class="muted" style="font-size:12px">Open a session to see the fingerprint.</span>'}</div></div>
       <div class="card"><h3>Import</h3>
-        <div class="body">Διάβασε hosts από το <span class="mono">~/.ssh/config</span> του server ή επικόλλησε το περιεχόμενο.</div>
+        <div class="body">Read hosts from the server's <span class="mono">~/.ssh/config</span> or paste the contents.</div>
         <div class="actions"><button class="btn ghost xs" id="settings-import">Import ssh config</button></div></div>
-      <div class="card"><h3>Ενημερώσεις</h3>
+      <div class="card"><h3>Updates</h3>
         <div class="sub">v${esc(upd.current || S.status?.version || '')} · build ${esc((S.status && S.status.build) || 'dev')} · ${esc((S.status && S.status.mode) || 'source')}</div>
         <div class="body mono" style="font-size:11.5px;word-break:break-all">data: ${esc((S.status && S.status.data_dir) || '')}</div>
         <div class="body">
           <label class="field"><span>GitHub repo</span>
             <input id="upd-repo" value="${esc(upd.repo || '')}" placeholder="owner/repo" autocomplete="off" /></label>
-          <p class="hint" id="upd-status">${upd.last_check ? 'τελευταίος έλεγχος: ' + esc(upd.last_check) : 'κανένας έλεγχος ακόμα'}</p>
+          <p class="hint" id="upd-status">${upd.last_check ? 'last check: ' + esc(upd.last_check) : 'no checks yet'}</p>
           <div class="actions">
-            <button class="btn xs" id="upd-save">Αποθήκευση</button>
-            <button class="btn xs" id="upd-check">Έλεγχος τώρα</button>
-            <button class="btn primary xs${upd.asset ? '' : ' hidden'}" id="upd-prepare">Κατέβασε &amp; ετοίμασε</button>
+            <button class="btn xs" id="upd-save">Save</button>
+            <button class="btn xs" id="upd-check">Check now</button>
+            <button class="btn primary xs${upd.asset ? '' : ' hidden'}" id="upd-prepare">Download &amp; prepare</button>
           </div>
         </div></div>
       <div class="card"><h3>Vault</h3>
         <div class="sub" id="vault-status">${esc((upd.vault_key || {}).mechanism || 'file-0600')}</div>
-        <div class="body">Τα credentials είναι κρυπτογραφημένα (Fernet). ${(upd.vault_key || {}).protected
-          ? 'Το κλειδί είναι δεμένο με τον Windows λογαριασμό σου (DPAPI) — αντίγραφο σε άλλο PC δεν το ανοίγει.'
-          : 'Το κλειδί προστατεύεται με δικαιώματα αρχείου 0600.'}</div>
+        <div class="body">Credentials are encrypted (Fernet). ${(upd.vault_key || {}).protected
+          ? 'The key is bound to your Windows account (DPAPI) — a copy on another PC cannot open it.'
+          : 'The key is protected by file permissions 0600.'}</div>
         <div class="body" id="vault-state">—</div>
         <div class="nd-form">
-          <label class="field" style="flex:1"><span>Auto-lock (λεπτά)</span>
+          <label class="field" style="flex:1"><span>Auto-lock (minutes)</span>
             <input id="vault-autolock" type="number" min="0" max="1440" step="1" value="0" /></label>
-          <button class="btn xs" id="vault-save-lock">Αποθήκευση</button>
+          <button class="btn xs" id="vault-save-lock">Save</button>
         </div>
         <div class="actions">
-          <button class="btn ghost xs" id="vault-lock">Κλείδωμα</button>
-          <button class="btn primary xs" id="vault-unlock">Ξεκλείδωμα</button>
+          <button class="btn ghost xs" id="vault-lock">Lock</button>
+          <button class="btn primary xs" id="vault-unlock">Unlock</button>
         </div>
       </div>
     </div>`;
 
   if (S.view === 'settings') renderVaultState().catch(() => {});
   const ev = $('#events-refresh');
-  if (ev) ev.onclick = async () => { await loadEvents(); renderPage(); toast('Ανανεώθηκε'); };
+  if (ev) ev.onclick = async () => { await loadEvents(); renderPage(); toast('Refreshed'); };
 }
 
 /* --------------------------------------------------------------- host form */
@@ -802,7 +802,7 @@ function closeModal() { $('#modal-backdrop').classList.add('hidden'); $('#modal'
 
 function credOptions(selected) {
   const opts = S.creds.map((c) => `<option value="${c.id}"${c.id === selected ? ' selected' : ''}>${esc(c.name)} (${c.kind === 'key' ? 'key' : 'password'})</option>`).join('');
-  return `<option value="">— χωρίς credential (ssh-agent) —</option>${opts}`;
+  return `<option value="">— no credential (ssh-agent) —</option>${opts}`;
 }
 
 function openHostModal(host) {
@@ -812,8 +812,8 @@ function openHostModal(host) {
     serial_port: '', baud: 115200, bytesize: 8, parity: 'N', stopbits: 1, flow: 'none',
   };
   const proto = h.protocol || 'ssh';
-  openModal(`<h3>${host ? 'Επεξεργασία server' : 'Νέα σύνδεση'}</h3>
-    <p class="lead">SSH, Telnet ή σειριακή θύρα — ίδιο terminal, ίδιο inventory.</p>
+  openModal(`<h3>${host ? 'Edit server' : 'New connection'}</h3>
+    <p class="lead">SSH, Telnet or serial port — same terminal, same inventory.</p>
     <form id="host-form">
       <div class="proto-switch" id="proto-switch">
         <button type="button" data-proto="ssh">SSH</button>
@@ -822,16 +822,16 @@ function openHostModal(host) {
       </div>
       <input type="hidden" name="protocol" value="${esc(proto)}" />
       <div class="row">
-        <label class="field"><span>Όνομα</span><input name="label" required value="${esc(h.label)}" placeholder="web-01" /></label>
+        <label class="field"><span>Name</span><input name="label" required value="${esc(h.label)}" placeholder="web-01" /></label>
         <label class="field" data-pane="net"><span>Hostname / IP</span><input name="hostname" value="${esc(h.hostname)}" placeholder="10.10.10.250" /></label>
       </div>
       <div class="row net" data-pane="net">
         <label class="field"><span>Port</span><input name="port" type="number" min="1" max="65535" value="${h.port}" /></label>
         <label class="field"><span>Username</span><input name="username" value="${esc(h.username)}" placeholder="root" /></label>
-        <label class="field" data-pane="ssh"><span>Credential <button type="button" class="mini-add" id="cred-new" title="Νέο credential">+ Νέο</button></span><select name="credential_id">${credOptions(h.credential_id)}</select></label>
+        <label class="field" data-pane="ssh"><span>Credential <button type="button" class="mini-add" id="cred-new" title="New credential">+ New</button></span><select name="credential_id">${credOptions(h.credential_id)}</select></label>
       </div>
       <div class="row serial" data-pane="serial">
-        <label class="field"><span>Θύρα</span><input name="serial_port" list="serial-port-list" value="${esc(h.serial_port || '')}" placeholder="COM3 ή /dev/ttyUSB0" autocomplete="off" /></label>
+        <label class="field"><span>Port</span><input name="serial_port" list="serial-port-list" value="${esc(h.serial_port || '')}" placeholder="COM3 or /dev/ttyUSB0" autocomplete="off" /></label>
         <label class="field"><span>Baud</span><input name="baud" type="number" min="50" step="1" value="${h.baud || 115200}" /></label>
         <label class="field"><span>Bits</span><select name="bytesize">
           ${[8, 7, 6, 5].map((b) => `<option value="${b}"${Number(h.bytesize) === b ? ' selected' : ''}>${b}</option>`).join('')}
@@ -843,24 +843,24 @@ function openHostModal(host) {
             `<option value="${v}"${(h.parity || 'N') === v ? ' selected' : ''}>${l}</option>`).join('')}
         </select></label>
         <label class="field"><span>Flow control</span><select name="flow">
-          ${[["none","κανένα"],["rtscts","RTS/CTS"],["xonxoff","XON/XOFF"],["dsrdtr","DSR/DTR"]]
+          ${[["none","none"],["rtscts","RTS/CTS"],["xonxoff","XON/XOFF"],["dsrdtr","DSR/DTR"]]
             .map(([val, label]) => `<option value="${val}"${(h.flow || 'none') === val ? ' selected' : ''}>${label}</option>`).join('')}
         </select></label>
         <label class="field"><span>Stop bits</span><select name="stopbits">
           ${[1, 1.5, 2].map((v) => `<option value="${v}"${Number(h.stopbits) === v ? ' selected' : ''}>${v}</option>`).join('')}
         </select></label>
       </div>
-      <p class="hint" id="serial-hint" data-pane="serial">Έλεγχος θυρών…</p>
+      <p class="hint" id="serial-hint" data-pane="serial">Checking ports…</p>
       <datalist id="serial-port-list"></datalist>
       <div class="row">
         <label class="field"><span>Group</span><input name="group_name" value="${esc(h.group_name)}" placeholder="General" /></label>
-        <label class="field"><span>Tags (χωρισμένα με κόμμα)</span><input name="tags" value="${esc((h.tags || []).join(', '))}" placeholder="prod, nginx" /></label>
+        <label class="field"><span>Tags (comma-separated)</span><input name="tags" value="${esc((h.tags || []).join(', '))}" placeholder="prod, nginx" /></label>
       </div>
-      <label class="field"><span>Σημειώσεις</span><textarea name="notes" rows="2">${esc(h.notes)}</textarea></label>
+      <label class="field"><span>Notes</span><textarea name="notes" rows="2">${esc(h.notes)}</textarea></label>
       <p class="error-text" id="host-error"></p>
       <div class="modal-actions">
-        <button type="button" class="btn ghost" data-close>Άκυρο</button>
-        <button type="submit" class="btn primary">${host ? 'Αποθήκευση' : 'Δημιουργία'}</button>
+        <button type="button" class="btn ghost" data-close>Cancel</button>
+        <button type="submit" class="btn primary">${host ? 'Save' : 'Create'}</button>
       </div>
     </form>`);
 
@@ -923,12 +923,12 @@ function openHostModal(host) {
       `<option value="${esc(p.device)}">${esc(p.description || p.device)}</option>`).join('');
     if (hint) {
       hint.textContent = (data.ports || []).length
-        ? `${data.ports.length} θύρα(ες): ${data.ports.slice(0, 3).map((p) => p.device).join(', ')}`
-        : 'Καμία σειριακή θύρα';
+        ? `${data.ports.length} port(s): ${data.ports.slice(0, 3).map((p) => p.device).join(', ')}`
+        : 'No serial ports';
     }
   }).catch(() => {
     const hint = $('#serial-hint');
-    if (hint) hint.textContent = 'Αδυναμία ανάγνωσης θυρών';
+    if (hint) hint.textContent = 'Could not read ports';
   });
 
   form.onsubmit = async (event) => {
@@ -959,12 +959,12 @@ function openHostModal(host) {
       await loadHosts();
       renderSidebar();
       renderPage();
-      toast(host ? 'Η σύνδεση ενημερώθηκε' : 'Η σύνδεση προστέθηκε');
+      toast(host ? 'Connection updated' : 'Connection added');
     } catch (err) {
       const map = {
-        hostname_required: 'Χρειάζεται hostname/IP.',
-        serial_port_required: 'Χρειάζεται σειριακή θύρα (π.χ. COM3).',
-        unsupported_protocol: 'Μη υποστηριζόμενο πρωτόκολλο.',
+        hostname_required: 'A hostname/IP is required.',
+        serial_port_required: 'A serial port is required (e.g. COM3).',
+        unsupported_protocol: 'Unsupported protocol.',
       };
       $('#host-error').textContent = map[err.message] || err.message;
     }
@@ -973,24 +973,24 @@ function openHostModal(host) {
 
 function openCredModal(cred, onSaved) {
   const c = cred || { name: '', kind: 'password', username: '', preview: '' };
-  openModal(`<h3>${cred ? 'Επεξεργασία credential' : 'Νέο credential'}</h3>
-    <p class="lead">Κρυπτογραφείται με Fernet (AES-128-CBC + HMAC) και μένει στον δίσκο του server.</p>
+  openModal(`<h3>${cred ? 'Edit credential' : 'New credential'}</h3>
+    <p class="lead">Encrypted with Fernet (AES-128-CBC + HMAC) and kept on the server disk.</p>
     <form id="cred-form">
       <div class="row">
-        <label class="field"><span>Όνομα</span><input name="name" required value="${esc(c.name)}" placeholder="prod-root" /></label>
-        <label class="field"><span>Τύπος</span><select name="kind">
+        <label class="field"><span>Name</span><input name="name" required value="${esc(c.name)}" placeholder="prod-root" /></label>
+        <label class="field"><span>Type</span><select name="kind">
           <option value="password"${c.kind === 'password' ? ' selected' : ''}>Password</option>
           <option value="key"${c.kind === 'key' ? ' selected' : ''}>Private key</option>
         </select></label>
       </div>
       <label class="field"><span>Username (default)</span><input name="username" value="${esc(c.username || '')}" placeholder="root" /></label>
-      <label class="field"><span>Secret ${cred ? '(κενό = αμετάβλητο)' : ''}</span>
-        <textarea name="secret" rows="5" placeholder="${cred ? '•••••• (αμετάβλητο)' : 'password ή -----BEGIN OPENSSH PRIVATE KEY-----'}" spellcheck="false"></textarea></label>
-      <label class="field"><span>Passphrase key (προαιρετικό)</span><input name="passphrase" type="password" autocomplete="new-password" /></label>
+      <label class="field"><span>Secret ${cred ? '(blank = unchanged)' : ''}</span>
+        <textarea name="secret" rows="5" placeholder="${cred ? '•••••• (unchanged)' : 'password or -----BEGIN OPENSSH PRIVATE KEY-----'}" spellcheck="false"></textarea></label>
+      <label class="field"><span>Key passphrase (optional)</span><input name="passphrase" type="password" autocomplete="new-password" /></label>
       <p class="error-text" id="cred-error"></p>
       <div class="modal-actions">
-        <button type="button" class="btn ghost" data-close>Άκυρο</button>
-        <button type="submit" class="btn primary">${cred ? 'Αποθήκευση' : 'Δημιουργία'}</button>
+        <button type="button" class="btn ghost" data-close>Cancel</button>
+        <button type="submit" class="btn primary">${cred ? 'Save' : 'Create'}</button>
       </div>
     </form>`);
   $('#cred-form').onsubmit = async (event) => {
@@ -1005,24 +1005,24 @@ function openCredModal(cred, onSaved) {
       await loadCreds();
       renderPage();
       renderSidebar();
-      toast('Το credential αποθηκεύτηκε');
+      toast('Credential saved');
       if (onSaved) onSaved(saved);
     } catch (err) {
-      $('#cred-error').textContent = err.message === 'not_a_private_key' ? 'Δεν μοιάζει με private key.' : err.message;
+      $('#cred-error').textContent = err.message === 'not_a_private_key' ? 'That does not look like a private key.' : err.message;
     }
   };
 }
 
 function openSnippetModal(snippet) {
   const s = snippet || { label: '', command: '' };
-  openModal(`<h3>${snippet ? 'Επεξεργασία snippet' : 'Νέο snippet'}</h3>
+  openModal(`<h3>${snippet ? 'Edit snippet' : 'New snippet'}</h3>
     <form id="snip-form">
-      <label class="field"><span>Όνομα</span><input name="label" required value="${esc(s.label)}" placeholder="Disk usage" /></label>
-      <label class="field"><span>Εντολή</span><textarea name="command" rows="4" required spellcheck="false">${esc(s.command)}</textarea></label>
+      <label class="field"><span>Name</span><input name="label" required value="${esc(s.label)}" placeholder="Disk usage" /></label>
+      <label class="field"><span>Command</span><textarea name="command" rows="4" required spellcheck="false">${esc(s.command)}</textarea></label>
       <p class="error-text" id="snip-error"></p>
       <div class="modal-actions">
-        <button type="button" class="btn ghost" data-close>Άκυρο</button>
-        <button type="submit" class="btn primary">Αποθήκευση</button>
+        <button type="button" class="btn ghost" data-close>Cancel</button>
+        <button type="submit" class="btn primary">Save</button>
       </div></form>`);
   $('#snip-form').onsubmit = async (event) => {
     event.preventDefault();
@@ -1033,23 +1033,23 @@ function openSnippetModal(snippet) {
       closeModal();
       await loadSnippets();
       renderPage();
-      toast('Το snippet αποθηκεύτηκε');
+      toast('Snippet saved');
     } catch (err) { $('#snip-error').textContent = err.message; }
   };
 }
 
 function openImportModal() {
-  openModal(`<h3>Import από ssh config</h3>
-    <p class="lead">Διάβασε το <span class="mono">~/.ssh/config</span> του μηχανήματος ή επικόλλησε το περιεχόμενο.</p>
+  openModal(`<h3>Import from ssh config</h3>
+    <p class="lead">Read <span class="mono">~/.ssh/config</span> from this machine or paste the contents.</p>
     <form id="import-form">
-      <label class="field"><span>Διαδρομή στον server</span><input name="path" value="/root/.ssh/config" /></label>
-      <label class="field"><span>ή περιεχόμενο</span><textarea name="text" rows="5" placeholder="Host web-01&#10;  HostName 10.0.0.5&#10;  User root" spellcheck="false"></textarea></label>
+      <label class="field"><span>Path on the server</span><input name="path" value="/root/.ssh/config" /></label>
+      <label class="field"><span>or contents</span><textarea name="text" rows="5" placeholder="Host web-01&#10;  HostName 10.0.0.5&#10;  User root" spellcheck="false"></textarea></label>
       <div class="row">
-        <label class="field"><span>Credential για όλους</span><select name="credential_id">${credOptions(null)}</select></label>
+        <label class="field"><span>Credential for all</span><select name="credential_id">${credOptions(null)}</select></label>
         <label class="field"><span>Group</span><input name="group_name" value="Imported" /></label>
       </div>
       <p class="error-text" id="import-error"></p>
-      <div class="modal-actions"><button type="button" class="btn ghost" data-close>Άκυρο</button>
+      <div class="modal-actions"><button type="button" class="btn ghost" data-close>Cancel</button>
       <button type="submit" class="btn primary">Import</button></div></form>`);
   $('#import-form').onsubmit = async (event) => {
     event.preventDefault();
@@ -1063,9 +1063,9 @@ function openImportModal() {
       await loadHosts();
       renderSidebar();
       renderPage();
-      toast(`Import: ${result.imported} hosts (${result.skipped} υπήρχαν)`);
+      toast(`Import: ${result.imported} hosts (${result.skipped} already existed)`);
     } catch (err) {
-      $('#import-error').textContent = err.message === 'config_unreadable' ? 'Το αρχείο δεν είναι αναγνώσιμο.' : err.message;
+      $('#import-error').textContent = err.message === 'config_unreadable' ? 'The file cannot be read.' : err.message;
     }
   };
 }
@@ -1075,35 +1075,35 @@ function termPromptHostKey(tab, frame) {
   tab.state = 'closed';
   const host = tab.host;
   const port = host.port || 22;
-  tab.term.writeln('\r\n\x1b[33m? Άγνωστο host key — δεν έγινε σύνδεση.\x1b[0m');
+  tab.term.writeln('\r\n\x1b[33m? Unknown host key — connection was not established.\x1b[0m');
   tab.term.writeln(`  host: ${frame.hostname || host.hostname}:${port}`);
-  tab.term.writeln(`  τύπος: ${frame.key_type || 'ssh'}  αποτύπωση: ${frame.fingerprint}`);
-  tab.term.writeln('  Επιβεβαίωσε από το παράθυρο για να προστεθεί στην εμπιστοσύνη σου.');
+  tab.term.writeln(`  type: ${frame.key_type || 'ssh'}  fingerprint: ${frame.fingerprint}`);
+  tab.term.writeln('  Confirm in the dialog to add it to your trusted keys.');
   renderTabs();
 
-  openModal(`<h3>Νέο host key</h3>
-    <p class="lead">Ο server δεν είναι γνωστός. Έλεγξε την αποτύπωση πριν εμπιστευτείς.</p>
+  openModal(`<h3>New host key</h3>
+    <p class="lead">This server is not known. Check the fingerprint before trusting it.</p>
     <dl class="kv">
       <dt>Host</dt><dd class="mono">${esc(frame.hostname || host.hostname)}:${esc(port)}</dd>
-      <dt>Τύπος</dt><dd class="mono">${esc(frame.key_type || 'ssh')}</dd>
-      <dt>Αποτύπωση</dt><dd class="mono" id="hk-fingerprint">${esc(frame.fingerprint || '')}</dd>
+      <dt>Type</dt><dd class="mono">${esc(frame.key_type || 'ssh')}</dd>
+      <dt>Fingerprint</dt><dd class="mono" id="hk-fingerprint">${esc(frame.fingerprint || '')}</dd>
     </dl>
-    <p class="hint">Σύγκρινε την αποτύπωση με αυτή του server (π.χ. <span class="mono">ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</span>).</p>
+    <p class="hint">Compare the fingerprint with the one on the server (e.g. <span class="mono">ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</span>).</p>
     <p class="error-text" id="hk-error"></p>
     <div class="modal-actions">
-      <button class="btn ghost" data-close>Άκυρο</button>
-      <button class="btn primary" id="hk-trust">Αποδοχή και επανάληψη</button>
+      <button class="btn ghost" data-close>Cancel</button>
+      <button class="btn primary" id="hk-trust">Accept and retry</button>
     </div>`);
   $('#hk-trust').onclick = async () => {
     try {
       await api(`/hosts/${host.id}/trust`, { json: { fingerprint: frame.fingerprint } });
       closeModal();
-      toast('Το host key προστέθηκε στην εμπιστοσύνη');
+      toast('Host key added to trusted keys');
       closeTab(tab.id);
       openTerminal(host);
     } catch (err) {
       $('#hk-error').textContent = err.message === 'no_pending_key' || err.message.startsWith('no_pending_key')
-        ? 'Η επιβεβαίωση έληξε — ξαναδοκίμασε τη σύνδεση.'
+        ? 'The confirmation expired — try connecting again.'
         : err.message;
     }
   };
@@ -1111,8 +1111,8 @@ function termPromptHostKey(tab, frame) {
 
 function confirmDialog(title, text, onConfirm, confirmLabel) {
   openModal(`<h3>${esc(title)}</h3><p class="lead">${esc(text)}</p>
-    <div class="modal-actions"><button class="btn ghost" data-close>Άκυρο</button>
-    <button class="btn danger" id="confirm-ok">${esc(confirmLabel || 'Διαγραφή')}</button></div>`);
+    <div class="modal-actions"><button class="btn ghost" data-close>Cancel</button>
+    <button class="btn danger" id="confirm-ok">${esc(confirmLabel || 'Delete')}</button></div>`);
   $('#confirm-ok').onclick = async () => { closeModal(); await onConfirm(); };
 }
 
@@ -1120,9 +1120,9 @@ function confirmDialog(title, text, onConfirm, confirmLabel) {
 function openDrawer() {
   const tab = activeTab();
   const host = tab ? tab.host : S.hosts[0];
-  if (!host) { toast('Πρόσθεσε πρώτα server', 'err'); return; }
+  if (!host) { toast('Add a server first', 'err'); return; }
   if ((host.protocol || 'ssh') !== 'ssh') {
-    toast('Το SFTP υποστηρίζεται μόνο για SSH συνδέσεις', 'err');
+    toast('SFTP is only supported for SSH connections', 'err');
     return;
   }
   S.sftp.hostId = host.id;
@@ -1144,7 +1144,7 @@ function closeDrawer() {
 async function loadFiles(path) {
   const hostId = S.sftp.hostId;
   if (!hostId) return;
-  $('#sftp-list').innerHTML = '<div class="empty" style="margin:12px;padding:18px">Φόρτωση…</div>';
+  $('#sftp-list').innerHTML = '<div class="empty" style="margin:12px;padding:18px">Loading…</div>';
   try {
     const data = await api(`/hosts/${hostId}/files?path=${encodeURIComponent(path || '.')}`);
     S.sftp.path = data.cwd;
@@ -1157,12 +1157,12 @@ async function loadFiles(path) {
         <span class="ic">${icon}</span><span class="nm">${esc(e.name)}</span>
         <span class="sz">${e.is_dir ? 'dir' : fmtSize(e.size)}</span>
         ${e.is_dir ? '' : `<span class="fa" data-dl="${esc(e.path)}" title="Download">⇩</span>`}
-        <span class="fa" data-rm="${esc(e.path)}" data-isdir="${e.is_dir}" title="Διαγραφή">✕</span>
+        <span class="fa" data-rm="${esc(e.path)}" data-isdir="${e.is_dir}" title="Delete">✕</span>
       </div>`);
     });
-    $('#sftp-list').innerHTML = rows.join('') || '<div class="empty" style="margin:12px">Άδειος φάκελος</div>';
+    $('#sftp-list').innerHTML = rows.join('') || '<div class="empty" style="margin:12px">Empty folder</div>';
   } catch (err) {
-    $('#sftp-list').innerHTML = `<div class="empty" style="margin:12px;padding:18px"><b>Σφάλμα</b>${esc(err.message)}</div>`;
+    $('#sftp-list').innerHTML = `<div class="empty" style="margin:12px;padding:18px"><b>Error</b>${esc(err.message)}</div>`;
   }
 }
 
@@ -1191,7 +1191,7 @@ function renderPalette(query) {
   $('#palette-list').innerHTML = S.paletteItems.map((h, i) => `<div class="pal-item${i === S.paletteIndex ? ' sel' : ''}" data-pal="${h.id}">
       <span class="dot ok"></span><span>${esc(h.label)}</span>
       <span class="h">${esc(h.username)}@${esc(h.hostname)}:${h.port}</span></div>`).join('')
-    || '<div class="pal-item"><span class="muted">Κανένας server — πρόσθεσε έναν πρώτα.</span></div>';
+    || '<div class="pal-item"><span class="muted">No servers — add one first.</span></div>';
 }
 
 function connectFromPalette() {
@@ -1206,7 +1206,7 @@ document.addEventListener('click', async (event) => {
   const ndOpen = event.target.closest('[data-nd-open]');
   if (ndOpen) {
     const host = (S.hosts || []).find((h) => h.id === Number(ndOpen.dataset.ndOpen));
-    if (host) openTerminal(host); else toast('Το profile δεν βρέθηκε', 'err');
+    if (host) openTerminal(host); else toast('Profile not found', 'err');
     return;
   }
 
@@ -1218,7 +1218,7 @@ document.addEventListener('click', async (event) => {
       const res = await api(`/netdoc/devices/${deviceId}/winbox`, { json: { address: device.mgmt_ip || '' } });
       toast(`WinBox: pid ${res.pid || '—'}`);
     } catch (err) {
-      toast(err.message.startsWith('winbox') ? 'Το WinBox δεν είναι εγκατεστημένο' : err.message, 'err');
+      toast(err.message.startsWith('winbox') ? 'WinBox is not installed' : err.message, 'err');
     }
     return;
   }
@@ -1228,15 +1228,15 @@ document.addEventListener('click', async (event) => {
     const deviceId = Number(ndWeb.dataset.ndWeb);
     try {
       const res = await api(`/netdoc/devices/${deviceId}/web`, { method: 'POST', json: {} });
-      if (res.mode === 'window') toast(`Web management: ${res.url} — ξεχωριστό παράθυρο`);
+      if (res.mode === 'window') toast(`Web management: ${res.url} — separate window`);
       else {
         toast(res.warning, 'err');
         if (res.url) window.open(res.url, '_blank', 'noopener');
       }
     } catch (err) {
       toast(err.detail === 'no_address'
-        ? 'Η συσκευή δεν έχει management IP'
-        : `Το web management δεν άνοιξε: ${err.message}`, 'err');
+        ? 'This device has no management IP'
+        : `Web management did not open: ${err.message}`, 'err');
     }
     return;
   }
@@ -1245,21 +1245,21 @@ document.addEventListener('click', async (event) => {
   if (ndAddProfile) {
     const deviceId = Number(ndAddProfile.dataset.ndAddProfile);
     const options = (S.hosts || []).map((h) => `<option value="${h.id}">${esc(h.label)} · ${esc(h.hostname || '')}</option>`).join('');
-    openModal(`<h3>Προσθήκη profile</h3>
-      <p class="lead">Η σχέση συσκευής ⇄ host είναι ρητή: μόνο ό,τι προσθέσεις εδώ εμφανίζεται ως σύνδεση.</p>
-      <label class="field"><span>Host</span><select id="ndp-host">${options || '<option value="">— κανένας host —</option>'}</select></label>
+    openModal(`<h3>Add profile</h3>
+      <p class="lead">The device ⇄ host relation is explicit: only what you add here is shown as a connection.</p>
+      <label class="field"><span>Host</span><select id="ndp-host">${options || '<option value="">— no host —</option>'}</select></label>
       <p class="error-text" id="ndp-error"></p>
-      <div class="modal-actions"><button class="btn ghost" data-close>Άκυρο</button>
-      <button class="btn primary" id="ndp-save">Προσθήκη</button></div>`);
+      <div class="modal-actions"><button class="btn ghost" data-close>Cancel</button>
+      <button class="btn primary" id="ndp-save">Add</button></div>`);
     $('#ndp-save').onclick = async () => {
       const hostId = Number($('#ndp-host').value || 0);
-      if (!hostId) { $('#ndp-error').textContent = 'Δεν υπάρχει host για σύνδεση.'; return; }
+      if (!hostId) { $('#ndp-error').textContent = 'No host available to connect.'; return; }
       try {
         await api(`/netdoc/devices/${deviceId}/profiles`, { json: { host_id: hostId } });
         closeModal();
         await loadNetdoc();
         renderPage();
-        toast('Το profile προστέθηκε');
+        toast('Profile added');
       } catch (err) { $('#ndp-error').textContent = err.message; }
     };
     return;
@@ -1275,7 +1275,7 @@ document.addEventListener('click', async (event) => {
       }
       await loadNetdoc();
       renderPage();
-      toast('Τα profiles αφαιρέθηκαν');
+      toast('Profiles removed');
     } catch (err) { toast(err.message, 'err'); }
     return;
   }
@@ -1306,7 +1306,7 @@ document.addEventListener('click', async (event) => {
       const created = await api('/netdoc/ports/bulk', { json: { device_id: deviceId, prefix: 'eth', count: 24 } });
       await loadNetdoc();
       renderPage();
-      toast(`${created.created.length} ports προστέθηκαν`);
+      toast(`${created.created.length} ports added`);
     } catch (err) { toast(err.message, 'err'); }
     return;
   }
@@ -1322,9 +1322,9 @@ document.addEventListener('click', async (event) => {
     if (act && act.dataset.act === 'edit') { event.stopPropagation(); openHostModal(host); return; }
     if (act && act.dataset.act === 'del') {
       event.stopPropagation();
-      confirmDialog('Διαγραφή server', `Ο/Η «${host.label}» θα αφαιρεθεί από το inventory.`, async () => {
+      confirmDialog('Delete server', `"${host.label}" will be removed from the inventory.`, async () => {
         await api(`/hosts/${id}`, { method: 'DELETE' });
-        await loadHosts(); renderSidebar(); renderPage(); toast('Ο server διαγράφηκε');
+        await loadHosts(); renderSidebar(); renderPage(); toast('Server deleted');
       });
       return;
     }
@@ -1353,10 +1353,10 @@ document.addEventListener('click', async (event) => {
   const credDel = event.target.closest('[data-cred-del]');
   if (credDel) {
     const cred = S.creds.find((c) => c.id === Number(credDel.dataset.credDel));
-    confirmDialog('Διαγραφή credential', `Να διαγραφεί το «${cred.name}»;`, async () => {
+    confirmDialog('Delete credential', `Delete "${cred.name}"?`, async () => {
       try {
         await api(`/credentials/${cred.id}`, { method: 'DELETE' });
-        await loadCreds(); renderPage(); toast('Το credential διαγράφηκε');
+        await loadCreds(); renderPage(); toast('Credential deleted');
       } catch (err) { toast(err.message, 'err'); }
     });
     return;
@@ -1373,9 +1373,9 @@ document.addEventListener('click', async (event) => {
   const snipDel = event.target.closest('[data-snip-del]');
   if (snipDel) {
     const snippet = S.snippets.find((s) => s.id === Number(snipDel.dataset.snipDel));
-    confirmDialog('Διαγραφή snippet', `Να διαγραφεί το «${snippet.label}»;`, async () => {
+    confirmDialog('Delete snippet', `Delete "${snippet.label}"?`, async () => {
       await api(`/snippets/${snippet.id}`, { method: 'DELETE' });
-      await loadSnippets(); renderPage(); toast('Διαγράφηκε');
+      await loadSnippets(); renderPage(); toast('Deleted');
     });
     return;
   }
@@ -1399,25 +1399,25 @@ document.addEventListener('click', async (event) => {
     const path = dl.dataset.dl;
     const url = `/api/hosts/${S.sftp.hostId}/download?path=${encodeURIComponent(path)}`;
     const res = await fetch(url, { credentials: 'same-origin' });
-    if (!res.ok) { toast('Download απέτυχε', 'err'); return; }
+    if (!res.ok) { toast('Download failed', 'err'); return; }
     const blob = await res.blob();
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = path.split('/').pop();
     a.click();
     URL.revokeObjectURL(a.href);
-    toast('Λήψη: ' + a.download);
+    toast('Download: ' + a.download);
     return;
   }
   const rm = event.target.closest('[data-rm]');
   if (rm) {
     event.stopPropagation();
     const path = rm.dataset.rm;
-    confirmDialog('Διαγραφή', `Να διαγραφεί το ${path};`, async () => {
+    confirmDialog('Delete', `Delete ${path}?`, async () => {
       try {
         await api(`/hosts/${S.sftp.hostId}/delete-path`, { json: { path } });
         await loadFiles(S.sftp.path);
-        toast('Διαγράφηκε');
+        toast('Deleted');
       } catch (err) { toast(err.message, 'err'); }
     });
     return;
@@ -1429,7 +1429,7 @@ document.addEventListener('click', async (event) => {
 
 function runSnippet(snippet) {
   const tab = activeTab();
-  if (!tab || tab.state !== 'open') { toast('Άνοιξε πρώτα session', 'err'); return; }
+  if (!tab || tab.state !== 'open') { toast('Open a session first', 'err'); return; }
   tab.ws.send(JSON.stringify({ type: 'input', data: snippet.command + '\r' }));
   toast(`▶ ${snippet.label}`);
 }
@@ -1469,10 +1469,10 @@ $('#btn-logout').onclick = async () => {
 $('#palette-input').addEventListener('input', (event) => renderPalette(event.target.value));
 
 $('#sftp-mkdir').onclick = () => {
-  openModal(`<h3>Νέος φάκελος</h3><form id="mkdir-form">
-    <label class="field"><span>Διαδρομή</span><input name="path" value="${esc(S.sftp.path === '/' ? '/newdir' : S.sftp.path + '/newdir')}" /></label>
-    <div class="modal-actions"><button type="button" class="btn ghost" data-close>Άκυρο</button>
-    <button class="btn primary" type="submit">Δημιουργία</button></div></form>`);
+  openModal(`<h3>New folder</h3><form id="mkdir-form">
+    <label class="field"><span>Path</span><input name="path" value="${esc(S.sftp.path === '/' ? '/newdir' : S.sftp.path + '/newdir')}" /></label>
+    <div class="modal-actions"><button type="button" class="btn ghost" data-close>Cancel</button>
+    <button class="btn primary" type="submit">Create</button></div></form>`);
   $('#mkdir-form').onsubmit = async (event) => {
     event.preventDefault();
     const path = new FormData(event.target).get('path');
@@ -1493,7 +1493,7 @@ $('#sftp-file').onchange = async (event) => {
       method: 'POST', body: form, credentials: 'same-origin', headers: { 'x-requested-with': 'sshdeck' },
     });
     if (!res.ok) throw new Error((await res.json()).detail || 'upload failed');
-    toast(`Ανέβηκε: ${file.name}`);
+    toast(`Uploaded: ${file.name}`);
     loadFiles(S.sftp.path);
   } catch (err) { toast('Upload: ' + err.message, 'err'); }
   event.target.value = '';
@@ -1506,23 +1506,23 @@ document.addEventListener('click', (event) => {
     'settings-import': openImportModal,
     'nd-add-site': async () => {
       const name = (($('#nd-site-name') || {}).value || '').trim();
-      if (!name) { toast('Δώσε όνομα χώρου', 'err'); return; }
+      if (!name) { toast('Enter a site name', 'err'); return; }
       try {
         await api('/netdoc/sites', { json: { name } });
         await loadNetdoc();
         renderPage();
-        toast('Ο χώρος προστέθηκε');
+        toast('Site added');
       } catch (err) { toast(err.message, 'err'); }
     },
     'nd-add-rack': async () => {
       const siteId = Number((($('#nd-rack-site') || {}).value) || 0);
       const name = (($('#nd-rack-name') || {}).value || '').trim();
-      if (!siteId || !name) { toast('Διάλεξε χώρο και όνομα rack', 'err'); return; }
+      if (!siteId || !name) { toast('Select a site and enter a rack name', 'err'); return; }
       try {
         const rack = await api('/netdoc/racks', { json: { site_id: siteId, name } });
         await loadNetdoc();
         await ndSelectRack(rack.id);
-        toast('Το rack προστέθηκε');
+        toast('Rack added');
       } catch (err) { toast(err.message, 'err'); }
     },
     'nd-add-dev': async () => {
@@ -1530,22 +1530,22 @@ document.addEventListener('click', (event) => {
       const name = (($('#nd-dev-name') || {}).value || '').trim();
       const kind = (($('#nd-dev-kind') || {}).value) || 'switch';
       const position = Number((($('#nd-dev-pos') || {}).value) || 1);
-      if (!rackId || !name) { toast('Δώσε όνομα συσκευής', 'err'); return; }
+      if (!rackId || !name) { toast('Enter a device name', 'err'); return; }
       try {
         await api('/netdoc/devices', { json: { rack_id: rackId, name, kind, position, units: 1 } });
         await loadNetdoc();
         await ndSelectRack(rackId);
-        toast('Η συσκευή προστέθηκε');
+        toast('Device added');
       } catch (err) {
-        toast(err.message.startsWith('position_taken') ? 'Η θέση είναι πιασμένη' : err.message, 'err');
+        toast(err.message.startsWith('position_taken') ? 'That position is already taken' : err.message, 'err');
       }
     },
     'vault-lock': async () => {
-      try { await api('/vault/lock', { json: {} }); await renderVaultState(); toast('Το vault κλειδώθηκε'); }
+      try { await api('/vault/lock', { json: {} }); await renderVaultState(); toast('Vault locked'); }
       catch (err) { toast(err.message, 'err'); }
     },
     'vault-unlock': async () => {
-      try { await api('/vault/unlock', { json: {} }); await renderVaultState(); toast('Το vault ξεκλειδώθηκε'); }
+      try { await api('/vault/unlock', { json: {} }); await renderVaultState(); toast('Vault unlocked'); }
       catch (err) { toast(err.message, 'err'); }
     },
     'vault-save-lock': async () => {
@@ -1553,7 +1553,7 @@ document.addEventListener('click', (event) => {
       try {
         await api('/vault/auto-lock', { json: { seconds: Math.max(0, minutes) * 60 } });
         await renderVaultState();
-        toast(minutes ? `Auto-lock: ${minutes} λεπτά` : 'Auto-lock ανενεργό');
+        toast(minutes ? `Auto-lock: ${minutes} min` : 'Auto-lock off');
       } catch (err) { toast(err.message, 'err'); }
     },
     'upd-save': async () => {
@@ -1562,18 +1562,18 @@ document.addEventListener('click', (event) => {
         await api('/update/repo', { json: { repo: repo.trim() } });
         await loadUpdateState();
         renderPage();
-        toast('Αποθηκεύτηκε');
-      } catch (err) { toast(err.message === 'invalid_repo' ? 'Μορφή: owner/repo' : err.message, 'err'); }
+        toast('Saved');
+      } catch (err) { toast(err.message === 'invalid_repo' ? 'Format: owner/repo' : err.message, 'err'); }
     },
     'upd-check': async () => {
       const repo = ($('#upd-repo') || {}).value || '';
       const line = $('#upd-status');
-      if (line) line.textContent = 'Έλεγχος…';
+      if (line) line.textContent = 'Checking…';
       try {
         const result = await api('/update/check', { json: { repo: repo.trim() } });
         S.update = { ...(S.update || {}), ...result, asset: result.asset, last_check: new Date().toLocaleString('el-GR') };
         renderPage();
-        toast(result.available ? `Νέα έκδοση: ${result.latest}` : `Είσαι στην τελευταία (${result.latest || result.current})`);
+        toast(result.available ? `New version: ${result.latest}` : `You are on the latest (${result.latest || result.current})`);
       } catch (err) {
         if (line) line.textContent = err.message;
         toast(err.message, 'err');
@@ -1581,13 +1581,13 @@ document.addEventListener('click', (event) => {
     },
     'upd-prepare': async () => {
       const asset = (S.update || {}).asset;
-      if (!asset) { toast('Κάνε πρώτα έλεγχο', 'err'); return; }
+      if (!asset) { toast('Run a check first', 'err'); return; }
       const line = $('#upd-status');
-      if (line) line.textContent = 'Κατέβασμα και επαλήθευση…';
+      if (line) line.textContent = 'Downloading and verifying…';
       try {
         const result = await api('/update/prepare', { json: asset });
-        if (line) line.textContent = 'Έτοιμο: ' + result.script;
-        toast('Κλείσε το MUXIVRA και τρέξε apply-update.cmd');
+        if (line) line.textContent = 'Ready: ' + result.script;
+        toast('Close MUXIVRA and run apply-update.cmd');
       } catch (err) {
         if (line) line.textContent = err.message;
         toast(err.message, 'err');
@@ -1599,7 +1599,7 @@ document.addEventListener('click', (event) => {
       const tab = activeTab();
       if (!tab) return;
       await api(`/hosts/${tab.host.id}/trust`, { method: 'DELETE' });
-      toast(`Η εμπιστοσύνη αφαιρέθηκε για ${tab.host.hostname}:${tab.host.port || 22}`);
+      toast(`Trust removed for ${tab.host.hostname}:${tab.host.port || 22}`);
     },
   };
   for (const [id, fn] of Object.entries(map)) {
@@ -1608,22 +1608,22 @@ document.addEventListener('click', (event) => {
 });
 
 function openPasswordModal() {
-  openModal(`<h3>Αλλαγή master password</h3>
+  openModal(`<h3>Change master password</h3>
     <form id="pw-form">
-      <label class="field"><span>Τρέχον</span><input name="current" type="password" required autocomplete="current-password" /></label>
-      <label class="field"><span>Νέο (min 8)</span><input name="new" type="password" required minlength="8" autocomplete="new-password" /></label>
+      <label class="field"><span>Current</span><input name="current" type="password" required autocomplete="current-password" /></label>
+      <label class="field"><span>New (min 8)</span><input name="new" type="password" required minlength="8" autocomplete="new-password" /></label>
       <p class="error-text" id="pw-error"></p>
-      <div class="modal-actions"><button type="button" class="btn ghost" data-close>Άκυρο</button>
-      <button class="btn primary" type="submit">Αλλαγή</button></div></form>`);
+      <div class="modal-actions"><button type="button" class="btn ghost" data-close>Cancel</button>
+      <button class="btn primary" type="submit">Change</button></div></form>`);
   $('#pw-form').onsubmit = async (event) => {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(event.target).entries());
     try {
       await api('/password', { json: { current: data.current, new: data.new } });
       closeModal();
-      toast('Το password άλλαξε — συνδέσου ξανά');
+      toast('Password changed — sign in again');
       showAuth(false);
-    } catch (err) { $('#pw-error').textContent = err.message === 'bad_password' ? 'Λάθος τρέχον password.' : err.message; }
+    } catch (err) { $('#pw-error').textContent = err.message === 'bad_password' ? 'Wrong current password.' : err.message; }
   };
 }
 

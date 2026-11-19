@@ -82,26 +82,26 @@ def _assert_https(url: str) -> None:
     parts = urllib.parse.urlsplit(url)
     allow_http = os.environ.get("SSHDECK_UPDATE_ALLOW_HTTP") == "1"
     if parts.scheme != "https" and not (allow_http and parts.scheme == "http"):
-        raise UpdateError("insecure_url", "Οι ενημερώσεις απαιτούν https.")
+        raise UpdateError("insecure_url", "Updates require https.")
     if (parts.hostname or "").lower() not in _allowed_hosts():
-        raise UpdateError("untrusted_host", f"Μη επιτρεπτός host λήψης: {parts.hostname}")
+        raise UpdateError("untrusted_host", f"Download host not allowed: {parts.hostname}")
 
 
 # ------------------------------------------------------------------ releases
 def check(repo: str, current: str, timeout: float = 12.0, opener=None) -> dict:
     repo = (repo or "").strip()
     if not REPO_RE.match(repo):
-        raise UpdateError("invalid_repo", "Το repository πρέπει να είναι της μορφής owner/name.")
+        raise UpdateError("invalid_repo", "The repository must be in owner/name form.")
     opener = opener or _open
     try:
         with opener(API.format(repo=repo), timeout) as response:
             data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        raise UpdateError("http_error", f"GitHub απάντησε {exc.code} για {repo}.") from exc
+        raise UpdateError("http_error", f"GitHub responded {exc.code} for {repo}.") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise UpdateError("network", f"Δεν έγινε σύνδεση με το GitHub: {exc}") from exc
+        raise UpdateError("network", f"Could not connect to GitHub: {exc}") from exc
     except json.JSONDecodeError as exc:
-        raise UpdateError("bad_response", "Μη αναγνώσιμη απάντηση από το GitHub.") from exc
+        raise UpdateError("bad_response", "Unreadable response from GitHub.") from exc
 
     tag = str(data.get("tag_name") or data.get("name") or "")
     assets = [
@@ -143,7 +143,7 @@ def trusted_key() -> bytes:
     if not raw:
         raw = getattr(config, "DEFAULT_UPDATE_PUBKEY", "").strip()
     if not raw:
-        raise UpdateError("no_pubkey", "Δεν έχει οριστεί δημόσιο κλειδί υπογραφής.")
+        raise UpdateError("no_pubkey", "No signing public key is configured.")
     for decoder in (base64.b64decode, bytes.fromhex):
         try:
             key = decoder(raw)
@@ -151,7 +151,7 @@ def trusted_key() -> bytes:
             continue
         if len(key) == 32:
             return key
-    raise UpdateError("bad_pubkey", "Το δημόσιο κλειδί δεν είναι 32-byte Ed25519 (base64 ή hex).")
+    raise UpdateError("bad_pubkey", "The public key is not a 32-byte Ed25519 key (base64 or hex).")
 
 
 def verify_manifest(manifest_bytes: bytes, signature: bytes, pubkey: bytes | None = None) -> dict:
@@ -163,19 +163,19 @@ def verify_manifest(manifest_bytes: bytes, signature: bytes, pubkey: bytes | Non
     try:
         Ed25519PublicKey.from_public_bytes(pubkey).verify(signature, manifest_bytes)
     except InvalidSignature as exc:
-        raise UpdateError("bad_signature", "Η υπογραφή του release δεν επαληθεύεται.") from exc
+        raise UpdateError("bad_signature", "The release signature does not verify.") from exc
     except ValueError as exc:
-        raise UpdateError("bad_pubkey", "Άκυρο δημόσιο κλειδί.") from exc
+        raise UpdateError("bad_pubkey", "Invalid public key.") from exc
     try:
         manifest = json.loads(manifest_bytes.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise UpdateError("bad_manifest", "Το release.json δεν είναι έγκυρο JSON.") from exc
+        raise UpdateError("bad_manifest", "release.json is not valid JSON.") from exc
     for field in ("version", "archive", "sha256"):
         if not str(manifest.get(field) or "").strip():
-            raise UpdateError("bad_manifest", f"Το release.json δεν έχει «{field}».")
+            raise UpdateError("bad_manifest", f'release.json has no "{field}".')
     sha = str(manifest["sha256"]).strip().lower()
     if len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha):
-        raise UpdateError("bad_manifest", "Μη έγκυρο sha256 στο release.json.")
+        raise UpdateError("bad_manifest", "Invalid sha256 in release.json.")
     return manifest
 
 
@@ -184,12 +184,12 @@ def fetch_manifest(release: dict, opener=None, timeout: float = 30.0) -> dict:
     manifest_asset = release.get("manifest") or {}
     signature_asset = release.get("signature") or {}
     if not manifest_asset.get("url") or not signature_asset.get("url"):
-        raise UpdateError("unsigned_release", "Το release δεν έχει release.json / release.json.sig.")
+        raise UpdateError("unsigned_release", "The release has no release.json / release.json.sig.")
     opener = opener or _open
     for asset in (manifest_asset, signature_asset):
         _assert_https(asset["url"])
         if int(asset.get("size") or 0) > 64 * 1024:
-            raise UpdateError("too_large", "Το manifest asset είναι υπερβολικά μεγάλο.")
+            raise UpdateError("too_large", "The manifest asset is too large.")
     with opener(manifest_asset["url"], timeout, "application/octet-stream") as response:
         manifest_bytes = response.read(64 * 1024)
     with opener(signature_asset["url"], timeout, "application/octet-stream") as response:
@@ -197,11 +197,11 @@ def fetch_manifest(release: dict, opener=None, timeout: float = 30.0) -> dict:
     try:
         signature = base64.b64decode(signature_b64, validate=True)
     except Exception as exc:
-        raise UpdateError("bad_signature", "Η υπογραφή δεν είναι base64.") from exc
+        raise UpdateError("bad_signature", "The signature is not base64.") from exc
     manifest = verify_manifest(manifest_bytes, signature)
     expected_tag = str(release.get("latest") or "").strip().lstrip("vV")
     if expected_tag and str(manifest["version"]).strip().lstrip("vV") != expected_tag:
-        raise UpdateError("version_mismatch", "Το manifest δεν ταιριάζει με το επιλεγμένο release.")
+        raise UpdateError("version_mismatch", "The manifest does not match the selected release.")
     return manifest
 
 
@@ -210,14 +210,14 @@ def download_verified(release: dict, manifest: dict, dest_dir: Path, opener=None
     """Fetch the signed archive and enforce the manifest's name and sha256."""
     asset = release.get("asset") or {}
     if not asset.get("url"):
-        raise UpdateError("no_asset", "Το release δεν έχει .zip asset.")
+        raise UpdateError("no_asset", "The release has no .zip asset.")
     _assert_https(asset["url"])
     wanted = str(manifest.get("archive") or "")
     if Path(asset.get("name") or "").name != Path(wanted).name:
-        raise UpdateError("archive_mismatch", "Το asset δεν είναι το αρχείο που υπογράφηκε.")
+        raise UpdateError("archive_mismatch", "The asset is not the file that was signed.")
     size = int(asset.get("size") or 0)
     if size > MAX_ASSET_BYTES:
-        raise UpdateError("too_large", f"Το asset είναι {size} bytes — πάνω από το όριο.")
+        raise UpdateError("too_large", f"The asset is {size} bytes — over the limit.")
     dest_dir.mkdir(parents=True, exist_ok=True)
     target = dest_dir / Path(wanted).name
     hasher = hashlib.sha256()
@@ -229,15 +229,15 @@ def download_verified(release: dict, manifest: dict, dest_dir: Path, opener=None
             if written > MAX_ASSET_BYTES:
                 fh.close()
                 target.unlink(missing_ok=True)
-                raise UpdateError("too_large", "Η λήψη ξεπέρασε το όριο μεγέθους.")
+                raise UpdateError("too_large", "The download exceeded the size limit.")
             fh.write(chunk)
             hasher.update(chunk)
     if size and written != size:
         target.unlink(missing_ok=True)
-        raise UpdateError("bad_size", "Το μέγεθος του αρχείου δεν ταιριάζει με το release.")
+        raise UpdateError("bad_size", "The file size does not match the release.")
     if hasher.hexdigest().lower() != str(manifest["sha256"]).lower():
         target.unlink(missing_ok=True)
-        raise UpdateError("bad_digest", "Το sha256 δεν ταιριάζει με το υπογεγραμμένο manifest.")
+        raise UpdateError("bad_digest", "The sha256 does not match the signed manifest.")
     return target
 
 
@@ -246,18 +246,18 @@ def _check_members(zf: zipfile.ZipFile) -> None:
     """Reject absolute paths, traversal, drive letters and symlinks; cap size."""
     infos = zf.infolist()
     if len(infos) > MAX_ENTRIES:
-        raise UpdateError("too_many_entries", f"Το zip έχει {len(infos)} entries.")
+        raise UpdateError("too_many_entries", f"The zip has {len(infos)} entries.")
     total = 0
     for info in infos:
         name = info.filename.replace("\\", "/")
         if name.startswith("/") or re.match(r"^[A-Za-z]:", name) or ".." in Path(name).parts:
-            raise UpdateError("unsafe_path", f"Μη ασφαλής διαδρομή στο zip: {name}")
+            raise UpdateError("unsafe_path", f"Unsafe path in the zip: {name}")
         mode = (info.external_attr >> 16) & 0xFFFF
         if stat.S_ISLNK(mode):
-            raise UpdateError("unsafe_path", f"Symlink μέσα στο zip: {name}")
+            raise UpdateError("unsafe_path", f"Symlink inside the zip: {name}")
         total += info.file_size
         if total > MAX_EXTRACTED_BYTES:
-            raise UpdateError("too_large", "Το zip ξεπερνά το όριο αποσυμπίεσης.")
+            raise UpdateError("too_large", "The zip exceeds the decompression limit.")
 
 
 def stage(archive: Path, staging_root: Path) -> Path:
@@ -273,7 +273,7 @@ def stage(archive: Path, staging_root: Path) -> Path:
                 name = info.filename.replace("\\", "/")
                 target = staging / name
                 if not str(target.resolve()).startswith(str(staging.resolve())):
-                    raise UpdateError("unsafe_path", f"Διαδρομή εκτός staging: {name}")
+                    raise UpdateError("unsafe_path", f"Path outside staging: {name}")
                 if name.endswith("/"):
                     target.mkdir(parents=True, exist_ok=True)
                     continue
@@ -287,7 +287,7 @@ def stage(archive: Path, staging_root: Path) -> Path:
     root = roots[0] if len(roots) == 1 and (roots[0] / "MUXIVRA.exe").exists() else staging
     if not (root / "MUXIVRA.exe").exists() and not (root / "MUXIVRA.cmd").exists():
         shutil.rmtree(staging, ignore_errors=True)
-        raise UpdateError("bad_archive", "Το zip δεν περιέχει MUXIVRA.exe / MUXIVRA.cmd.")
+        raise UpdateError("bad_archive", "The zip does not contain MUXIVRA.exe / MUXIVRA.cmd.")
     return root
 
 

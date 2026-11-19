@@ -34,16 +34,16 @@ def validate_url(url: str) -> str:
     """Only a real device management URL. No credentials in the URL, ever."""
     text = (url or "").strip()
     if not text:
-        raise SurfaceError("url_required", "Χρειάζεται διεύθυνση της συσκευής.")
+        raise SurfaceError("url_required", "A device address is required.")
     parsed = urlparse(text)
     if parsed.scheme not in ALLOWED_SCHEMES:
-        raise SurfaceError("bad_scheme", f"Επιτρέπονται μόνο http/https, όχι {parsed.scheme or 'κενό'}.")
+        raise SurfaceError("bad_scheme", f"Only http/https are allowed, not {parsed.scheme or 'empty'}.")
     if not parsed.hostname:
-        raise SurfaceError("bad_url", "Η διεύθυνση δεν έχει host.")
+        raise SurfaceError("bad_url", "The address has no host.")
     if parsed.username or parsed.password:
-        raise SurfaceError("credentials_in_url", "Μην βάζεις διαπιστευτήρια στη διεύθυνση.")
+        raise SurfaceError("credentials_in_url", "Do not put credentials in the address.")
     if "@" in (parsed.netloc or ""):
-        raise SurfaceError("credentials_in_url", "Μην βάζεις διαπιστευτήρια στη διεύθυνση.")
+        raise SurfaceError("credentials_in_url", "Do not put credentials in the address.")
     return text
 
 
@@ -57,7 +57,7 @@ def default_url(device_row) -> str:
     else:
         host = ""
     if not host:
-        raise SurfaceError("no_address", "Η συσκευή δεν έχει management IP ή hostname.")
+        raise SurfaceError("no_address", "The device has no management IP or hostname.")
     if host.startswith("http://") or host.startswith("https://"):
         return validate_url(host)
     scheme = "https" if _looks_https(host) else "http"
@@ -87,7 +87,7 @@ def surface_config(url: str, customer_id: int | None, device_label: str,
     return {
         "url": clean,
         "profile": str(profile_dir(customer_id)),
-        "title": f"{device_label or 'Συσκευή'} — web management",
+        "title": f"{device_label or 'Device'} — web management",
         "bridge": False,              # no QWebChannel: vendor page cannot call the app
         "app_cookies": False,         # separate profile, separate storage
         "javascript_enabled": True,   # vendor panels need it; it is their document
@@ -113,8 +113,8 @@ def launch(url: str, customer_id: int | None, device_label: str,
         return {
             "mode": "external",
             "url": cfg["url"],
-            "warning": "Το Qt WebEngine δεν είναι διαθέσιμο: η σελίδα θα ανοίξει στον "
-                       "περιηγητή του συστήματος, χωρίς την απομόνωση της εφαρμογής.",
+            "warning": "Qt WebEngine is not available: the page will open in the "
+                       "system browser, without the application's isolation.",
         }
     log_path = Path(cfg["profile"]).parent / f"surface-{secrets.token_hex(4)}.log"
     process = subprocess.Popen(
@@ -155,7 +155,7 @@ def _run_surface(cfg: dict, selftest: bool = False) -> int:   # pragma: no cover
     page = QWebEnginePage(profile, view)
     view.setPage(page)
 
-    toolbar = QToolBar("Περιήγηση")
+    toolbar = QToolBar("Navigation")
     toolbar.setMovable(False)
     window.addToolBar(toolbar)
     back = toolbar.addAction("←")
@@ -166,7 +166,7 @@ def _run_surface(cfg: dict, selftest: bool = False) -> int:   # pragma: no cover
     address.setStyleSheet("padding: 0 10px; color: #8a94a6;")
     toolbar.addWidget(address)
     toolbar.addSeparator()
-    scope = QLabel("απομονωμένο περιβάλλον · χωρίς πρόσβαση στην εφαρμογή")
+    scope = QLabel("isolated environment · no access to the application")
     scope.setStyleSheet("padding: 0 10px; color: #c9a227; font-size: 11px;")
     toolbar.addWidget(scope)
 
@@ -194,7 +194,7 @@ def _run_surface(cfg: dict, selftest: bool = False) -> int:   # pragma: no cover
                 return True
             refused.append(fingerprint)
             print(f"[surface] certificate REFUSED for {error.url().toString()} "
-                  f"sha256={fingerprint} — βάλε το fingerprint στη συσκευή για ρητή εμπιστοσύνη.",
+                  f"sha256={fingerprint} — add this fingerprint to the device for explicit trust.",
                   flush=True)
             return False
 

@@ -64,18 +64,18 @@ function cfgToast(message) {
 
 /* Τα 422 codes του backend μεταφράζονται σε συγκεκριμένη εξήγηση */
 const CFG_ERRORS = {
-  device_without_profile: 'Η συσκευή δεν έχει συνδεδεμένο profile πρόσβασης — πρόσθεσε πρώτα SSH/Telnet.',
-  config_requires_ssh: 'Η ανάκτηση configuration γίνεται μόνο μέσω SSH. Το Telnet/COM μένουν στο terminal.',
-  vendor_not_supported: 'Δεν υπάρχει adapter για αυτόν τον vendor. Χρησιμοποίησε το terminal για raw config.',
-  stale_config: 'Η διαμόρφωση άλλαξε από τότε που τη φόρτωσες — φέρε ξανά την τρέχουσα έκδοση.',
-  confirmation_required: 'Χρειάζεται ρητή επιβεβαίωση.',
-  no_observation: 'Δεν υπάρχει παρατηρημένη κατάσταση — πρώτα «Ανάκτηση configuration».',
+  device_without_profile: 'This device has no access profile — add SSH/Telnet first.',
+  config_requires_ssh: 'Configuration retrieval runs over SSH only. Telnet/COM stay in the terminal.',
+  vendor_not_supported: 'No adapter for this vendor. Use the terminal for raw config.',
+  stale_config: 'The configuration changed since you loaded it — fetch the current version again.',
+  confirmation_required: 'Explicit confirmation is required.',
+  no_observation: 'No observed state yet — run "Fetch configuration" first.',
 };
 
 function cfgErrorText(error) {
   const code = error && error.detail;
   if (code && CFG_ERRORS[code]) return CFG_ERRORS[code];
-  return (error && error.message) || 'Άγνωστο σφάλμα';
+  return (error && error.message) || 'Unknown error';
 }
 
 function cfgSize(bytes) {
@@ -92,10 +92,10 @@ function cfgTime(seconds) {
 }
 
 const CFG_ACTION_LABEL = {
-  port_missing: 'θύρα που υπάρχει στη συσκευή και λείπει από την τεκμηρίωση',
-  mgmt_ip: 'IP διαχείρισης',
+  port_missing: 'port present on the device but missing from documentation',
+  mgmt_ip: 'Management IP',
   vlan: 'VLAN',
-  port_not_observed: 'θύρα της τεκμηρίωσης δεν παρατηρήθηκε',
+  port_not_observed: 'documented port not observed on the device',
 };
 
 function cfgRender() {
@@ -104,21 +104,21 @@ function cfgRender() {
     ? CFG.versions.map((version) => {
       const checked = CFG.selected.indexOf(version.id) >= 0 ? ' checked' : '';
       return `<tr>
-          <td><input type="checkbox" data-cfg-version="${version.id}"${checked} aria-label="Επιλογή έκδοσης ${version.id}" /></td>
+          <td><input type="checkbox" data-cfg-version="${version.id}"${checked} aria-label="Select version ${version.id}" /></td>
           <td class="mono">#${version.id}</td>
           <td>${cfgEsc(cfgTime(version.created_at))}</td>
           <td>${cfgEsc(version.source)}</td>
           <td class="mono">${cfgEsc((version.sha256 || '').slice(0, 10))}</td>
           <td class="mono">${cfgSize(version.size)}</td>
-          <td><button class="btn ghost xs" data-cfg-open="${version.id}">Προβολή</button></td>
+          <td><button class="btn ghost xs" data-cfg-open="${version.id}">View</button></td>
         </tr>`;
     }).join('')
-    : '<tr><td colspan="7" class="cfg-empty">Καμία έκδοση ακόμη — κάνε «Ανάκτηση configuration» ή επικόλληση.</td></tr>';
+    : '<tr><td colspan="7" class="cfg-empty">No versions yet — run "Fetch configuration" or paste one.</td></tr>';
 
   const diff = CFG.diff
     ? `<div class="cfg-diff">
          <div class="cfg-diff-head"><b>+${CFG.diff.added}</b> / <b>−${CFG.diff.removed}</b>
-           <span>έκδοση ${CFG.diff.left} → ${CFG.diff.right}</span></div>
+           <span>version ${CFG.diff.left} → ${CFG.diff.right}</span></div>
          <pre class="mono">${CFG.diff.diff.split('\n').map((line) => {
     const cls = line.startsWith('+') && !line.startsWith('+++') ? 'add'
       : (line.startsWith('-') && !line.startsWith('---') ? 'del' : 'ctx');
@@ -129,30 +129,30 @@ function cfgRender() {
 
   const actions = CFG.actions
     ? `<div class="cfg-actions">
-         <h4>Διαφορές τεκμηρίωσης / συσκευής</h4>
+         <h4>Documentation vs device differences</h4>
          ${CFG.actions.length ? `<ul>${CFG.actions.map((action) => `<li>
              <b>${cfgEsc(CFG_ACTION_LABEL[action.kind] || action.kind)}</b>
              ${action.port ? `<span class="mono">${cfgEsc(action.port)}</span>` : ''}
              ${action.value ? `<span class="mono">${cfgEsc(action.value)}</span>` : ''}
              ${action.name ? `<span class="mono">${cfgEsc(action.name)}</span>` : ''}
-             ${action.safe === false ? '<em class="cfg-warn">απαιτεί έλεγχο</em>' : ''}
-           </li>`).join('')}</ul>` : '<p class="cfg-empty">Καμία διαφορά — η τεκμηρίωση συμφωνεί με την παρατηρημένη κατάσταση.</p>'}
+             ${action.safe === false ? '<em class="cfg-warn">needs review</em>' : ''}
+           </li>`).join('')}</ul>` : '<p class="cfg-empty">No differences — documentation matches the observed state.</p>'}
          <label class="cfg-check"><input type="checkbox" id="cfg-confirm"${CFG.confirmApply ? ' checked' : ''} />
-           <span>Επιβεβαιώνω ότι θέλω να ενημερωθεί η τεκμηρίωση (όχι η συσκευή)</span></label>
-         <button class="btn ghost xs" id="cfg-apply"${CFG.confirmApply ? '' : ' disabled'}>Εφαρμογή στην τεκμηρίωση</button>
+           <span>I confirm I want to update the documentation (not the device)</span></label>
+         <button class="btn ghost xs" id="cfg-apply"${CFG.confirmApply ? '' : ' disabled'}>Apply to documentation</button>
        </div>`
     : '';
 
   CFG.el.innerHTML = `<div class="cfg-panel">
     <header class="cfg-head">
       <div>
-        <h3>Configuration · ${cfgEsc(CFG.deviceName || 'συσκευή')}</h3>
-        <p class="cfg-sub">${CFG.vendor ? `vendor: ${cfgEsc(CFG.vendor)}` : 'χωρίς δηλωμένο vendor'}
-          ${CFG.observed ? ` · παρατηρήθηκε ${cfgEsc(cfgTime(CFG.observed.collected_at))}` : ''}</p>
+        <h3>Configuration · ${cfgEsc(CFG.deviceName || 'device')}</h3>
+        <p class="cfg-sub">${CFG.vendor ? `vendor: ${cfgEsc(CFG.vendor)}` : 'no vendor declared'}
+          ${CFG.observed ? ` · observed ${cfgEsc(cfgTime(CFG.observed.collected_at))}` : ''}</p>
       </div>
       <div class="cfg-head-actions">
-        <button class="btn primary xs" id="cfg-fetch"${CFG.busy ? ' disabled' : ''}>Ανάκτηση configuration</button>
-        <button class="btn ghost xs" id="cfg-paste-toggle">Επικόλληση</button>
+        <button class="btn primary xs" id="cfg-fetch"${CFG.busy ? ' disabled' : ''}>Fetch configuration</button>
+        <button class="btn ghost xs" id="cfg-paste-toggle">Paste</button>
       </div>
     </header>
 
@@ -160,26 +160,26 @@ function cfgRender() {
     <p class="cfg-notice${CFG.notice ? '' : ' hidden'}">${cfgEsc(CFG.notice)}</p>
 
     <div class="cfg-paste hidden" id="cfg-paste">
-      <label class="cfg-field"><span>Επικόλλησε configuration (αποθηκεύεται κρυπτογραφημένο)</span>
+      <label class="cfg-field"><span>Paste configuration (stored encrypted)</span>
         <textarea id="cfg-paste-text" rows="6" spellcheck="false" placeholder="/interface print&#10;/ip address print"></textarea></label>
       <div class="cfg-row">
         <label class="cfg-field"><span>Vendor</span>
           <select id="cfg-paste-vendor">
             <option value="mikrotik">MikroTik</option>
             <option value="cisco">Cisco</option>
-            <option value="">Γενικό</option>
+            <option value="">General</option>
           </select></label>
-        <button class="btn primary xs" id="cfg-paste-save">Αποθήκευση έκδοσης</button>
+        <button class="btn primary xs" id="cfg-paste-save">Save version</button>
       </div>
     </div>
 
     <section class="cfg-block">
       <div class="cfg-block-head">
-        <h4>Εκδόσεις</h4>
-        <button class="btn ghost xs" id="cfg-diff-btn"${CFG.selected.length === 2 ? '' : ' disabled'}>Σύγκριση επιλεγμένων</button>
+        <h4>Versions</h4>
+        <button class="btn ghost xs" id="cfg-diff-btn"${CFG.selected.length === 2 ? '' : ' disabled'}>Compare selected</button>
       </div>
       <table class="cfg-table">
-        <thead><tr><th></th><th>#</th><th>Πότε</th><th>Πηγή</th><th>SHA-256</th><th>Μέγεθος</th><th></th></tr></thead>
+        <thead><tr><th></th><th>#</th><th>When</th><th>Source</th><th>SHA-256</th><th>Size</th><th></th></tr></thead>
         <tbody>${versions}</tbody>
       </table>
     </section>
@@ -189,11 +189,11 @@ function cfgRender() {
 
     <section class="cfg-block">
       <div class="cfg-block-head">
-        <h4>Συγχρονισμός</h4>
-        <button class="btn ghost xs" id="cfg-reconcile">Προβολή διαφορών</button>
+        <h4>Sync</h4>
+        <button class="btn ghost xs" id="cfg-reconcile">Show differences</button>
       </div>
-      <p class="cfg-hint">Συγχρονίζονται μόνο υποστηριζόμενα λογικά στοιχεία (interfaces → θύρες, IP διαχείρισης, VLAN).
-        Δεν δημιουργούνται καλώδια από configuration. Καμία εντολή δεν στέλνεται στη συσκευή από αυτό το panel.</p>
+      <p class="cfg-hint">Only supported logical items are synced (interfaces → ports, management IP, VLAN).
+        No cables are created from configuration. This panel never sends commands to the device.</p>
     </section>
   </div>`;
   cfgBind();
@@ -243,7 +243,7 @@ function cfgBind() {
     button.onclick = async () => {
       try {
         const payload = await cfgApi(`/netdoc/config/versions/${button.dataset.cfgOpen}`);
-        CFG.notice = `Έκδοση #${payload.id} · sha256 ${payload.sha256.slice(0, 12)}…`;
+        CFG.notice = `Version #${payload.id} · sha256 ${payload.sha256.slice(0, 12)}…`;
         CFG.error = '';
         cfgRender();
         const pre = document.createElement('pre');
@@ -280,10 +280,10 @@ async function cfgFetch() {
   cfgRender();
   try {
     const result = await cfgApi(`/netdoc/devices/${CFG.deviceId}/config/fetch`, {
-      method: 'POST', json: { vendor: CFG.vendor, label: 'ανάκτηση' },
+      method: 'POST', json: { vendor: CFG.vendor, label: 'fetch' },
     });
     CFG.busy = false;
-    CFG.notice = `Ανακτήθηκε έκδοση #${result.id} (${cfgSize(result.size)}) — διαβάστηκε ξανά από τη συσκευή.`;
+    CFG.notice = `Fetched version #${result.id} (${cfgSize(result.size)}) — read back from the device.`;
     await cfgLoad();
   } catch (error) {
     CFG.busy = false;
@@ -295,13 +295,13 @@ async function cfgFetch() {
 async function cfgPaste() {
   const text = CFG.el.querySelector('#cfg-paste-text').value;
   const vendor = CFG.el.querySelector('#cfg-paste-vendor').value;
-  if (!text.trim()) { CFG.error = 'Το πεδίο είναι κενό.'; cfgRender(); return; }
+  if (!text.trim()) { CFG.error = 'The field is empty.'; cfgRender(); return; }
   try {
     const result = await cfgApi(`/netdoc/devices/${CFG.deviceId}/config/paste`, {
       method: 'POST', json: { text, vendor },
     });
     CFG.error = '';
-    CFG.notice = `Αποθηκεύτηκε έκδοση #${result.id} (${cfgSize(result.size)}).`;
+    CFG.notice = `Saved version #${result.id} (${cfgSize(result.size)}).`;
     await cfgLoad();
   } catch (error) {
     CFG.error = cfgErrorText(error);
@@ -329,7 +329,7 @@ async function cfgReconcile(apply) {
     CFG.actions = result.actions || [];
     CFG.error = '';
     CFG.notice = apply
-      ? `Ενημερώθηκε η τεκμηρίωση: ${CFG.actions.length} στοιχεία. Καμία εντολή δεν στάλθηκε στη συσκευή.`
+      ? `Documentation updated: ${CFG.actions.length} items. No commands were sent to the device.`
       : '';
     if (apply && typeof loadNetdoc === 'function') {
       try { await loadNetdoc(); } catch (_) { /* το panel δείχνει ό,τι διαβάστηκε */ }
@@ -356,7 +356,7 @@ async function cfgMount(container, context) {
   CFG.error = '';
   CFG.notice = '';
   if (!CFG.deviceId) {
-    el.innerHTML = '<p class="cfg-empty">Διάλεξε συσκευή για να δεις το configuration της.</p>';
+    el.innerHTML = '<p class="cfg-empty">Select a device to see its configuration.</p>';
     return CFG;
   }
   el.classList.remove('hidden');

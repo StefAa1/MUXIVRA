@@ -91,9 +91,9 @@ def test_legacy_data_lands_in_unclassified_customer(auth_client):
     auth_client.headers.update({"x-requested-with": "sshdeck"})
     auth_client.post("/api/hosts", json={"label": "legacy", "hostname": "10.0.0.1", "protocol": "ssh"})
     names = [c["name"] for c in auth_client.get("/api/customers").json()]
-    assert "Μη ταξινομημένος πελάτης" in names
+    assert "Unclassified customer" in names
     unclassified = next(c for c in auth_client.get("/api/customers").json()
-                        if c["name"] == "Μη ταξινομημένος πελάτης")
+                        if c["name"] == "Unclassified customer")
     assert len(auth_client.get("/api/hosts", headers=h(unclassified)).json()) == 1
 
 
@@ -164,3 +164,21 @@ def test_import_never_binds_foreign_profile_uuid(two):
         assert conn.status_code == 200, conn.text
         assert hb["uuid"] not in {p["host_uuid"] for p in conn.json().get("profiles", [])}
     assert client.get("/api/netdoc/tree", headers=h(b)).json()["sites"][0]["id"] == sb["site"]["id"]
+
+
+def test_default_bucket_is_found_by_code_not_name(auth_client):
+    """Ένα μόνο bucket, ακόμη κι αν η βάση κρατούσε το παλιό ελληνικό όνομα."""
+    from sshdeck import customers, db
+
+    auth_client.headers.update({"x-requested-with": "sshdeck"})
+    with db.db() as conn:
+        first = customers.ensure_unclassified(conn)
+        conn.execute("UPDATE customers SET name = 'Μη ταξινομημένος πελάτης' WHERE id = ?", (first,))
+        conn.commit()
+        again = customers.ensure_unclassified(conn)
+        assert again == first
+        assert customers.rename_unclassified(conn) is True
+        row = conn.execute("SELECT name FROM customers WHERE id = ?", (first,)).fetchone()
+        assert row["name"] == "Unclassified customer"
+    assert sum(1 for c in auth_client.get("/api/customers").json()
+               if c["code"] == "default") == 1

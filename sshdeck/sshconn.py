@@ -64,7 +64,7 @@ class HostKeyUnknown(SshError):
     def __init__(self, hostname: str, fingerprint: str, key_type: str, host_id: int | None = None):
         super().__init__(
             "host_key_unknown",
-            f"Άγνωστο host key για {hostname} ({key_type}, {fingerprint}) — χρειάζεται επιβεβαίωση.",
+            f"Unknown host key for {hostname} ({key_type}, {fingerprint}) — confirmation required.",
         )
         self.hostname = hostname
         self.fingerprint = fingerprint
@@ -133,11 +133,11 @@ def trust_pending_key(host_id: int | None, fingerprint: str,
     """Approve a key the user just saw, matching the exact fingerprint."""
     entry = _PENDING_KEYS.get((host_id, fingerprint))
     if not entry:
-        raise SshError("no_pending_key", "Το fingerprint δεν εκκρεμεί — ξαναπροσπάθησε τη σύνδεση.")
+        raise SshError("no_pending_key", "That fingerprint is not pending — retry the connection.")
     expiry, hostname, key = entry
     if expiry < time.time():
         _PENDING_KEYS.pop((host_id, fingerprint), None)
-        raise SshError("pending_key_expired", "Έληξε η επιβεβαίωση — ξαναπροσπάθησε.")
+        raise SshError("pending_key_expired", "The confirmation expired — try again.")
     stored = store_host_key(hostname, key, host_id, customer_id)
     _PENDING_KEYS.pop((host_id, fingerprint), None)
     return stored
@@ -211,7 +211,7 @@ def _pkey(target: Target) -> paramiko.PKey:
         return paramiko.RSAKey.from_private_key(io.StringIO(secret), password=passphrase)
     except Exception as exc:
         errors.append(str(exc))
-    raise SshError("bad_private_key", "Το private key δεν διαβάζεται: " + "; ".join(errors[:2]))
+    raise SshError("bad_private_key", "The private key cannot be read: " + "; ".join(errors[:2]))
 
 
 def connect(target: Target, timeout: int | None = None, trust_unknown: bool = False) -> paramiko.SSHClient:
@@ -244,15 +244,15 @@ def connect(target: Target, timeout: int | None = None, trust_unknown: bool = Fa
     except paramiko.BadHostKeyException as exc:
         client.close()
         raise HostKeyChanged(
-            "Το host key άλλαξε από την πρώτη σύνδεση. Απόρριψη σύνδεσης "
-            f"(πιθανό MITM). Νέα αποτύπωση: {security.fingerprint_of(exc.key.asbytes())}"
+            "The host key changed since the first connection. Connection refused "
+            f"(possible MITM). New fingerprint: {security.fingerprint_of(exc.key.asbytes())}"
         ) from exc
     except paramiko.AuthenticationException as exc:
         client.close()
-        raise SshError("auth_failed", "Αποτυχία authentication — έλεγξε user/κλειδί.") from exc
+        raise SshError("auth_failed", "Authentication failed — check the username/key.") from exc
     except (socket.timeout, TimeoutError) as exc:
         client.close()
-        raise SshError("timeout", f"Timeout στη σύνδεση με {target.hostname}:{target.port}") from exc
+        raise SshError("timeout", f"Timeout connecting to {target.hostname}:{target.port}") from exc
     except HostKeyUnknown as exc:
         client.close()
         remember_pending_key(target.host_id, exc.hostname, policy.key)
@@ -262,7 +262,7 @@ def connect(target: Target, timeout: int | None = None, trust_unknown: bool = Fa
         raise SshError("ssh_error", str(exc)) from exc
     except OSError as exc:
         client.close()
-        raise SshError("network", f"Δεν έγινε σύνδεση: {exc}") from exc
+        raise SshError("network", f"Connection failed: {exc}") from exc
     transport = client.get_transport()
     if transport:
         transport.set_keepalive(config.KEEPALIVE_SECONDS)
@@ -353,7 +353,7 @@ def sftp(target: Target):
         raise
     except Exception as exc:
         client.close()
-        raise SshError("sftp_unavailable", f"SFTP δεν είναι διαθέσιμο: {exc}") from exc
+        raise SshError("sftp_unavailable", f"SFTP is not available: {exc}") from exc
 
 
 def listdir(sftp_client, path: str) -> list[dict]:

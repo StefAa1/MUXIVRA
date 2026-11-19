@@ -50,6 +50,7 @@ class DeviceIn(BaseModel):
     model: str = Field(default="", max_length=60)
     mgmt_ip: str = Field(default="", max_length=64)
     origin: Literal["documented", "planned"] = "documented"
+    model_key: str = Field(default="", max_length=60)
 
 
 class DevicePatch(BaseModel):
@@ -239,8 +240,21 @@ def create_device(payload: DeviceIn, request: Request):
                 payload.mgmt_ip.strip(), payload.origin,
             ),
         )
-        conn.commit()
-        return dict(conn.execute("SELECT * FROM devices WHERE id = ?", (cur.lastrowid,)).fetchone())
+        device_id = cur.lastrowid
+        if payload.model_key:
+            from . import catalog as _catalog
+
+            try:
+                model = _catalog.get(payload.model_key)
+            except _catalog.CatalogError as exc:
+                raise HTTPException(status_code=422, detail=exc.code) from exc
+            conn.execute(
+                "UPDATE devices SET vendor = ?, model = ?, origin = ? WHERE id = ?",
+                (model.vendor, model.name, payload.origin, device_id),
+            )
+            conn.commit()
+            _catalog.create_ports(conn, device_id, payload.model_key)
+        return dict(conn.execute("SELECT * FROM devices WHERE id = ?", (device_id,)).fetchone())
 
 
 @router.delete("/devices/{device_id}")
@@ -575,7 +589,7 @@ def audit(request: Request):
                     for owner_unit, owner in occupied:
                         if owner_unit == unit:
                             issues.append({"kind": "overlap", "rack": rack["name"], "device": device["name"],
-                                           "detail": f"U{unit} μοιράζεται με {owner}"})
+                                           "detail": f"U{unit} shared with {owner}"})
                     occupied.append((unit, device["name"]))
         orphans = conn.execute(
             """SELECT d.name AS device, r.name AS rack, COUNT(p.id) AS ports
@@ -589,7 +603,7 @@ def audit(request: Request):
         ).fetchall()
         for row in orphans:
             issues.append({"kind": "unlinked_ports", "rack": row["rack"], "device": row["device"],
-                           "detail": f"{row['ports']} ports χωρίς σύνδεση"})
+                           "detail": f"{row['ports']} ports with no link"})
         total_ports = conn.execute(
             """SELECT COUNT(*) AS n FROM ports p JOIN devices d ON d.id = p.device_id
                  JOIN racks r ON r.id = d.rack_id JOIN sites s ON s.id = r.site_id
@@ -732,6 +746,22 @@ def update_link(link_id: int, payload: dict, request: Request):
             raise HTTPException(status_code=409, detail=f"port_already_linked:{port_b}") from exc
         conn.commit()
         return dict(conn.execute("SELECT * FROM links WHERE id = ?", (link_id,)).fetchone())
+
+# ------------------------------------------------------------------- catalog
+@router.get("/catalog")
+def catalog_index():
+    """Vendors and models with their real port layouts (local data, no device contact)."""
+    from . import catalog
+
+    return {"vendors": catalog.vendors()}
+
+
+@router.get("/catalog/{vendor}")
+def catalog_vendor(vendor: str):
+    from . import catalog
+
+    return {"vendor": vendor, "models": catalog.models_for(vendor)}
+
 
 # ---------------------------------------------------------- configuration workspace
 class ConfigFetchIn(BaseModel):

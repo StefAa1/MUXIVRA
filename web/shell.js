@@ -13,16 +13,16 @@ const SH = {
   splitWidth: 0,
   splitDragging: false,
   sections: [
-    ['hosts', 'Συσκευές', 'Λίστα συσκευών και συνδέσεις'],
-    ['racks', 'Καλωδίωση', 'Χώροι, racks, θύρες και καλώδια'],
-    ['diagram', 'Διάγραμμα', 'Σχεδιασμός και προβολή δικτύου'],
-    ['terminals', 'Τερματικά', 'Ανοιχτές συνεδρίες SSH / Telnet / COM'],
+    ['hosts', 'Devices', 'Device list and connections'],
+    ['racks', 'Cabling', 'Sites, racks, ports and cables'],
+    ['diagram', 'Diagram', 'Network design and view'],
+    ['terminals', 'Terminals', 'Open SSH / Telnet / COM sessions'],
   ],
   helpers: [
-    ['keys', 'Vault', 'Credentials και κλειδιά'],
-    ['snippets', 'Snippets', 'Έτοιμες εντολές'],
-    ['activity', 'Ιστορικό', 'Καταγραφή ενεργειών'],
-    ['settings', 'Ρυθμίσεις', 'Ενημερώσεις, backup, αυτόματο κλείδωμα'],
+    ['keys', 'Vault', 'Credentials and keys'],
+    ['snippets', 'Snippets', 'Ready-made commands'],
+    ['activity', 'History', 'Activity log'],
+    ['settings', 'Settings', 'Updates, backup, auto-lock'],
   ],
 };
 
@@ -64,9 +64,9 @@ function shBuildNav() {
     const button = document.createElement('button');
     button.className = 'rail-btn';
     button.dataset.view = 'terminals';
-    button.title = 'Ανοιχτές συνεδρίες SSH / Telnet / COM';
+    button.title = 'Open SSH / Telnet / COM sessions';
     button.innerHTML = '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="14" rx="2"/>'
-      + '<path d="M7 9l3 3-3 3M13 15h4"/></svg><em>Τερματικά</em>';
+      + '<path d="M7 9l3 3-3 3M13 15h4"/></svg><em>Terminals</em>';
     button.onclick = () => {
       if (typeof S !== 'undefined' && S) S.view = 'hosts';
       if (typeof showPage === 'function') showPage('hosts');
@@ -82,7 +82,7 @@ function shBuildNav() {
   if (!rail.querySelector('.rail-sep')) {
     const sep = document.createElement('div');
     sep.className = 'rail-sep';
-    sep.title = 'Βοηθητικά';
+    sep.title = 'Utilities';
     const first = rail.querySelector('.rail-btn[data-view="keys"]');
     if (first && first.parentNode) first.parentNode.insertBefore(sep, first);
   }
@@ -92,7 +92,7 @@ function shBuildNav() {
 function shFocusTerminals() {
   const tabs = document.querySelectorAll('#tabs-list [data-tab], #tabs-list .tab');
   if (!tabs.length) {
-    shToast('Κανένα ανοιχτό τερματικό — άνοιξε σύνδεση από τη λίστα συσκευών.');
+    shToast('No open terminal — start a session from the device list.');
     return;
   }
   const last = tabs[tabs.length - 1];
@@ -111,7 +111,7 @@ async function shFillSites() {
     try { sites = ((await api('/netdoc/tree')) || {}).sites || []; } catch (_) { sites = []; }
   }
   const current = select.value;
-  select.innerHTML = '<option value="all">Όλες οι εγκαταστάσεις</option>'
+  select.innerHTML = '<option value="all">All sites</option>'
     + sites.map((site) => `<option value="${site.id}">${shEsc(site.name)}</option>`).join('');
   if (current && Array.from(select.options).some((option) => option.value === current)) {
     select.value = current;
@@ -129,7 +129,7 @@ function shFilterHosts(query) {
     if (visible) shown += 1;
   });
   const counter = document.querySelector('#device-count');
-  if (counter) counter.textContent = `${shown} συσκευές`;
+  if (counter) counter.textContent = `${shown} devices`;
   if (typeof S !== 'undefined' && S) S.hostFilter = term;
 }
 
@@ -144,7 +144,7 @@ function shApplySplit() {
   if (button) {
     button.classList.toggle('on', SH.split);
     button.setAttribute('aria-pressed', SH.split ? 'true' : 'false');
-    button.textContent = SH.split ? 'Κλείσιμο διάγραμμα' : 'Διάγραμμα δίπλα';
+    button.textContent = SH.split ? 'Close diagram' : 'Diagram side-by-side';
   }
   if (SH.split) {
     pane.appendChild(page);
@@ -227,15 +227,15 @@ async function shOpenDeviceWeb(deviceId, deviceName) {
   try {
     const result = await shApi(`/netdoc/devices/${deviceId}/web`, { method: 'POST', json: {} });
     if (result.mode === 'window') {
-      shToast(`Web management: ${result.url} — ξεχωριστό παράθυρο, χωρίς πρόσβαση στην εφαρμογή.`);
+      shToast(`Web management: ${result.url} — separate window, no access to the app.`);
     } else {
       shToast(`${result.warning} (${result.url})`);
       if (result.url && typeof window !== 'undefined') window.open(result.url, '_blank', 'noopener');
     }
   } catch (error) {
     const text = error.detail === 'no_address'
-      ? 'Η συσκευή δεν έχει management IP — συμπλήρωσέ την στα στοιχεία της.'
-      : `Το web management δεν άνοιξε: ${error.message}`;
+      ? 'This device has no management IP — add it in the device details.'
+      : `Web management did not open: ${error.message}`;
     shToast(text);
   }
 }
@@ -257,7 +257,7 @@ function shDecorateDeviceModal(deviceId, deviceName) {
   bar.className = 'device-actions';
   bar.innerHTML = `<button type="button" class="btn ghost xs" data-dev-act="web">Web management</button>
     <button type="button" class="btn ghost xs" data-dev-act="config">Configuration</button>
-    <span class="device-actions-hint">Και τα δύο αφορούν μόνο αυτή τη συσκευή.</span>`;
+    <span class="device-actions-hint">Both apply to this device only.</span>`;
   bar.addEventListener('click', (event) => {
     const button = event.target.closest('[data-dev-act]');
     if (!button) return;
@@ -324,7 +324,7 @@ function shBoot() {
             if (typeof loadNetdoc === 'function') { try { await loadNetdoc(); } catch (_) { /* ignored */ } }
             if (typeof showPage === 'function') showPage('hosts');
             shFillSites();
-            if (info && info.name) shToast(`Η «${info.name}» προστέθηκε`);
+            if (info && info.name) shToast(`${info.name} was added`);
           },
           onCancel: () => { if (typeof showPage === 'function') showPage('hosts'); },
         });

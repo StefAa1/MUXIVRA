@@ -193,9 +193,9 @@ class TelnetSession(SessionBase):
         try:
             self.sock = socket.create_connection((host, port), timeout=config.CONNECT_TIMEOUT)
         except (socket.timeout, TimeoutError) as exc:
-            raise TransportError("timeout", f"Timeout στη σύνδεση με {host}:{port}") from exc
+            raise TransportError("timeout", f"Timeout connecting to {host}:{port}") from exc
         except OSError as exc:
-            raise TransportError("network", f"Δεν έγινε σύνδεση με {host}:{port}: {exc}") from exc
+            raise TransportError("network", f"Could not connect to {host}:{port}: {exc}") from exc
         self.sock.settimeout(0.3)
         try:
             self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -261,13 +261,13 @@ class SerialSession(SessionBase):
         try:
             import serial  # pyserial
         except ImportError as exc:  # pragma: no cover - packaging guard
-            raise TransportError("pyserial_missing", "Το pyserial δεν είναι εγκατεστημένο.") from exc
+            raise TransportError("pyserial_missing", "pyserial is not installed.") from exc
         port = (target.serial_port or "").strip()
         flow = str(getattr(target, "flow", "none") or "none").lower()
         if flow not in {"none", "rtscts", "xonxoff", "dsrdtr"}:
             flow = "none"
         if not port:
-            raise TransportError("serial_port_missing", "Δεν έχει οριστεί σειριακή θύρα.")
+            raise TransportError("serial_port_missing", "No serial port is configured.")
         kwargs = dict(
             port=port,
             baudrate=int(target.baud or 115200),
@@ -283,7 +283,7 @@ class SerialSession(SessionBase):
         try:
             self.ser = serial.Serial(**kwargs)
         except Exception as exc:
-            raise TransportError("serial_open_failed", f"Άνοιγμα {port} απέτυχε: {exc}") from exc
+            raise TransportError("serial_open_failed", f"Opening {port} failed: {exc}") from exc
 
     def _read_chunk(self) -> bytes | None:
         try:

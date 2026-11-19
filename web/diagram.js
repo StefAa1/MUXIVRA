@@ -72,10 +72,12 @@ const DG = {
   rackCache: null,
 };
 
-const DG_KINDS = ['switch', 'router', 'patch-panel', 'server', 'pdu', 'other'];
+const DG_KINDS = ['switch', 'router', 'firewall', 'ap', 'patch-panel', 'server', 'pdu', 'other'];
 const DG_KIND_LABEL = {
   switch: 'switch',
   router: 'router',
+  firewall: 'firewall',
+  ap: 'access point',
   'patch-panel': 'patch-panel',
   server: 'server',
   pdu: 'pdu',
@@ -145,7 +147,7 @@ function dgDevices() {
           origin: (dev.origin === 'planned') ? 'planned' : 'documented',
           observed: !!dev.observed_at,
           siteId: site.id,
-          siteName: site.name || 'Χωρίς χώρο',
+          siteName: site.name || 'No site',
           rackId: rack.id,
           rackName: rack.name || 'Rack',
         });
@@ -164,7 +166,7 @@ function dgRacks() {
         name: rack.name || 'Rack',
         units: Number(rack.units) || 0,
         siteId: site.id,
-        siteName: site.name || 'Χωρίς χώρο',
+        siteName: site.name || 'No site',
         devices: (rack.devices || []).length,
       });
     });
@@ -388,8 +390,8 @@ function dgBuild() {
       device_b_id: Number(link.to_device),
       port_a_name: link.from_port || '',
       port_b_name: link.to_port || '',
-      cable: link.label || 'σχεδιασμός',
-      label: link.label || 'σχεδιασμός',
+      cable: link.label || 'planned',
+      label: link.label || 'planned',
       length_m: '',
     }));
   DG.edgeList = links.filter((link) => DG.nodeById.has(Number(link.device_a_id))
@@ -472,51 +474,51 @@ function dgShell(el) {
   el.innerHTML = `<div class="dg-shell">
       <div class="dg-head">
         <div>
-          <h2>Διάγραμμα δικτύου</h2>
-          <p>Κόμβος = συσκευή από τις Ράφτες · ακμή = καταγεγραμμένη σύνδεση port↔port. Καμία εικασία από IP.</p>
+          <h2>Network diagram</h2>
+          <p>Node = device from Racks · edge = recorded port↔port link. Nothing is inferred from IP.</p>
         </div>
         <div class="dg-head-actions">
           <span class="dg-stats" id="dg-stats">—</span>
-          <button class="btn ghost xs" data-dg-act="reload" title="Επαναφόρτωση από το API">⟳ Ανανέωση</button>
-          <button class="btn ghost xs" data-dg-act="export-svg" title="Εξαγωγή σε αρχείο SVG">SVG</button>
-          <button class="btn ghost xs" data-dg-act="export-png" title="Εξαγωγή σε PNG">PNG</button>
+          <button class="btn ghost xs" data-dg-act="reload" title="Reload from the API">⟳ Refresh</button>
+          <button class="btn ghost xs" data-dg-act="export-svg" title="Export to an SVG file">SVG</button>
+          <button class="btn ghost xs" data-dg-act="export-png" title="Export to PNG">PNG</button>
         </div>
       </div>
 
       <div class="dg-bar">
-        <label class="dg-field"><span>Σύνολο</span>
-          <select id="dg-dataset" aria-label="Σύνολο δεδομένων">
-            <option value="documented">Τεκμηριωμένο δίκτυο</option>
-            <option value="planned">Σχεδιασμός</option>
+        <label class="dg-field"><span>Dataset</span>
+          <select id="dg-dataset" aria-label="Dataset">
+            <option value="documented">Documented network</option>
+            <option value="planned">Planned</option>
           </select>
         </label>
-        <label class="dg-field"><span>Χώρος</span><select id="dg-site" aria-label="Φίλτρο χώρου"></select></label>
-        <label class="dg-field"><span>Rack</span><select id="dg-rack" aria-label="Φίλτρο rack"></select></label>
-        <label class="dg-field grow"><span>Αναζήτηση</span>
-          <input id="dg-search" placeholder="συσκευή, mgmt IP, μοντέλο…" autocomplete="off" spellcheck="false" />
+        <label class="dg-field"><span>Site</span><select id="dg-site" aria-label="Site filter"></select></label>
+        <label class="dg-field"><span>Rack</span><select id="dg-rack" aria-label="Rack filter"></select></label>
+        <label class="dg-field grow"><span>Search</span>
+          <input id="dg-search" placeholder="device, mgmt IP, model…" autocomplete="off" spellcheck="false" />
         </label>
-        <label class="dg-check"><input type="checkbox" id="dg-linked" /><span>Μόνο συνδεδεμένες</span></label>
-        <label class="dg-check"><input type="checkbox" id="dg-labels" checked /><span>Ετικέτες</span></label>
+        <label class="dg-check"><input type="checkbox" id="dg-linked" /><span>Linked only</span></label>
+        <label class="dg-check"><input type="checkbox" id="dg-labels" checked /><span>Labels</span></label>
         <div class="dg-zoom">
-          <button class="icon-btn" data-dg-act="zoom-out" title="Σμίκρυνση">−</button>
-          <button class="dg-zoom-val mono" data-dg-act="fit" title="Προσαρμογή στο παράθυρο" id="dg-zoom">100%</button>
-          <button class="icon-btn" data-dg-act="zoom-in" title="Μεγέθυνση">+</button>
+          <button class="icon-btn" data-dg-act="zoom-out" title="Zoom out">−</button>
+          <button class="dg-zoom-val mono" data-dg-act="fit" title="Fit to window" id="dg-zoom">100%</button>
+          <button class="icon-btn" data-dg-act="zoom-in" title="Zoom in">+</button>
         </div>
-        <button class="btn ghost xs" data-dg-act="reset-pos" title="Επαναφορά αυτόματης διάταξης">↺ Θέσεις</button>
+        <button class="btn ghost xs" data-dg-act="reset-pos" title="Reset auto layout">↺ Layout</button>
       </div>
 
       <div class="dg-readkey">
-        <span><b class="dg-solid"></b> τεκμηριωμένο καλώδιο</span>
-        <span><b class="dg-dash"></b> σχεδιασμός</span>
-        <span><b class="dg-planned-box"></b> σχεδιαζόμενη συσκευή</span>
-        <span><b class="dg-obs-chip">παρατηρήθηκε</b> πραγματική κατάσταση</span>
-        <span class="dg-readkey-warn">Το διάγραμμα δεν γράφει configuration σε εξοπλισμό.</span>
+        <span><b class="dg-solid"></b> documented cable</span>
+        <span><b class="dg-dash"></b> planned</span>
+        <span><b class="dg-planned-box"></b> planned device</span>
+        <span><b class="dg-obs-chip">observed</b> actual state</span>
+        <span class="dg-readkey-warn">The diagram never writes configuration to equipment.</span>
       </div>
 
       <div class="dg-note hidden" id="dg-note"></div>
 
       <div class="dg-canvas" id="dg-canvas">
-        <svg class="dg-svg" id="dg-svg" role="img" aria-label="Διάγραμμα δικτύου">
+        <svg class="dg-svg" id="dg-svg" role="img" aria-label="Network diagram">
           <defs>
             <pattern id="dg-grid" width="26" height="26" patternUnits="userSpaceOnUse">
               <path d="M26 0H0V26" fill="none" stroke="rgba(255,255,255,0.045)" stroke-width="1" />
@@ -554,7 +556,7 @@ function dgSyncFilters() {
   if (!siteSel || !rackSel) return;
 
   const sites = dgSites();
-  siteSel.innerHTML = '<option value="all">Όλοι οι χώροι</option>'
+  siteSel.innerHTML = '<option value="all">All sites</option>'
     + sites.map((site) => `<option value="${site.id}">${dgEsc(site.name)}</option>`).join('');
   if (DG.filters.site !== 'all' && !sites.some((site) => String(site.id) === String(DG.filters.site))) {
     DG.filters.site = 'all';
@@ -563,7 +565,7 @@ function dgSyncFilters() {
 
   const racks = dgRacks().filter((rack) => DG.filters.site === 'all'
     || String(rack.siteId) === String(DG.filters.site));
-  rackSel.innerHTML = '<option value="all">Όλα τα racks</option>'
+  rackSel.innerHTML = '<option value="all">All racks</option>'
     + racks.map((rack) => `<option value="${rack.id}">${dgEsc(rack.name)}`
       + `${DG.filters.site === 'all' ? ` · ${dgEsc(rack.siteName)}` : ''}</option>`).join('');
   if (DG.filters.rack !== 'all' && !racks.some((rack) => String(rack.id) === String(DG.filters.rack))) {
@@ -600,6 +602,13 @@ function dgShapeDef(kind) {
       decor: [],
     };
   }
+  if (kind === 'firewall') {
+    return { d: dgRoundRect(w, h, 3), decor: [[w - 34, 12, w - 10, 12], [w - 34, 26, w - 10, 26],
+      [w - 34, 40, w - 10, 40]] };
+  }
+  if (kind === 'ap') {
+    return { d: dgRoundRect(w, h, 18), decor: [] };
+  }
   if (kind === 'patch-panel') {
     return {
       d: dgRoundRect(w, h, 3),
@@ -627,12 +636,15 @@ function dgShapeDef(kind) {
 }
 
 function dgIconDef(kind) {
-  if (kind === 'router') return 'M2 8h9M8 5l3 3-3 3M14 8h-2';
-  if (kind === 'patch-panel') return 'M4 2v12M8 2v12M12 2v12';
+  // όλα τα glyphs ζουν στο 0..16 πλαίσιο: τίποτα δεν βγαίνει έξω από το σχήμα
+  if (kind === 'router') return 'M3 8h10M10 5l3 3-3 3M3 11h4';
+  if (kind === 'firewall') return 'M2 5h12M2 8h12M2 11h12M6 5v3M10 8v3M6 11v0';
+  if (kind === 'ap') return 'M5 12a4 4 0 0 1 6 0M3 9a7 7 0 0 1 10 0M8 13h.01';
+  if (kind === 'patch-panel') return 'M4 3v10M8 3v10M12 3v10';
   if (kind === 'server') return 'M2 4h12v3H2zM2 9h12v3H2z';
-  if (kind === 'pdu') return 'M9 1L4 9h4l-1 6 5-8H8z';
+  if (kind === 'pdu') return 'M9 2L5 9h3l-1 5 4-7H8z';
   if (kind === 'other') return 'M8 3v10M3 8h10';
-  return 'M1 5h9M7 2l3 3-3 3M15 11H6M10 8l-3 3 3 3';
+  return 'M3 6h8M8 3l3 3-3 3M13 10H5M8 13l-3-3 3-3';
 }
 
 function dgNodeEl(node) {
@@ -655,10 +667,13 @@ function dgNodeEl(node) {
     });
     group.appendChild(decor);
   }
-  group.appendChild(dgSvg('path', { class: 'dg-icon', d: dgIconDef(node.kind) }));
+  const badge = dgSvg('g', { class: 'dg-badge', transform: 'translate(12,15)' });
+  badge.appendChild(dgSvg('rect', { class: 'dg-badge-bg', x: 0, y: 0, width: 16, height: 16, rx: 4 }));
+  badge.appendChild(dgSvg('path', { class: 'dg-icon', d: dgIconDef(node.kind) }));
+  group.appendChild(badge);
   group.appendChild(dgSvg('text', { class: 'dg-name', x: 36, y: DG.H / 2 - 2 }, dgClipText(node.name, 24)));
   group.appendChild(dgSvg('text', { class: 'dg-sub mono', x: 36, y: DG.H / 2 + 15 },
-    dgClipText(node.mgmt_ip || 'χωρίς mgmt IP', 27)));
+    dgClipText(node.mgmt_ip || 'no mgmt IP', 27)));
   group.appendChild(dgSvg('rect', {
     class: 'dg-hit', x: -6, y: -6, width: DG.W + 12, height: DG.H + 12,
   }));
@@ -693,7 +708,7 @@ function dgEdgeGeometry(a, b, edge) {
         + ` ${dgRound(x - spread)},${dgRound(y1 + 10)} ${dgRound(x)},${dgRound(y1)}`,
       lx: a.gx - 34,
       ly: a.gy + DG.H / 2,
-      rot: -90,
+      rot: 0,
       a: null,
       b: null,
     };
@@ -712,9 +727,10 @@ function dgEdgeGeometry(a, b, edge) {
         + ` C${dgRound(rightX + bulge)},${dgRound(startY + (endY - startY) * 0.3)}`
         + ` ${dgRound(rightX + bulge)},${dgRound(startY + (endY - startY) * 0.7)}`
         + ` ${dgRound(rightX)},${dgRound(endY)}`,
-      lx: rightX + 12 + lane * 12,
-      ly: (startY + endY) / 2,
-      rot: -90,
+      lx: rightX + bulge + 10,
+      ly: (startY + endY) / 2 + (lane - 1.5) * 16,   // σκάλες: καμία επικάλυψη
+      rot: 0,
+      vertical: true,
       a: { x: rightX, y: startY },
       b: { x: rightX, y: endY },
     };
@@ -843,7 +859,7 @@ function dgEdgeEl(edge) {
   }));
   const label = dgSvg('text', {
     class: 'dg-edge-label', x: dgRound(geo.lx), y: dgRound(geo.ly - 4), 'text-anchor': 'middle',
-  }, dgEdgeLabel(edge, geo.rot ? 30 : 44));
+  }, dgEdgeLabel(edge, geo.vertical ? 16 : (geo.rot ? 30 : 44)));
   if (geo.rot) {
     label.setAttribute('x', dgRound(geo.lx));
     label.setAttribute('y', dgRound(geo.ly));
@@ -950,8 +966,8 @@ function dgUpdateStats() {
   const totalDevices = dgDevices().length;
   const totalLinks = DG.links.length;
   const filtered = DG.nodes.length !== totalDevices || DG.edgeList.length !== totalLinks;
-  stats.innerHTML = `<b>${DG.nodes.length}</b> κόμβοι · <b>${DG.edgeList.length}</b> συνδέσεις`
-    + (filtered ? ` <span class="muted">(από ${totalDevices} / ${totalLinks})</span>` : '');
+  stats.innerHTML = `<b>${DG.nodes.length}</b> nodes · <b>${DG.edgeList.length}</b> links`
+    + (filtered ? ` <span class="muted">(of ${totalDevices} / ${totalLinks})</span>` : '');
 }
 
 function dgUpdateOverlays() {
@@ -964,22 +980,22 @@ function dgUpdateOverlays() {
 
   if (!sites.length || !anyDevice) {
     empty.innerHTML = `<div class="dg-empty-card">
-        <b>Κανένα διάγραμμα ακόμα</b>
-        <p>Το διάγραμμα χτίζεται αποκλειστικά από τις συσκευές και τις συνδέσεις
-           port↔port που καταγράφεις στις Ράφτες.</p>
+        <b>No diagram yet</b>
+        <p>The diagram is built only from the devices and the port↔port
+           links you record in Racks.</p>
         <ol>
-          <li>Άνοιξε <b>Racks</b> και πρόσθεσε χώρο και rack.</li>
-          <li>Πρόσθεσε συσκευή με όνομα, τύπο και mgmt IP.</li>
-          <li>Σύνδεσε δύο ports — η ακμή «portA ↔ portB · cable» θα εμφανιστεί εδώ.</li>
+          <li>Open <b>Racks</b> and add a site and a rack.</li>
+          <li>Add a device with a name, type and mgmt IP.</li>
+          <li>Link two ports — the "portA ↔ portB · cable" edge will appear here.</li>
         </ol>
-        <button class="btn primary sm" data-dg-act="goto-racks">Άνοιγμα Racks</button>
+        <button class="btn primary sm" data-dg-act="goto-racks">Open Racks</button>
       </div>`;
     empty.classList.remove('hidden');
   } else if (!DG.nodes.length) {
     empty.innerHTML = `<div class="dg-empty-card">
-        <b>Κανένας κόμβος με αυτά τα φίλτρα</b>
-        <p>Οι συσκευές υπάρχουν, αλλά καμία δεν περνά το φίλτρο χώρου/rack/αναζήτησης.</p>
-        <button class="btn ghost sm" data-dg-act="clear-filters">Καθαρισμός φίλτρων</button>
+        <b>No nodes match these filters</b>
+        <p>Devices exist, but none match the site/rack/search filter.</p>
+        <button class="btn ghost sm" data-dg-act="clear-filters">Clear filters</button>
       </div>`;
     empty.classList.remove('hidden');
   } else {
@@ -987,11 +1003,11 @@ function dgUpdateOverlays() {
   }
 
   if (DG.nodes.length && !DG.links.length) {
-    note.innerHTML = `<span>Καμία καταγεγραμμένη σύνδεση ακόμη — οι κόμβοι φαίνονται χωρίς ακμές.</span>
-      <button class="btn ghost xs" data-dg-act="goto-racks">Σύνδεση ports στις Ράφτες</button>`;
+    note.innerHTML = `<span>No recorded links yet — nodes are shown without edges.</span>
+      <button class="btn ghost xs" data-dg-act="goto-racks">Link ports in Racks</button>`;
     note.classList.remove('hidden');
   } else if (DG.nodes.length && !DG.edgeList.length) {
-    note.innerHTML = `<span>Οι κόμβοι εμφανίζονται, αλλά καμία σύνδεση δεν ενώνει δύο ορατούς κόμβους.</span>`;
+    note.innerHTML = `<span>Nodes are shown, but no link connects two visible nodes.</span>`;
     note.classList.remove('hidden');
   } else {
     note.classList.add('hidden');
@@ -1005,7 +1021,11 @@ function dgApplyView() {
     `translate(${dgRound(DG.view.x)},${dgRound(DG.view.y)}) scale(${dgRound(DG.view.k)})`);
   const zoom = DG.el && DG.el.querySelector('#dg-zoom');
   if (zoom) zoom.textContent = `${Math.round(DG.view.k * 100)}%`;
-  if (DG.svg) DG.svg.classList.toggle('dg-far', DG.view.k < 0.45);
+  if (DG.svg) {
+    DG.svg.classList.toggle('dg-far', DG.view.k < 0.45);
+    // σε μικρό zoom οι ετικέτες καλωδίων γίνονται θόρυβος — τις κρύβουμε
+    DG.svg.classList.toggle('dg-tiny', DG.view.k < 0.72 && !DG.hideLabels);
+  }
 }
 
 function dgZoomAt(px, py, factor) {
@@ -1044,7 +1064,15 @@ function dgBounds() {
     add(band.x + band.w, band.y + band.h);
   });
   if (!Number.isFinite(minX)) return null;
-  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+  // χώρος για ετικέτες καλωδίων: δεξιά/αριστερά δεν πρέπει να κόβονται
+  const labelPadX = 150;
+  const labelPadY = 26;
+  return {
+    x: minX - 24,
+    y: minY - labelPadY,
+    w: maxX - minX + 24 + labelPadX,
+    h: maxY - minY + labelPadY * 2,
+  };
 }
 
 function dgFit() {
@@ -1056,10 +1084,11 @@ function dgFit() {
     return;
   }
   const pad = 56;
+  // μην ανοίγεις το διάγραμμα σε δυσανάγνωστο zoom: ποτέ κάτω από 55%
   const k = dgClamp(Math.min(
     (rect.width - pad * 2) / Math.max(bounds.w, 1),
     (rect.height - pad * 2) / Math.max(bounds.h, 1),
-  ), 0.08, 1.35);
+  ), 0.55, 1.2);
   DG.view.k = k;
   DG.view.x = (rect.width - bounds.w * k) / 2 - bounds.x * k;
   DG.view.y = (rect.height - bounds.h * k) / 2 - bounds.y * k;
@@ -1164,14 +1193,14 @@ function dgRenderPanel() {
   }
 
   const rows = [
-    ['Τύπος', DG_KIND_LABEL[node.kind] || node.kind],
-    ['Χώρος', node.siteName],
+    ['Type', DG_KIND_LABEL[node.kind] || node.kind],
+    ['Site', node.siteName],
     ['Rack', node.rackName],
-    ['Θέση', `U${node.position}${node.units > 1 ? `–U${node.position + node.units - 1}` : ''} · ${node.units}U`],
-    ['Κατασκευαστής', node.vendor || '—'],
-    ['Μοντέλο', node.model || '—'],
+    ['Position', `U${node.position}${node.units > 1 ? `–U${node.position + node.units - 1}` : ''} · ${node.units}U`],
+    ['Vendor', node.vendor || '—'],
+    ['Model', node.model || '—'],
     ['Mgmt IP', node.mgmt_ip || '—'],
-    ['Συνδέσεις', String(node.deg || 0)],
+    ['Links', String(node.deg || 0)],
   ];
 
   panel.innerHTML = `<header class="dg-panel-head">
@@ -1179,7 +1208,7 @@ function dgRenderPanel() {
         <h3>${dgEsc(node.name)}</h3>
         <p>${dgEsc(node.siteName)} · ${dgEsc(node.rackName)}</p>
       </div>
-      <button class="icon-btn" data-dg-act="close-panel" title="Κλείσιμο">✕</button>
+      <button class="icon-btn" data-dg-act="close-panel" title="Close">✕</button>
     </header>
     <div class="dg-panel-body">
       <dl class="dg-kv">
@@ -1187,8 +1216,8 @@ function dgRenderPanel() {
         <dt>Host</dt><dd id="dg-host-label" class="mono muted">—</dd>
       </dl>
       <h4>Ports <span id="dg-port-summary" class="muted"></span></h4>
-      <div class="dg-ports" id="dg-port-list"><p class="hint">Φόρτωση ports…</p></div>
-      <button class="btn primary sm wide" data-dg-act="open-rack">Άνοιγμα rack</button>
+      <div class="dg-ports" id="dg-port-list"><p class="hint">Loading ports…</p></div>
+      <button class="btn primary sm wide" data-dg-act="open-rack">Open rack</button>
     </div>`;
   panel.classList.remove('hidden');
 
@@ -1207,7 +1236,7 @@ function dgFillPanel(rack, node) {
     ? rack.devices.find((item) => Number(item.id) === node.id)
     : null;
   if (!device) {
-    list.innerHTML = '<p class="hint">Δεν φορτώθηκαν ports για αυτή τη συσκευή.</p>';
+    list.innerHTML = '<p class="hint">No ports loaded for this device.</p>';
     return;
   }
   if (hostRow) {
@@ -1216,12 +1245,12 @@ function dgFillPanel(rack, node) {
   }
   const ports = Array.isArray(device.ports) ? device.ports : [];
   const linked = ports.filter((port) => port.link_id).length;
-  if (summary) summary.textContent = `${linked}/${ports.length} δεμένα`;
+  if (summary) summary.textContent = `${linked}/${ports.length} linked`;
   list.innerHTML = ports.length
     ? ports.map((port) => `<span class="dg-port${port.link_id ? ' linked' : ''}"
-        title="${dgEsc(port.peer || 'ελεύθερο')}"><b>${dgEsc(port.name)}</b>
-        <em>${dgEsc(port.peer || 'ελεύθερο')}</em></span>`).join('')
-    : '<p class="hint">Η συσκευή δεν έχει ports.</p>';
+        title="${dgEsc(port.peer || 'free')}"><b>${dgEsc(port.name)}</b>
+        <em>${dgEsc(port.peer || 'free')}</em></span>`).join('')
+    : '<p class="hint">This device has no ports.</p>';
 }
 
 function dgLoadRack(rackId) {
@@ -1253,7 +1282,7 @@ async function dgOpenRack(deviceId) {
     try {
       await ndSelectRack(node.rackId);
     } catch (err) {
-      if (typeof toast === 'function') toast(err && err.message ? err.message : 'Το rack δεν φορτώθηκε', 'err');
+      if (typeof toast === 'function') toast(err && err.message ? err.message : 'The rack failed to load', 'err');
     }
   } else if (typeof renderPage === 'function') {
     renderPage();
@@ -1341,17 +1370,17 @@ function dgDownload(blob, filename) {
 function dgExportSvg() {
   const out = dgExportSvgString();
   if (!out) {
-    if (typeof toast === 'function') toast('Δεν υπάρχει διάγραμμα για εξαγωγή', 'err');
+    if (typeof toast === 'function') toast('No diagram to export', 'err');
     return;
   }
   dgDownload(new Blob([out.svg], { type: 'image/svg+xml;charset=utf-8' }), 'muxivra-diagram.svg');
-  if (typeof toast === 'function') toast('Το SVG κατέβηκε');
+  if (typeof toast === 'function') toast('SVG downloaded');
 }
 
 function dgExportPng() {
   const out = dgExportSvgString();
   if (!out) {
-    if (typeof toast === 'function') toast('Δεν υπάρχει διάγραμμα για εξαγωγή', 'err');
+    if (typeof toast === 'function') toast('No diagram to export', 'err');
     return;
   }
   const scale = dgClamp(2, 1, 6000 / Math.max(out.width, out.height));
@@ -1367,18 +1396,18 @@ function dgExportPng() {
       ctx.drawImage(image, 0, 0);
       canvas.toBlob((blob) => {
         if (!blob) {
-          if (typeof toast === 'function') toast('Η εξαγωγή PNG απέτυχε', 'err');
+          if (typeof toast === 'function') toast('PNG export failed', 'err');
           return;
         }
         dgDownload(blob, 'muxivra-diagram.png');
-        if (typeof toast === 'function') toast('Το PNG κατέβηκε');
+        if (typeof toast === 'function') toast('PNG downloaded');
       }, 'image/png');
     } catch (err) {
-      if (typeof toast === 'function') toast('Η εξαγωγή PNG απέτυχε', 'err');
+      if (typeof toast === 'function') toast('PNG export failed', 'err');
     }
   };
   image.onerror = () => {
-    if (typeof toast === 'function') toast('Η εξαγωγή PNG απέτυχε', 'err');
+    if (typeof toast === 'function') toast('PNG export failed', 'err');
   };
   image.src = url;
 }
@@ -1395,7 +1424,7 @@ function dgResetPositions() {
   DG.fitted = false;
   dgRefresh();
   dgFit();
-  if (typeof toast === 'function') toast('Οι θέσεις επαναφέρθηκαν');
+  if (typeof toast === 'function') toast('Layout positions reset');
 }
 
 function dgAttach(el) {
@@ -1424,7 +1453,7 @@ function dgAttach(el) {
       DG.fitted = false;
       DG.built = true;
       renderDiagram('reload').then(() => {
-        if (typeof toast === 'function') toast('Το διάγραμμα ανανεώθηκε');
+        if (typeof toast === 'function') toast('Diagram refreshed');
       });
     }
   });
@@ -1512,15 +1541,15 @@ function dgSig() {
 
 function dgError(err) {
   const message = err && err.message === 'links_unavailable'
-    ? 'Οι συνδέσεις δεν φορτώθηκαν από το API'
-    : (err && err.message ? err.message : 'Σφάλμα φόρτωσης');
+    ? 'Links could not be loaded from the API'
+    : (err && err.message ? err.message : 'Load error');
   if (typeof toast === 'function') toast(message, 'err');
   const empty = DG.el && DG.el.querySelector('#dg-empty');
   if (empty) {
     empty.innerHTML = `<div class="dg-empty-card">
-        <b>Το διάγραμμα δεν φορτώθηκε</b>
+        <b>The diagram failed to load</b>
         <p>${dgEsc(message)}</p>
-        <button class="btn ghost sm" data-dg-act="reload">Δοκίμασε ξανά</button>
+        <button class="btn ghost sm" data-dg-act="reload">Try again</button>
       </div>`;
     empty.classList.remove('hidden');
   }

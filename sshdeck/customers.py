@@ -10,7 +10,7 @@ import sqlite3
 import time
 import uuid
 
-UNCLASSIFIED_NAME = "Μη ταξινομημένος πελάτης"
+UNCLASSIFIED_NAME = "Unclassified customer"
 
 
 class CustomerError(RuntimeError):
@@ -21,9 +21,19 @@ class CustomerError(RuntimeError):
 
 
 def ensure_unclassified(conn: sqlite3.Connection) -> int:
-    """The customer that adopts all pre-0.5 data. Created once, never archived."""
+    """The customer that adopts all pre-0.5 data. Created once, never archived.
+
+    Identity is the stable ``code`` — not the display name — so an install that
+    stored the Greek name keeps one bucket after the UI was translated.
+    """
+    row = conn.execute(
+        "SELECT id FROM customers WHERE code = 'default' ORDER BY id LIMIT 1"
+    ).fetchone()
+    if row:
+        return row["id"]
     row = conn.execute("SELECT id FROM customers WHERE name = ?", (UNCLASSIFIED_NAME,)).fetchone()
     if row:
+        conn.execute("UPDATE customers SET code = 'default' WHERE id = ?", (row["id"],))
         return row["id"]
     cur = conn.execute(
         "INSERT INTO customers (uuid, name, code, color, notes, archived, created_at)"
@@ -31,6 +41,17 @@ def ensure_unclassified(conn: sqlite3.Connection) -> int:
         (uuid.uuid4().hex, UNCLASSIFIED_NAME, time.time()),
     )
     return cur.lastrowid
+
+
+def rename_unclassified(conn: sqlite3.Connection) -> bool:
+    """One-off: keep the default bucket's name in the current UI language."""
+    row = conn.execute(
+        "SELECT id, name FROM customers WHERE code = 'default' ORDER BY id LIMIT 1"
+    ).fetchone()
+    if not row or row["name"] == UNCLASSIFIED_NAME:
+        return False
+    conn.execute("UPDATE customers SET name = ? WHERE id = ?", (UNCLASSIFIED_NAME, row["id"]))
+    return True
 
 
 def backfill_ownership(conn: sqlite3.Connection) -> int:
@@ -57,9 +78,9 @@ def create_customer(conn: sqlite3.Connection, name: str, code: str = "", color: 
                     notes: str = "") -> dict:
     name = (name or "").strip()
     if not name:
-        raise CustomerError("name_required", "Ο πελάτης χρειάζεται όνομα.")
+        raise CustomerError("name_required", "Customer name is required.")
     if conn.execute("SELECT id FROM customers WHERE name = ? COLLATE NOCASE", (name,)).fetchone():
-        raise CustomerError("duplicate_name", "Υπάρχει ήδη πελάτης με αυτό το όνομα.")
+        raise CustomerError("duplicate_name", "A customer with this name already exists.")
     cur = conn.execute(
         "INSERT INTO customers (uuid, name, code, color, notes, archived, created_at)"
         " VALUES (?, ?, ?, ?, ?, 0, ?)",
@@ -81,12 +102,12 @@ def resolve(conn: sqlite3.Connection, customer_id: int | None = None,
     if customer_uuid:
         row = conn.execute("SELECT id FROM customers WHERE uuid = ?", (customer_uuid,)).fetchone()
         if not row:
-            raise CustomerError("unknown_customer", "Άγνωστος πελάτης.")
+            raise CustomerError("unknown_customer", "Unknown customer.")
         return row["id"]
     if customer_id:
         row = conn.execute("SELECT id FROM customers WHERE id = ?", (customer_id,)).fetchone()
         if not row:
-            raise CustomerError("unknown_customer", "Άγνωστος πελάτης.")
+            raise CustomerError("unknown_customer", "Unknown customer.")
         return row["id"]
     return ensure_unclassified(conn)
 
@@ -152,10 +173,10 @@ def assert_same_customer(conn: sqlite3.Connection, customer_id: int, *pairs) -> 
     for kind, object_id in pairs:
         owner = lookups[kind](conn, object_id)
         if owner is None:
-            raise CustomerError("not_found", f"Άγνωστο {kind} #{object_id}.")
+            raise CustomerError("not_found", f"Unknown {kind} #{object_id}.")
         if owner != customer_id:
             raise CustomerError(
-                "cross_customer", f"Το {kind} #{object_id} ανήκει σε άλλον πελάτη."
+                "cross_customer", f"{kind} #{object_id} belongs to another customer."
             )
 
 

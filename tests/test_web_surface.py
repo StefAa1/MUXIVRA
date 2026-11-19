@@ -47,7 +47,7 @@ def test_fallback_is_declared_when_qt_is_missing(monkeypatch):
     monkeypatch.setattr(ws, "qt_available", lambda: False)
     result = ws.launch("https://10.0.0.5/", 1, "Router")
     assert result["mode"] == "external"
-    assert "warning" in result and "απομόνωση" in result["warning"]
+    assert "warning" in result and "isolation" in result["warning"]
 
 
 def test_default_url_comes_from_documented_management_ip(tmp_path, monkeypatch):

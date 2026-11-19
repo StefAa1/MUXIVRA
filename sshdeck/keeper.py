@@ -129,14 +129,14 @@ def normalise_record(raw) -> KeeperRecord:
 def fetch_records(token: str, config_path: str) -> list[dict]:
     """Bind the one-time token and return raw records. Requires the KSM SDK."""
     if not token.strip():
-        raise KeeperError("token_missing", "Δεν δόθηκε One-Time Access Token.")
+        raise KeeperError("token_missing", "No One-Time Access Token was given.")
     try:
         from keeper_secrets_manager_core import SecretsManager
         from keeper_secrets_manager_core.storage import FileKeyValueStorage
     except ImportError as exc:  # pragma: no cover - optional dependency
         raise KeeperError(
             "sdk_missing",
-            "Λείπει το Keeper SDK: pip install keeper-secrets-manager-core",
+            "The Keeper SDK is missing: pip install keeper-secrets-manager-core",
         ) from exc
 
     config_path = os.path.expanduser(config_path)
@@ -145,7 +145,7 @@ def fetch_records(token: str, config_path: str) -> list[dict]:
     try:
         records = manager.get_secrets()
     except Exception as exc:  # SDK raises its own hierarchy
-        raise KeeperError("bind_failed", f"Keeper bind απέτυχε: {exc}") from exc
+        raise KeeperError("bind_failed", f"Keeper bind failed: {exc}") from exc
     finally:
         try:
             os.chmod(config_path, 0o600)

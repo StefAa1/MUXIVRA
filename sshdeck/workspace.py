@@ -81,7 +81,7 @@ ADAPTERS: dict[str, Adapter] = {
         apply_prefix=["configure terminal"],
         supported=("interfaces", "addresses", "vlans"),
     ),
-    "generic": Adapter(name="generic", label="Γενικό (μόνο raw)", read_commands=[], supported=()),
+    "generic": Adapter(name="generic", label="Generic (raw only)", read_commands=[], supported=()),
 }
 
 
@@ -173,7 +173,7 @@ def read_commands(vendor: str) -> list[str]:
     if not adapter.read_commands:
         raise ConfigError(
             "vendor_not_supported",
-            "Δεν υπάρχει adapter για αυτόν τον vendor — χρησιμοποίησε το terminal.",
+            "No adapter for this vendor — use the terminal.",
         )
     return list(adapter.read_commands)
 
@@ -232,7 +232,7 @@ def list_versions(conn, device_id: int, limit: int = 50) -> list[dict]:
 def version_text(conn, version_id: int) -> str:
     row = conn.execute("SELECT raw_enc FROM config_versions WHERE id = ?", (version_id,)).fetchone()
     if not row:
-        raise ConfigError("not_found", "Άγνωστη έκδοση configuration.")
+        raise ConfigError("not_found", "Unknown configuration version.")
     return security.open_sealed(row["raw_enc"]) or ""
 
 
@@ -258,18 +258,18 @@ def apply(conn, device_id: int, text: str, expected_sha256: str, runner=None,
     """Apply only when the operator confirms AND the device still matches what
     they were looking at. Never reports success without reading the result back."""
     if not confirm:
-        raise ConfigError("confirmation_required", "Χρειάζεται ρητή επιβεβαίωση εφαρμογής.")
+        raise ConfigError("confirmation_required", "Applying requires explicit confirmation.")
     latest = conn.execute(
         "SELECT sha256 FROM config_versions WHERE device_id = ? ORDER BY id DESC LIMIT 1",
         (device_id,),
     ).fetchone()
     if not latest or latest["sha256"] != expected_sha256:
-        raise ConfigError("stale_config", "Η διαμόρφωση άλλαξε από τότε που τη φόρτωσες.")
+        raise ConfigError("stale_config", "The configuration changed since you loaded it.")
     commands = [line for line in text.splitlines() if line.strip()]
     if not commands:
-        raise ConfigError("empty_apply", "Καμία εντολή προς εφαρμογή.")
+        raise ConfigError("empty_apply", "No commands to apply.")
     if runner is None:
-        raise ConfigError("no_session", "Δεν υπάρχει ενεργή συνεδρία για εφαρμογή.")
+        raise ConfigError("no_session", "No active session to apply to.")
     results = []
     failed = None
     for command in commands:
@@ -320,7 +320,7 @@ def reconcile(conn, device_id: int, apply_changes: bool = False) -> dict:
         return {"device_id": device_id, "changed": False, "reason": "no_observation", "actions": []}
     device = conn.execute("SELECT * FROM devices WHERE id = ?", (device_id,)).fetchone()
     if not device:
-        raise ConfigError("not_found", "Άγνωστη συσκευή.")
+        raise ConfigError("not_found", "Unknown device.")
     data = current["data"]
     documented_ports = {
         r["name"] for r in conn.execute("SELECT name FROM ports WHERE device_id = ?", (device_id,))

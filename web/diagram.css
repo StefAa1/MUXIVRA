@@ -561,3 +561,10 @@
 .dg-readkey .dg-planned-box { width: 16px; height: 10px; border: 1px dashed #7fb2ff; border-radius: 3px; }
 .dg-readkey .dg-obs-chip { font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid rgba(61,220,151,.4); color: #3ddc97; }
 .dg-readkey-warn { margin-left: auto; color: #ffcf7a; }
+
+/* εικονίδιο τύπου μέσα σε badge: καθαρό, χωρίς βέλη πάνω στο περίγραμμα */
+.dg-badge-bg { fill: rgba(255,255,255,.05); stroke: rgba(255,255,255,.12); stroke-width: 1; }
+.dg-badge .dg-icon { fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; opacity: .85; }
+.dg-kind-firewall .dg-shape { stroke: #e0a15c; }
+.dg-kind-ap .dg-shape { stroke: #8f7bff; }
+.dg-svg.dg-tiny .dg-edge-label, .dg-svg.dg-tiny text.dg-elabel { display: none; }
