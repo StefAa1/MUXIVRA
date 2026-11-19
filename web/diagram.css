@@ -568,3 +568,5 @@
 .dg-kind-firewall .dg-shape { stroke: #e0a15c; }
 .dg-kind-ap .dg-shape { stroke: #8f7bff; }
 .dg-svg.dg-tiny .dg-edge-label, .dg-svg.dg-tiny text.dg-elabel { display: none; }
+.dg-col-hit { fill: transparent; cursor: grab; }
+.dg-col-hit:hover { fill: rgba(127,178,255,.05); }

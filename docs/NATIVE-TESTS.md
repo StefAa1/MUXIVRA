@@ -27,10 +27,10 @@
 3. Άλλαξε το host key στον server (ή δοκίμασε διπλό NAT) → η σύνδεση **απορρίπτεται** με `host_key_changed`.
 4. Λάθος password → καθαρό μήνυμα `auth_failed`.
 
-## 4. Telnet / COM / WinBox
+## 4. Telnet / COM / RouterOS client
 1. Telnet σε συσκευή: banner + prompt, η ένδειξη «μη κρυπτογραφημένο» ορατή.
 2. COM: Devices → refresh λίστας, σύνδεση με 115200 8N1· βγάλε το USB → σφάλμα αποσύνδεσης, όχι πάγωμα. Σύνδεση σε απασχολημένη θύρα → `busy`.
-3. WinBox: σε συσκευή με `mgmt_ip` πάτησε «WinBox» → ανοίγει το επίσημο παράθυρο WinBox στη διεύθυνση. Χωρίς εγκατεστημένο WinBox → μήνυμα `winbox_not_found`. Το password **δεν** περνά ποτέ σε argv (έλεγχος στο docs/winbox.md).
+3. RouterOS client: σε συσκευή με `mgmt_ip` πάτησε «RouterOS client» → ανοίγει το επίσημο παράθυρο RouterOS client στη διεύθυνση. Χωρίς εγκατεστημένο RouterOS client → μήνυμα `client_not_found`. Το password **δεν** περνά ποτέ σε argv (έλεγχος στο docs/routeros-client.md).
 
 ## 5. Racks / καλώδια
 1. Νέος χώρος → rack 42U → συσκευή σε U20 → ports (template π.χ. `eth` × 24) → σύνδεση με δεύτερη συσκευή **σε άλλο rack**.
@@ -38,7 +38,7 @@
 3. Πίνακας συνδέσεων: >40 εγγραφές, αναζήτηση, pagination (σύνολο ορατό), επεξεργασία καλωδίου, αποσύνδεση.
 4. Εκτύπωση → print preview με rack + πίνακα, χωρίς rail.
 5. Διαγραφή συσκευής → εμφανίζει πόσα ports/links θα χαθούν πριν επιβεβαιώσεις.
-6. Κουμπί σύνδεσης συσκευής (SSH/Telnet/COM/WinBox) από το rack → ανοίγει το σωστό profile.
+6. Κουμπί σύνδεσης συσκευής (SSH/Telnet/COM/RouterOS client) από το rack → ανοίγει το σωστό profile.
 
 ## 6. Διάγραμμα
 1. Κόμβοι = συσκευές, γραμμές = συνδέσεις θυρών· labels θυρών/καλωδίου ορατά.

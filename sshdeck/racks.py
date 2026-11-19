@@ -512,18 +512,18 @@ def page_links(request: Request, q: str = "", limit: int = 100, offset: int = 0)
 
 
 # ------------------------------------------------------- device → connection
-def _winbox_module():
+def _routeros_client_module():
     try:
-        from . import winbox
+        from . import routeros_client
 
-        return winbox
+        return routeros_client
     except Exception:  # module not installed yet / unsupported platform
         return None
 
 
 @router.get("/devices/{device_id}/connections")
 def device_connections(device_id: int, request: Request):
-    """The device's registered SSH/Telnet/COM profiles plus WinBox availability."""
+    """The device's registered SSH/Telnet/COM profiles plus RouterOS client availability."""
     with _conn() as conn:
         device = _one(conn, "SELECT * FROM devices WHERE id = ?", (device_id,))
         _ensure_same(conn, _cid(conn, request), ("device", device_id))
@@ -535,34 +535,34 @@ def device_connections(device_id: int, request: Request):
                 ORDER BY (h.id = ?) DESC, h.label""",
             (device["host_id"] or -1, device_id, device["host_id"] or -1),
         ).fetchall()
-    module = _winbox_module()
+    module = _routeros_client_module()
     return {
         "device": dict(device),
         "hosts": [dict(r) for r in rows],
-        "winbox": module.describe() if module else {"available": False, "reason": "module_missing"},
+        "routeros_client": module.describe() if module else {"available": False, "reason": "module_missing"},
     }
 
 
-@router.post("/devices/{device_id}/winbox")
-def launch_winbox(device_id: int, request: Request, payload: dict | None = None):
-    """Open the official WinBox client in its own window for this device."""
+@router.post("/devices/{device_id}/routeros-client")
+def launch_routeros_client(device_id: int, request: Request, payload: dict | None = None):
+    """Open the official RouterOS client client in its own window for this device."""
     payload = payload or {}
     with _conn() as conn:
         device = _one(conn, "SELECT * FROM devices WHERE id = ?", (device_id,))
         _ensure_same(conn, _cid(conn, request), ("device", device_id))
-    module = _winbox_module()
+    module = _routeros_client_module()
     if module is None:
-        raise HTTPException(status_code=409, detail="winbox:module_missing")
+        raise HTTPException(status_code=409, detail="routeros_client:module_missing")
     address = str(payload.get("address") or device["mgmt_ip"] or "").strip()
     if not address:
-        raise HTTPException(status_code=422, detail="winbox:address_required")
+        raise HTTPException(status_code=422, detail="routeros_client:address_required")
     try:
         result = module.launch(address, username=payload.get("username"))
-    except Exception as exc:  # WinBoxUnavailable and friends
-        code = getattr(exc, "code", "winbox_unavailable")
+    except Exception as exc:  # RouterOS clientUnavailable and friends
+        code = getattr(exc, "code", "routeros_client_unavailable")
         message = getattr(exc, "message", str(exc))
         raise HTTPException(status_code=409, detail=f"{code}: {message}")
-    db.log_event(None, "winbox_launched", f"{device['name']} {address}")
+    db.log_event(None, "routeros_client_launched", f"{device['name']} {address}")
     return {"ok": True, **result}
 
 

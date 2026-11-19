@@ -913,7 +913,13 @@ function dgPaint() {
       class: 'dg-band-label', x: dgRound(band.x + 16), y: dgRound(band.y + 22),
     }, band.siteName));
   });
-  DG.columns.forEach((column) => {
+  DG.columns.forEach((column, index) => {
+    bandFragment.appendChild(dgSvg('rect', {
+      class: 'dg-col-hit', 'data-dg-col': String(index),
+      x: dgRound(column.x - 10), y: DG.TOP - 78,
+      width: DG.W + 20, height: dgRound((column.bottom || DG.TOP) - (DG.TOP - 78) + 12),
+      rx: 10,
+    }));
     bandFragment.appendChild(dgSvg('text', {
       class: 'dg-col-label', x: dgRound(column.x), y: DG.TOP - 62,
     }, column.parts > 1 ? `${column.rackName} ·${column.part}/${column.parts}` : column.rackName));
@@ -1099,6 +1105,23 @@ function dgFit() {
 /* ----------------------------------------------------------- drag / zoom in */
 function dgPointerDown(event) {
   if (event.button !== 0) return;
+  const colEl = event.target.closest ? event.target.closest('.dg-col-hit') : null;
+  if (colEl) {
+    const index = Number(colEl.dataset.dgCol);
+    const column = DG.columns[index];
+    if (column) {
+      DG.groupDrag = {
+        index,
+        sx: event.clientX,
+        sy: event.clientY,
+        moved: false,
+        nodes: column.nodes.map((node) => ({ node, ox: node.gx, oy: node.gy })),
+      };
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+  }
   const nodeEl = event.target.closest ? event.target.closest('.dg-node') : null;
   if (nodeEl) {
     const id = Number(nodeEl.dataset.dgNode);
@@ -1133,6 +1156,24 @@ function dgPointerDown(event) {
 }
 
 function dgPointerMove(event) {
+  if (DG.groupDrag) {
+    const group = DG.groupDrag;
+    const k = DG.view.k || 1;
+    const dx = (event.clientX - group.sx) / k;
+    const dy = (event.clientY - group.sy) / k;
+    if (Math.abs(dx) + Math.abs(dy) > 2) group.moved = true;
+    group.nodes.forEach((entry) => {
+      entry.node.gx = Math.round(entry.ox + dx);
+      entry.node.gy = Math.round(entry.oy + dy);
+      const el = DG.nodeEls.get(entry.node.id);
+      if (el) {
+        el.setAttribute('transform',
+          `translate(${dgRound(entry.node.gx)},${dgRound(entry.node.gy)})`);
+      }
+      (DG.inc.get(entry.node.id) || []).forEach((edge) => dgUpdateEdge(edge));
+    });
+    return;
+  }
   if (DG.drag) {
     const drag = DG.drag;
     const k = DG.view.k || 1;
@@ -1157,6 +1198,19 @@ function dgPointerMove(event) {
 }
 
 function dgPointerUp(event) {
+  if (DG.groupDrag) {
+    const group = DG.groupDrag;
+    if (group.moved) {
+      const positions = dgPositions();
+      group.nodes.forEach((entry) => {
+        positions[entry.node.id] = { x: entry.node.gx, y: entry.node.gy };
+      });
+      dgWritePositions();
+      DG.fitted = true;
+    }
+    DG.groupDrag = null;
+    return;
+  }
   if (DG.drag) {
     const drag = DG.drag;
     drag.el.classList.remove('drag');

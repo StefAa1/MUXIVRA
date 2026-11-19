@@ -1096,6 +1096,7 @@ function renderRacks() {
         <div class="nd-form">
           <select id="nd-rack-site" aria-label="Site">${sites.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select>
           <input id="nd-rack-name" placeholder="Rack" autocomplete="off" />
+          <select id="nd-rack-units" aria-label="Rack height"><option value="4">4U</option><option value="6">6U</option><option value="9">9U</option><option value="12">12U</option><option value="15">15U</option><option value="18">18U</option><option value="21">21U</option><option value="24">24U</option><option value="27">27U</option><option value="30">30U</option><option value="36">36U</option><option value="42">42U</option><option value="45">45U</option><option value="48">48U</option></select>
           <button class="btn ghost xs" id="nd-add-rack" aria-label="Add rack">+</button>
         </div>
       </aside>

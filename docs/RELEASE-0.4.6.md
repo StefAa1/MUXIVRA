@@ -21,7 +21,7 @@ Build: `0.4.6+2e8854f` · SHA-256 `7da5e2b98d3c87bf100078d625077afa1d1da7b95229c
 
 - Ανάκτηση configuration μέσω SSH σε MikroTik/Cisco (ο adapter διαβάζει πραγματικό CLI output).
 - Apply εντολών στη συσκευή: το backend το υποστηρίζει με stale guard, αλλά δεν εκτίθεται από το UI.
-- WinBox launch και το παράθυρο web management (Qt WebEngine) σε πραγματικά Windows.
+- RouterOS client launch και το παράθυρο web management (Qt WebEngine) σε πραγματικά Windows.
 - SSH host-key approval/forget σε πραγματικό sshd με per-customer keys.
 
 ## Ακόμη ανοιχτά

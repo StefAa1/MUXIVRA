@@ -202,7 +202,7 @@ def test_cross_rack_port_search_and_paged_links(rack):
     assert page["links"][0]["device_b"] == "sw-far"
 
 
-def test_device_connections_lists_profiles_and_winbox_state(rack):
+def test_device_connections_lists_profiles_and_routeros_client_state(rack):
     host = rack["client"].post(
         "/api/hosts", json={"label": "mk-core", "hostname": "10.0.0.20", "protocol": "ssh"}
     ).json()
@@ -215,12 +215,12 @@ def test_device_connections_lists_profiles_and_winbox_state(rack):
     payload = rack["client"].get(f"/api/inventory/devices/{device['id']}/connections").json()
     assert payload["device"]["name"] == "mk-core"
     assert any(h["id"] == host["id"] for h in payload["hosts"])
-    assert "available" in payload["winbox"]
+    assert "available" in payload["routeros_client"]
 
-    # WinBox launch without an executable must fail with a clear code, not a crash
-    res = rack["client"].post(f"/api/inventory/devices/{device['id']}/winbox", json={})
+    # RouterOS client launch without an executable must fail with a clear code, not a crash
+    res = rack["client"].post(f"/api/inventory/devices/{device['id']}/routeros-client", json={})
     if res.status_code == 409:
-        assert "winbox" in res.json()["detail"]
+        assert "routeros_client" in res.json()["detail"]
     else:
         assert res.status_code == 200
 

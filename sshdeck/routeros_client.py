@@ -1,23 +1,23 @@
-"""WinBox: hand a MikroTik device to MikroTik's own GUI.
+"""RouterOS client: hand a MikroTik device to MikroTik's own GUI.
 
-MUXIVRA does not speak the WinBox wire protocol and does not embed the WinBox
+MUXIVRA does not speak the RouterOS client wire protocol and does not embed the RouterOS client
 window.  It starts the official executable as a *separate* desktop window and
 passes only what MikroTik documents as positional command-line arguments:
 
-    winbox.exe [<connect-to> [<login> [<password>]] <session|workspace>]
+    routeros_client.exe [<connect-to> [<login> [<password>]] <session|workspace>]
 
 The password slot is never filled: credentials stay out of the process command
-line (readable by other local tooling) and out of any temporary file.  WinBox
+line (readable by other local tooling) and out of any temporary file.  RouterOS client
 asks for the password itself, in its own login dialog.
 
 Every behavioural claim below was read on 2026-11-18 from:
 
-* https://help.mikrotik.com/docs/spaces/ROS/pages/328129/WinBox  ("Command Line")
-* https://manual.mikrotik.com/docs/management-tools/winbox/
-* https://manual.mikrotik.com/docs/management-tools/winbox-legacy/
-* https://mikrotik.com/download/winbox
+* https://help.mikrotik.com/docs/spaces/ROS/pages/328129/RouterOS client  ("Command Line")
+* https://manual.mikrotik.com/docs/management-tools/routeros-client/
+* https://manual.mikrotik.com/docs/management-tools/routeros-client-legacy/
+* https://mikrotik.com/download/routeros-client
 
-See ``docs/winbox.md`` for the sourcing table and the known limits.
+See ``docs/routeros-client.md`` for the sourcing table and the known limits.
 """
 from __future__ import annotations
 
@@ -32,27 +32,27 @@ from typing import Iterable, Mapping
 __all__ = [
     "WINDOW_MODE",
     "ENV_VAR",
-    "WinBoxUnavailable",
+    "RouterOS clientUnavailable",
     "build_args",
     "describe",
-    "find_winbox",
+    "find_routeros_client",
     "launch",
 ]
 
-#: WinBox is a normal top-level application window; MUXIVRA cannot host it.
+#: RouterOS client is a normal top-level application window; MUXIVRA cannot host it.
 WINDOW_MODE = "external-window"
 
 #: Explicit override, highest discovery priority (the official build is portable
-#: and may live anywhere -- see docs/winbox.md).
-ENV_VAR = "MUXIVRA_WINBOX"
+#: and may live anywhere -- see docs/routeros-client.md).
+ENV_VAR = "MUXIVRA_ROUTEROS_CLIENT"
 
-#: Executable names MikroTik ships.  ``winbox64.exe`` is the 64-bit WinBox v3
-#: build, ``WinBox.exe`` the WinBox v4 archive payload; Windows matches names
+#: Executable names MikroTik ships.  ``routeros_client64.exe`` is the 64-bit RouterOS client v3
+#: build, ``RouterOS client.exe`` the RouterOS client v4 archive payload; Windows matches names
 #: case-insensitively, so comparisons use ``str.lower()``.
-EXE_NAMES = ("winbox64.exe", "winbox.exe")
+EXE_NAMES = ("routeros_client64.exe", "routeros_client.exe")
 
-HELP_URL = "https://help.mikrotik.com/docs/spaces/ROS/pages/328129/WinBox"
-DOWNLOAD_URL = "https://mikrotik.com/download/winbox"
+HELP_URL = "https://help.mikrotik.com/docs/spaces/ROS/pages/328129/RouterOS client"
+DOWNLOAD_URL = "https://mikrotik.com/download/routeros-client"
 
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 #: An address that already carries a port: ``host:8291`` or ``[v6]:8291``.
@@ -62,16 +62,16 @@ _HOST_WITH_PORT = re.compile(r"^[^:\[\]]+:\d{1,5}$")
 _VERSION_IN_NAME = re.compile(r"(\d+\.\d+(?:\.\d+)?)")
 
 _MESSAGES = {
-    "winbox_not_found": "WinBox executable not found.",
-    "winbox_launch_failed": "WinBox was found but could not be started.",
+    "client_not_found": "RouterOS client executable not found.",
+    "client_launch_failed": "RouterOS client was found but could not be started.",
 }
 
 
-class WinBoxUnavailable(RuntimeError):
-    """WinBox cannot be launched here.
+class RouterOS clientUnavailable(RuntimeError):
+    """RouterOS client cannot be launched here.
 
-    ``code`` is stable for callers (``winbox_not_found`` when no executable is
-    available, ``winbox_launch_failed`` when the executable exists but the OS
+    ``code`` is stable for callers (``client_not_found`` when no executable is
+    available, ``client_launch_failed`` when the executable exists but the OS
     refused to start it); ``message`` is meant for logs and the UI.
     """
 
@@ -100,7 +100,7 @@ def _target(address: str, port: int | None) -> str:
     if _CONTROL_CHARS.search(addr):
         raise ValueError("address must not contain control characters")
     if addr.startswith("-"):
-        # Would otherwise be read by WinBox as a switch such as --romon.
+        # Would otherwise be read by RouterOS client as a switch such as --romon.
         raise ValueError("address must not start with '-'")
     if port is None:
         return addr
@@ -143,7 +143,7 @@ def build_args(
     username: str | None = None,
     port: int | None = None,
 ) -> list[str]:
-    """Build the WinBox argv for ``address``/``username``/``port``.
+    """Build the RouterOS client argv for ``address``/``username``/``port``.
 
     Pure function: no filesystem access and no process start, so callers (and
     tests) can inspect exactly what would be executed.  The result never
@@ -172,14 +172,14 @@ def _exe_in(directory: Path) -> Path | None:
 def _candidate_paths(env: Mapping[str, str]) -> Iterable[Path]:
     """Yield discovery candidates in priority order, without touching the disk twice.
 
-    Split out from :func:`find_winbox` so the Windows layout can be exercised on
+    Split out from :func:`find_routeros_client` so the Windows layout can be exercised on
     a POSIX host with a synthetic ``env``.
     """
     local = env.get("LOCALAPPDATA")
     if local:
         base = Path(local, "MikroTik")
         try:
-            folders = sorted(base.glob("WinBox*"))
+            folders = sorted(base.glob("RouterOS client*"))
         except OSError:
             folders = []
         for folder in folders:
@@ -191,7 +191,7 @@ def _candidate_paths(env: Mapping[str, str]) -> Iterable[Path]:
     program_files = env.get("PROGRAMFILES")
     if program_files:
         for name in EXE_NAMES:
-            candidate = Path(program_files, "MikroTik", "WinBox", name)
+            candidate = Path(program_files, "MikroTik", "RouterOS client", name)
             if candidate.is_file():
                 yield candidate
 
@@ -203,13 +203,13 @@ def _candidate_paths(env: Mapping[str, str]) -> Iterable[Path]:
                 yield Path(hit)
 
 
-def find_winbox() -> Path | None:
-    """Locate a winbox executable, or ``None``.
+def find_routeros_client() -> Path | None:
+    """Locate a routeros_client executable, or ``None``.
 
-    Order: ``MUXIVRA_WINBOX``, ``%LOCALAPPDATA%\\MikroTik\\WinBox*``,
-    ``%PROGRAMFILES%\\MikroTik\\WinBox\\winbox64.exe``, ``...\\winbox.exe``, then
+    Order: ``MUXIVRA_ROUTEROS_CLIENT``, ``%LOCALAPPDATA%\\MikroTik\\RouterOS client*``,
+    ``%PROGRAMFILES%\\MikroTik\\RouterOS client\\routeros_client64.exe``, ``...\\routeros_client.exe``, then
     ``PATH``.  Windows only -- on Linux and macOS this always returns ``None``
-    (see the limits section of ``docs/winbox.md``).
+    (see the limits section of ``docs/routeros-client.md``).
     """
     if os.name != "nt":
         return None
@@ -229,18 +229,18 @@ def find_winbox() -> Path | None:
 def _not_found_message(executable: Path | None) -> str:
     if executable is not None:
         return (
-            f"WinBox executable {executable} does not exist. Set {ENV_VAR} to the "
-            f"full path of WinBox.exe ({DOWNLOAD_URL})."
+            f"RouterOS client executable {executable} does not exist. Set {ENV_VAR} to the "
+            f"full path of RouterOS client.exe ({DOWNLOAD_URL})."
         )
     if os.name != "nt":
         return (
-            "WinBox launching is implemented for Windows desktops only, so no "
+            "RouterOS client launching is implemented for Windows desktops only, so no "
             f"executable is searched on {platform.system() or os.name}. Install "
-            f"WinBox manually or point {ENV_VAR} at it ({DOWNLOAD_URL})."
+            f"RouterOS client manually or point {ENV_VAR} at it ({DOWNLOAD_URL})."
         )
     return (
-        "WinBox executable not found. Install WinBox from "
-        f"{DOWNLOAD_URL} or set {ENV_VAR} to the full path of WinBox.exe."
+        "RouterOS client executable not found. Install RouterOS client from "
+        f"{DOWNLOAD_URL} or set {ENV_VAR} to the full path of RouterOS client.exe."
     )
 
 
@@ -250,25 +250,25 @@ def launch(
     port: int | None = None,
     executable: str | os.PathLike[str] | None = None,
 ) -> dict:
-    """Start WinBox as a separate window on ``address``.
+    """Start RouterOS client as a separate window on ``address``.
 
     Returns ``{"pid", "executable", "command"}``; ``command`` is the exact argv
     handed to the OS and contains no secret.  ``executable`` skips discovery
     (used by the API when the user picked a path).
 
     Raises:
-        WinBoxUnavailable: nothing to launch (``winbox_not_found``) or the OS
-            refused to start it (``winbox_launch_failed``).
+        RouterOS clientUnavailable: nothing to launch (``client_not_found``) or the OS
+            refused to start it (``client_launch_failed``).
         ValueError: invalid address, username or port.
     """
     # Validate the request before touching the filesystem: a malformed address
-    # must fail the same way whether or not WinBox is installed.
+    # must fail the same way whether or not RouterOS client is installed.
     target = _target(address, port)
     user = _user(username)
 
-    exe = Path(os.fspath(executable)).expanduser() if executable is not None else find_winbox()
+    exe = Path(os.fspath(executable)).expanduser() if executable is not None else find_routeros_client()
     if exe is None or not exe.is_file():
-        raise WinBoxUnavailable("winbox_not_found", _not_found_message(exe))
+        raise RouterOS clientUnavailable("client_not_found", _not_found_message(exe))
 
     argv = _argv(str(exe), target, user)
     try:
@@ -281,8 +281,8 @@ def launch(
             stderr=subprocess.DEVNULL,
         )
     except OSError as exc:
-        raise WinBoxUnavailable(
-            "winbox_launch_failed", f"Could not start {exe}: {exc}"
+        raise RouterOS clientUnavailable(
+            "client_launch_failed", f"Could not start {exe}: {exc}"
         ) from exc
 
     return {"pid": process.pid, "executable": str(exe), "command": argv}
@@ -292,9 +292,9 @@ def launch(
 def _version_hint(executable: Path | None) -> str | None:
     """Best-effort version label taken from the install path, or ``None``.
 
-    WinBox documents no version switch on its command line and MUXIVRA does not
+    RouterOS client documents no version switch on its command line and MUXIVRA does not
     parse the Windows PE version resource, so this is a hint only:
-    a folder named e.g. ``WinBox 3.41`` yields ``"3.41"``.
+    a folder named e.g. ``RouterOS client 3.41`` yields ``"3.41"``.
     """
     if executable is None:
         return None
@@ -309,11 +309,11 @@ def describe() -> dict:
     """Report availability without raising; safe for a settings page.
 
     ``available`` means an executable was found, not that a session can connect:
-    the router still needs the ``winbox`` service reachable and the password is
-    asked by WinBox itself.
+    the router still needs the ``routeros_client`` service reachable and the password is
+    asked by RouterOS client itself.
     """
     try:
-        executable = find_winbox()
+        executable = find_routeros_client()
     except Exception:  # pragma: no cover - defensive: a probe must never break the UI
         executable = None
     return {

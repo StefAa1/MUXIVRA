@@ -194,6 +194,75 @@ MODELS: tuple[Model, ...] = (
         (PortGroup("eth", 1, "rj45", 0),),
         "Wi-Fi 5 AP · 1×1G PoE",
     ),
+    # ------------------------------------------------- MikroTik (home / SMB line)
+    Model(
+        "mikrotik-hap-ax3", "mikrotik", "hAP ax³ (C53UiG+5HPaxD2HPaxD)", "router", 1,
+        (PortGroup("ether", 4, "rj45", 2), PortGroup("ether", 1, "rj45", 1), PortGroup("sfp", 1, "sfp", 1)),
+        "5×1G (1×2.5G PoE-in on ether1) · 1×2.5G SFP · Wi-Fi 6",
+    ),
+    Model(
+        "mikrotik-hap-ax2", "mikrotik", "hAP ax² (C52iG-5HaxD2HaxD)", "router", 1,
+        (PortGroup("ether", 5, "rj45", 1),),
+        "5×1G · Wi-Fi 6, PoE-in on ether1",
+    ),
+    Model(
+        "mikrotik-hap-ac2", "mikrotik", "hAP ac² (RBD52G-5HacD2HnD)", "router", 1,
+        (PortGroup("ether", 5, "rj45", 1),),
+        "5×1G · Wi-Fi 5, PoE-in on ether1",
+    ),
+    Model(
+        "mikrotik-rb5009", "mikrotik", "RB5009UG+S+IN", "router", 1,
+        (PortGroup("ether", 7, "rj45", 1), PortGroup("sfp-sfpplus", 1, "sfp", 1)),
+        "7×1G · 1×10G SFP+ · PoE-in",
+    ),
+    Model(
+        "mikrotik-crs112-8p", "mikrotik", "CRS112-8P-4S-IN", "switch", 1,
+        (PortGroup("ether", 8, "rj45", 1), PortGroup("sfp", 4, "sfp", 1)),
+        "8×1G PoE-out · 4×1G SFP",
+    ),
+    # ------------------------------------------------------- Cisco (small/edge)
+    Model(
+        "cisco-cbs350-24t", "cisco", "Catalyst CBS350-24T-4G", "switch", 1,
+        (PortGroup("Gi1/0/", 24, "rj45", 1), PortGroup("Gi1/0/", 4, "sfp", 25)),
+        "24×1G · 4×1G SFP (SMB line)",
+    ),
+    Model(
+        "cisco-c9300-24p", "cisco", "Catalyst 9300-24P", "switch", 1,
+        (PortGroup("Gi1/0/", 24, "rj45", 1), PortGroup("Te1/1/", 4, "sfp", 1)),
+        "24×1G PoE+ · 4×10G SFP+ (stackable)",
+    ),
+    # --------------------------------------------------------- Aruba Instant On
+    Model(
+        "aruba-1930-24g", "aruba", "Instant On 1930 24G 4SFP/SFP+", "switch", 1,
+        (PortGroup("", 24, "rj45", 1), PortGroup("", 4, "sfp", 25)),
+        "24×1G · 4×10G SFP+ (SMB line)",
+    ),
+    Model(
+        "aruba-1930-8g", "aruba", "Instant On 1930 8G 2SFP", "switch", 1,
+        (PortGroup("", 8, "rj45", 1), PortGroup("", 2, "sfp", 9)),
+        "8×1G · 2×1G SFP, fanless",
+    ),
+    # ------------------------------------------------------------- Ubiquiti Pro
+    Model(
+        "ubiquiti-usw-pro-24-poe", "ubiquiti", "UniFi Switch Pro 24 PoE", "switch", 1,
+        (PortGroup("Port ", 24, "rj45", 1), PortGroup("SFP+ ", 2, "sfp", 1)),
+        "24×1G PoE+ (16×PoE) · 2×10G SFP+",
+    ),
+    Model(
+        "ubiquiti-udm-se", "ubiquiti", "UniFi Dream Machine SE", "router", 1,
+        (PortGroup("Port ", 8, "rj45", 1), PortGroup("SFP+ ", 2, "sfp", 1)),
+        "8×1G (2×PoE) · 1×2.5G · 2×10G SFP+",
+    ),
+    Model(
+        "ubiquiti-u6-lr", "ubiquiti", "UniFi U6-LR", "ap", 1,
+        (PortGroup("eth", 1, "rj45", 0),),
+        "Wi-Fi 6 long-range AP · 1×1G PoE+",
+    ),
+    Model(
+        "ubiquiti-usw-lite-8-poe", "ubiquiti", "UniFi Switch Lite 8 PoE", "switch", 1,
+        (PortGroup("Port ", 8, "rj45", 1),),
+        "8×1G (4×PoE) · fanless",
+    ),
 )
 
 BY_KEY = {model.key: model for model in MODELS}

@@ -300,7 +300,9 @@ function wzStepThreeHtml() {
       </div>
       <div id="wz-rack-form" class="wz-sub hidden">
         <label class="wz-field"><span>Name rack</span><input id="wz-rack-name" placeholder="Network rack" autocomplete="off" /></label>
-        <label class="wz-field"><span>Rack height (U)</span><input id="wz-rack-units" type="number" min="1" max="60" value="42" /></label>
+        <label class="wz-field"><span>Rack height</span>
+          <select id="wz-rack-units"><option value="4">4U</option><option value="6">6U</option><option value="9">9U</option><option value="12">12U</option><option value="15">15U</option><option value="18">18U</option><option value="21">21U</option><option value="24">24U</option><option value="27">27U</option><option value="30">30U</option><option value="36">36U</option><option value="42">42U</option><option value="45">45U</option><option value="48">48U</option></select>
+          <em>Standard wall cabinets start at 4U; floor racks are usually 42U.</em></label>
         <button type="button" class="btn primary xs" id="wz-rack-save">Create rack</button>
       </div>
       <div class="wz-summary wide">

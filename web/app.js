@@ -692,7 +692,7 @@ function watchDiagramPanel() {
     row.innerHTML = `<span class="hint">Connection</span>${
       (payload.hosts || []).map((h) => `<button class="btn ghost xs" data-nd-open="${h.id}">${esc((h.protocol || 'ssh').toUpperCase())} · ${esc(h.label)}</button>`).join('')
         || '<span class="hint">no profile</span>'
-    }${payload.device && payload.device.mgmt_ip ? `<button class="btn ghost xs" data-nd-winbox="${deviceId}">WinBox</button>
+    }${payload.device && payload.device.mgmt_ip ? `<button class="btn ghost xs" data-nd-routeros="${deviceId}">RouterOS client</button>
       <button class="btn ghost xs" data-nd-web="${deviceId}" title="Device web interface in its own window">Web UI</button>` : ''}`;
     const target = panel.querySelector('[data-dg-act="open-rack"]');
     if (target && target.parentElement) target.parentElement.insertBefore(row, target);
@@ -716,8 +716,8 @@ async function decorateDeviceConnections() {
   }
   const hosts = payload.hosts || [];
   const buttons = hosts.map((h) => `<button class="btn ghost xs" data-nd-open="${h.id}" title="${esc(h.hostname)}:${h.port}">${esc((h.protocol || 'ssh').toUpperCase())} · ${esc(h.label)}</button>`).join('');
-  const winbox = device.mgmt_ip
-    ? `<button class="btn ghost xs" data-nd-winbox="${device.id}">WinBox${payload.winbox && payload.winbox.available ? '' : ' (missing)'}</button>`
+  const routeros_client = device.mgmt_ip
+    ? `<button class="btn ghost xs" data-nd-routeros="${device.id}">RouterOS client${payload.routeros_client && payload.routeros_client.available ? '' : ' (missing)'}</button>`
     : '';
   const row = document.createElement('div');
   row.className = 'nd-conn-row';
@@ -726,7 +726,7 @@ async function decorateDeviceConnections() {
     buttons || '<span class="hint">no profile</span>'
   }<button class="btn ghost xs" data-nd-add-profile="${device.id}" title="Add profile">+ profile</button>${
     hosts.length ? `<button class="btn ghost xs" data-nd-drop-profile="${device.id}" title="Remove all profiles">× all</button>` : ''
-  }${winbox}<button class="btn ghost xs" data-nd-web="${device.id}" title="Web management in a separate window, without a browser">Web</button>`;
+  }${routeros_client}<button class="btn ghost xs" data-nd-web="${device.id}" title="Web management in a separate window, without a browser">Web</button>`;
   panel.insertBefore(row, panel.querySelector('.nd-port-grid'));
 }
 
@@ -1221,15 +1221,15 @@ document.addEventListener('click', async (event) => {
     return;
   }
 
-  const ndWinbox = event.target.closest('[data-nd-winbox]');
-  if (ndWinbox) {
+  const ndLaunch = event.target.closest('[data-nd-routeros]');
+  if (ndLaunch) {
     try {
-      const deviceId = Number(ndWinbox.dataset.ndWinbox);
+      const deviceId = Number(ndLaunch.dataset.ndRouteros);
       const device = ((ND.layout || {}).devices || []).find((d) => d.id === deviceId) || {};
-      const res = await api(`/inventory/devices/${deviceId}/winbox`, { json: { address: device.mgmt_ip || '' } });
-      toast(`WinBox: pid ${res.pid || '—'}`);
+      const res = await api(`/inventory/devices/${deviceId}/routeros-client`, { json: { address: device.mgmt_ip || '' } });
+      toast(`RouterOS client: pid ${res.pid || '—'}`);
     } catch (err) {
-      toast(err.message.startsWith('winbox') ? 'WinBox is not installed' : err.message, 'err');
+      toast(err.message.startsWith('routeros_client') ? 'RouterOS client is not installed' : err.message, 'err');
     }
     return;
   }
@@ -1547,7 +1547,8 @@ document.addEventListener('click', (event) => {
       const name = (($('#nd-rack-name') || {}).value || '').trim();
       if (!siteId || !name) { toast('Select a site and enter a rack name', 'err'); return; }
       try {
-        const rack = await api('/inventory/racks', { json: { site_id: siteId, name } });
+        const units = Number((($('#nd-rack-units') || {}).value) || 42);
+        const rack = await api('/inventory/racks', { json: { site_id: siteId, name, units } });
         await loadInventory();
         await ndSelectRack(rack.id);
         toast('Rack added');
