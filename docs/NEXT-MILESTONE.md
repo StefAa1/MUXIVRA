@@ -8,18 +8,18 @@
 5. σχεδιασμός (planned) και προβολή (observed) δικτύου
 6. ανάκτηση configuration, εκδόσεις/diff, συγχρονισμός λογικών στοιχείων με το διάγραμμα
 
-## Καταστάσεις
-- [ ] trust: per-customer known_hosts + migration
-- [ ] schema v8: config_versions, devices.origin, device_observed
-- [ ] config module + adapters (mikrotik, cisco) + diff + apply guard
-- [ ] web management surface (Qt6 WebEngine window, ξεχωριστό profile ανά πελάτη)
-- [ ] UI: wizard 3 βημάτων
-- [ ] UI: nav Συσκευές · Καλωδίωση · Διάγραμμα · Τερματικά
-- [ ] UI: split diagram | terminal/web/config
-- [ ] UI: diagram design mode (planned devices/links)
-- [ ] config panel: fetch/versions/diff/apply + sync
-- [ ] tests (Linux) + fixtures για adapters
-- [ ] build/sign/publish + πίνακας
+## Καταστάσεις (όλα ολοκληρωμένα στο 0.4.6 — βλ. docs/RELEASE-0.4.6.md)
+- [x] trust: per-customer known_hosts + migration
+- [x] schema v8: config_versions, devices.origin, device_observed
+- [x] config module + adapters (mikrotik, cisco) + diff + apply guard
+- [x] web management surface (Qt6 WebEngine window, ξεχωριστό profile ανά πελάτη)
+- [x] UI: wizard 3 βημάτων
+- [x] UI: nav Συσκευές · Καλωδίωση · Διάγραμμα · Τερματικά
+- [x] UI: split diagram | terminal/web/config
+- [x] UI: diagram design mode (planned devices/links)
+- [x] config panel: fetch/versions/diff/apply + sync
+- [x] tests (Linux) + fixtures για adapters
+- [x] build/sign/publish + πίνακας
 
 ## Σταθερές
 - Δεδομένα χρήστη: /root/sshdeck/data (μην πειράζεται).
