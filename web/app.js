@@ -162,9 +162,64 @@ async function loadCustomers() {
   }
   const dot = $('#ctx-dot');
   const active = (S.customers || []).find((c) => c.id === S.customerId);
-  if (dot && active) dot.style.background = active.color || '#3ddc97';
+  if (dot && active) dot.style.background = active.color || '#2f7bff';
+  renderCustomerPill();
   const add = $('#customer-add');
   if (add) add.onclick = openCustomerModal;
+}
+
+function renderCustomerPill() {
+  const pill = $('#customer-pill');
+  const name = $('#customer-pill-name');
+  const menu = $('#customer-menu');
+  const select = $('#customer-select');
+  const list = S.customers || [];
+  const active = list.find((c) => c.id === S.customerId) || list[0] || null;
+  if (name) name.textContent = active ? active.name : '—';
+  if (select && active) select.value = String(active.id);
+  if (!menu) return;
+  menu.innerHTML = list.map((customer) => `
+      <button type="button" class="ctx-item${customer.id === S.customerId ? ' on' : ''}" data-customer-id="${customer.id}" role="option">
+        <i class="ctx-dot" style="background:${esc(customer.color || '#2f7bff')}"></i>
+        <span>${esc(customer.name)}</span>
+        ${customer.code ? `<small>${esc(customer.code)}</small>` : ''}
+      </button>`).join('')
+    + '<button type="button" class="ctx-item ctx-item-new" data-customer-new>+ New customer</button>';
+
+  if (pill && !pill.dataset.wired) {
+    pill.dataset.wired = '1';
+    pill.onclick = (event) => {
+      event.stopPropagation();
+      const open = menu.classList.toggle('hidden');
+      pill.setAttribute('aria-expanded', open ? 'false' : 'true');
+    };
+    document.addEventListener('click', () => {
+      menu.classList.add('hidden');
+      pill.setAttribute('aria-expanded', 'false');
+    });
+    menu.addEventListener('click', async (event) => {
+      const item = event.target.closest('[data-customer-id]');
+      const create = event.target.closest('[data-customer-new]');
+      menu.classList.add('hidden');
+      pill.setAttribute('aria-expanded', 'false');
+      if (create) { openCustomerModal(); return; }
+      if (!item) return;
+      S.customerId = Number(item.dataset.customerId);
+      await Promise.all([loadHosts(), loadCreds(), loadSnippets(), loadInventory()]);
+      renderCustomerPill();
+      renderSidebar();
+      renderPage();
+      const chosen = (S.customers || []).find((c) => c.id === S.customerId);
+      toast(`Customer: ${chosen ? chosen.name : ''}`);
+    });
+  }
+  if (select && !select.dataset.wiredPill) {
+    select.dataset.wiredPill = '1';
+    select.addEventListener('change', () => {
+      S.customerId = Number(select.value);
+      renderCustomerPill();
+    });
+  }
 }
 
 function openCustomerModal() {
@@ -247,7 +302,7 @@ function hostRowHtml(host) {
     ? `${esc(host.serial_port)} · ${host.baud} ${host.bytesize}${host.parity}${host.stopbits}`
     : `${esc(host.hostname)}:${host.port}`;
   return `<div class="host-row${active ? ' active' : ''}" data-host="${host.id}">
-    <span class="host-rail" style="background:${esc(host.color || '#3ddc97')}"></span>
+    <span class="host-rail" style="background:${esc(host.color || '#2f7bff')}"></span>
     <div class="host-meta">
       <div class="host-name">${esc(host.label)}</div>
       <div class="host-sub">${sub}</div>
@@ -360,9 +415,9 @@ function openTerminal(host) {
     scrollback: 8000,
     allowProposedApi: true,
     theme: {
-      background: '#080a0e', foreground: '#dfe9e3', cursor: '#3ddc97', selectionBackground: '#1e4034',
-      black: '#0b0f14', red: '#ff6b6b', green: '#3ddc97', yellow: '#ffc75f', blue: '#7c9cff',
-      magenta: '#c792ea', cyan: '#5ee7f0', white: '#dfe9e3',
+      background: '#080a0e', foreground: '#dce8f7', cursor: '#2f7bff', selectionBackground: '#132a52',
+      black: '#0b0f14', red: '#ff6b6b', green: '#2f7bff', yellow: '#ffc75f', blue: '#4f8bff',
+      magenta: '#c792ea', cyan: '#5ee7f0', white: '#dce8f7',
       brightBlack: '#5c6a7d', brightRed: '#ff8f8f', brightGreen: '#6cf5b8', brightYellow: '#ffd98a',
       brightBlue: '#9db4ff', brightMagenta: '#dbaef5', brightCyan: '#8bf1f7', brightWhite: '#ffffff',
     },
@@ -819,7 +874,7 @@ function credOptions(selected) {
 function openHostModal(host) {
   const h = host || {
     label: '', protocol: 'ssh', hostname: '', port: 22, username: 'root', credential_id: null,
-    group_name: 'General', tags: [], color: '#3ddc97', notes: '',
+    group_name: 'General', tags: [], color: '#2f7bff', notes: '',
     serial_port: '', baud: 115200, bytesize: 8, parity: 'N', stopbits: 1, flow: 'none',
   };
   const proto = h.protocol || 'ssh';
@@ -954,7 +1009,7 @@ function openHostModal(host) {
       credential_id: data.credential_id ? Number(data.credential_id) : null,
       group_name: data.group_name.trim() || 'General',
       tags: data.tags,
-      color: h.color || '#3ddc97',
+      color: h.color || '#2f7bff',
       notes: data.notes,
       serial_port: (data.serial_port || '').trim(),
       baud: Number(data.baud) || 115200,

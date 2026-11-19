@@ -100,7 +100,7 @@
 .dg-field input:focus {
   outline: none;
   border-color: var(--accent-line);
-  box-shadow: 0 0 0 3px rgba(61, 220, 151, 0.08);
+  box-shadow: 0 0 0 3px rgba(47, 123, 255, 0.08);
 }
 .dg-field input::placeholder {
   color: #5d6b7c;
@@ -248,14 +248,14 @@
   stroke: none;
 }
 
-.dg-kind-switch { --dg-color: #3ddc97; --dg-fill: #0f2419; }
+.dg-kind-switch { --dg-color: #2f7bff; --dg-fill: #0b1830; }
 .dg-kind-router { --dg-color: #7c9cff; --dg-fill: #141b31; }
 .dg-kind-patch-panel { --dg-color: #ffc75f; --dg-fill: #2a2110; }
 .dg-kind-server { --dg-color: #c48cff; --dg-fill: #221733; }
 .dg-kind-pdu { --dg-color: #ff8f6b; --dg-fill: #2b1712; }
 .dg-kind-other { --dg-color: #8593a5; --dg-fill: #161e28; }
 
-.dg-kind-switch .dg-icon { stroke: #3ddc97; }
+.dg-kind-switch .dg-icon { stroke: #2f7bff; }
 .dg-kind-router .dg-icon { stroke: #7c9cff; }
 .dg-kind-patch-panel .dg-icon { stroke: #ffc75f; }
 .dg-kind-server .dg-icon { stroke: #c48cff; }
@@ -471,8 +471,8 @@
   white-space: nowrap;
 }
 .dg-port.linked {
-  border-color: rgba(61, 220, 151, 0.28);
-  background: rgba(61, 220, 151, 0.05);
+  border-color: rgba(47, 123, 255, 0.28);
+  background: rgba(47, 123, 255, 0.05);
 }
 .dg-port.linked b {
   color: var(--accent);
@@ -559,7 +559,7 @@
 .dg-readkey .dg-solid { width: 22px; height: 0; border-top: 2px solid currentColor; }
 .dg-readkey .dg-dash { width: 22px; height: 0; border-top: 2px dashed #7fb2ff; }
 .dg-readkey .dg-planned-box { width: 16px; height: 10px; border: 1px dashed #7fb2ff; border-radius: 3px; }
-.dg-readkey .dg-obs-chip { font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid rgba(61,220,151,.4); color: #3ddc97; }
+.dg-readkey .dg-obs-chip { font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid rgba(47,123,255,.4); color: #2f7bff; }
 .dg-readkey-warn { margin-left: auto; color: #ffcf7a; }
 
 /* εικονίδιο τύπου μέσα σε badge: καθαρό, χωρίς βέλη πάνω στο περίγραμμα */

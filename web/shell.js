@@ -86,7 +86,6 @@ function shBuildNav() {
     const first = rail.querySelector('.rail-btn[data-view="keys"]');
     if (first && first.parentNode) first.parentNode.insertBefore(sep, first);
   }
-  if (logo) logo.textContent = '▚';
 }
 
 function shFocusTerminals() {
