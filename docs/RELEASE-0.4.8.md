@@ -15,6 +15,12 @@
 ## Language
 - Whole UI and operator-facing messages in English.
 
+## Notes
+- Default customer is resolved by its stable `code` and renamed once, so an
+  existing database keeps a single bucket after the English switch.
+- Cable labels are hidden below 72% zoom (readability) and drawn horizontally,
+  staggered per lane when several cables share a gutter.
+
 ## Verification
 - `pytest` (Linux): see release run.
 - `node --check` on all six web assets.
