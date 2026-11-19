@@ -841,15 +841,15 @@ function ndLayoutView() {
   const cells = [];
   let row = 1;
   let unit = rack.units;
+  // κάθε U είναι δική του γραμμή: το rack διαβάζεται κάθετα, όχι σαν λωρίδα
   while (unit >= 1) {
     const device = byTopUnit.get(unit);
     if (device) {
       const linked = device.ports.filter((p) => p.link_id).length;
-      cells.push(`<div class="nd-u" style="grid-row:${row}">U${unit}</div>`);
-      for (let extra = 1; extra < device.units; extra += 1) {
+      for (let extra = 0; extra < device.units; extra += 1) {
         cells.push(`<div class="nd-u" style="grid-row:${row + extra}">U${unit - extra}</div>`);
       }
-      cells.push(`<div class="nd-device ${esc(device.kind)}" style="grid-row:${row} / span ${device.units}" data-nd-select="${device.id}" title="U${device.position}–U${unit} · ${esc(device.name)}">
+      cells.push(`<div class="nd-device ${esc(device.kind)}${device.units === 1 ? ' one' : ''}" style="grid-row:${row} / span ${device.units}" data-nd-select="${device.id}" title="U${device.position}–U${unit} · ${esc(device.name)} · ${device.ports.length} ports">
           <b>${esc(device.name)}</b>
           <span>${esc(ndKindIcon(device.kind))} · ${device.ports.length} ports${linked ? ` · ${linked} δεμένα` : ''}</span>
         </div>`);
@@ -857,20 +857,13 @@ function ndLayoutView() {
       unit -= device.units;
       continue;
     }
-    // collapse long runs of empty units so the rack stays readable
-    let run = 0;
-    while (unit - run >= 1 && !byTopUnit.get(unit - run)) run += 1;
-    if (run > 4) {
-      cells.push(`<div class="nd-u muted" style="grid-row:${row}">…</div>`);
-      cells.push(`<div class="nd-gap" style="grid-row:${row}">${run} κενές U (U${unit - run + 1}–U${unit})</div>`);
-      row += 1;
-      unit -= run;
-    } else {
-      cells.push(`<div class="nd-u" style="grid-row:${row}">U${unit}</div>`);
+    const free = !byTopUnit.get(unit);
+    if (free) {
+      cells.push(`<div class="nd-u${device ? '' : ' muted'}" style="grid-row:${row}">U${unit}</div>`);
       cells.push(`<div class="nd-empty" style="grid-row:${row}"></div>`);
-      row += 1;
-      unit -= 1;
     }
+    row += 1;
+    unit -= 1;
   }
 
   const selectedDevice = devices.find((d) => d.id === ND.deviceId) || devices[0] || null;
@@ -892,9 +885,23 @@ function ndLayoutView() {
 
   return `<div class="nd-layout">
       ${ndQuickBar()}
-      <div class="nd-rack-view" style="--units:${rack.units}">${cells.join('')}</div>
+      <div class="nd-rack-frame" data-rack-frame="${rack.id}">
+        <div class="nd-rack-view" style="--units:${rack.units}">${cells.join('')}</div>
+        <p class="nd-rack-legend">U1 κάτω · ${rack.units}U · πάτησε συσκευή για τα ports της</p>
+        ${cells.length ? '' : ''}
+      </div>
       ${portList}
     </div>`;
+}
+
+/* Το rack είναι 42 γραμμές· άνοιξέ το εκεί που είναι οι συσκευές, όχι στο κενό. */
+function ndScrollRackToDevices() {
+  const view = document.querySelector('.nd-rack-view');
+  if (!view) return;
+  const target = view.querySelector('.nd-device.sel') || view.querySelector('.nd-device');
+  if (!target) { view.scrollTop = view.scrollHeight; return; }
+  const offset = target.offsetTop - view.clientHeight / 2 + target.offsetHeight / 2;
+  view.scrollTop = Math.max(0, Math.min(view.scrollHeight - view.clientHeight, offset));
 }
 
 function ndTableView() {
@@ -1073,6 +1080,7 @@ function renderRacks() {
   $('#page-racks').innerHTML = `<div class="page-head">
       <div><h2>Racks &amp; Καλώδια</h2><p>Χώροι, racks, συσκευές, ports και συνδέσεις — με έλεγχο διπλών ports.</p></div>
       <div class="actions">
+        <button class="btn primary xs" data-nd-newcable title="Σύνδεση δύο θυρών με σύνοψη πριν την αποθήκευση">Νέο καλώδιο</button>
         <button class="btn ghost xs" data-nd-print>Εκτύπωση / PDF</button>
         <button class="btn ghost xs" data-nd-csv>CSV</button>
       </div>
@@ -1105,6 +1113,9 @@ function renderRacks() {
       </div>
     </div>
     <div class="nd-print" id="nd-print" aria-hidden="true"></div>`;
+  if ((tab === 'layout') && ND.layout && (ND.layout.devices || []).length) {
+    window.setTimeout(ndScrollRackToDevices, 0);
+  }
 }
 
 /* -------------------------------------------------------- delegated events */
@@ -1228,6 +1239,14 @@ document.addEventListener('submit', (event) => {
   }
 }, true);
 
+// «Νέο καλώδιο» από την κεφαλίδα (delegated: το header ξαναγράφεται σε κάθε render)
+document.addEventListener('click', (event) => {
+  const button = event.target.closest ? event.target.closest('[data-nd-newcable]') : null;
+  if (!button) return;
+  event.preventDefault();
+  ndcOpen();
+});
+
 // CSV download με το customer context του api() (ένα σκέτο href δεν στέλνει header)
 document.addEventListener('click', async (event) => {
   const button = event.target.closest('[data-nd-csv]');
@@ -1297,3 +1316,170 @@ document.addEventListener('click', async (event) => {
     alert('Η διαγραφή απέτυχε: ' + error.message);
   }
 });
+
+/* --------------------------------------------------------- Νέο καλώδιο ροή
+   Δύο βήματα με καθαρή σύνοψη: Α (συσκευή/θύρα) → Β (συσκευή/θύρα) → αποθήκευση.
+   Το Α δεν χάνεται όταν αλλάζει rack/χώρος, και δεν αποθηκεύεται τίποτα με το
+   δεύτερο click — μόνο με το κουμπί της σύνοψης.
+*/
+const NDC = { a: null, b: null, deviceA: '', deviceB: '', query: '' };
+
+function ndcState() {
+  return (typeof S !== 'undefined' && S && S.nd) ? S.nd : {};
+}
+
+function ndcDevices() {
+  const out = [];
+  (ndcState().tree?.sites || []).forEach((site) => {
+    (site.racks || []).forEach((rack) => {
+      (rack.devices || []).forEach((device) => out.push({ ...device, siteName: site.name, rackName: rack.name }));
+    });
+  });
+  return out;
+}
+
+const NDC_PORTS = new Map();   // rack_id → devices με ports (από /netdoc/rack/{id})
+
+function ndcPorts(deviceId) {
+  const device = ndcDevices().find((item) => String(item.id) === String(deviceId));
+  if (!device) return [];
+  const rack = NDC_PORTS.get(String(device.rackId ?? device.rack_id));
+  const fromRack = rack && rack.find((item) => String(item.id) === String(deviceId));
+  if (fromRack && fromRack.ports) return fromRack.ports;
+  return device.ports || [];
+}
+
+async function ndcLoadPorts() {
+  const racks = new Map();
+  (ndcState().tree?.sites || []).forEach((site) => {
+    (site.racks || []).forEach((rack) => racks.set(String(rack.id), rack));
+  });
+  await Promise.all(Array.from(racks.keys()).map(async (rackId) => {
+    if (NDC_PORTS.has(rackId)) return;
+    try {
+      const layout = await api(`/netdoc/rack/${rackId}`);
+      NDC_PORTS.set(rackId, layout.devices || []);
+    } catch (_) { NDC_PORTS.set(rackId, []); }
+  }));
+}
+
+function ndcCableName() {
+  const count = (ndcState().links || []).length + 1;
+  return `C-${String(count).padStart(3, '0')}`;
+}
+
+function ndcRender() {
+  const body = document.querySelector('#ndc-body');
+  if (!body) return;
+  const devices = ndcDevices();
+  const option = (device) => `<option value="${device.id}"${String(NDC[device === NDC.deviceA ? 'deviceA' : 'deviceB']) === String(device.id) ? ' selected' : ''}>${esc(device.name)} · ${esc(device.rackName)}</option>`;
+  const deviceSelect = (id, value, label) => `
+    <label class="ndc-field"><span>${label}</span>
+      <select id="${id}">
+        <option value="">— διάλεξε συσκευή —</option>
+        ${devices.map((device) => `<option value="${device.id}"${String(device.id) === String(value) ? ' selected' : ''}>${esc(device.name)} · ${esc(device.siteName)} / ${esc(device.rackName)}</option>`).join('')}
+      </select></label>`;
+  const ports = (deviceId, side) => {
+    const list = ndcPorts(deviceId);
+    if (!deviceId) return '<p class="ndc-hint">Διάλεξε πρώτα συσκευή.</p>';
+    if (!list.length) return '<p class="ndc-hint">Η συσκευή δεν έχει θύρες — πρόσθεσε από «Ports».</p>';
+    return `<div class="ndc-ports">${list.map((port) => {
+      const chosen = side === 'a' ? NDC.a : NDC.b;
+      const active = chosen && String(chosen.portId) === String(port.id);
+      const busy = !!port.link_id;
+      return `<button type="button" class="ndc-port${active ? ' on' : ''}${busy ? ' busy' : ''}"
+        data-ndc-side="${side}" data-ndc-port="${port.id}" data-ndc-label="${esc(port.name)}"
+        ${busy ? 'disabled' : ''} title="${busy ? `δεσμευμένη → ${esc(port.peer || '')}` : 'ελεύθερη'}">${esc(port.name)}</button>`;
+    }).join('')}</div>`;
+  };
+  const summary = (NDC.a && NDC.b)
+    ? `<div class="ndc-summary"><b>${esc(NDC.a.device)}</b> · ${esc(NDC.a.port)}
+         <span>→</span> <b>${esc(NDC.b.device)}</b> · ${esc(NDC.b.port)}
+         <em>${esc(NDC.a.rack)} → ${esc(NDC.b.rack)}</em></div>`
+    : `<div class="ndc-summary idle">${NDC.a ? `Α: ${esc(NDC.a.device)} · ${esc(NDC.a.port)} — διάλεξε το Β` : 'Διάλεξε θύρα Α και θύρα Β για να δεις τη σύνοψη.'}</div>`;
+
+  body.innerHTML = `
+    <div class="ndc-grid">
+      <div class="ndc-side">
+        <h4>Α · από πού ξεκινά</h4>
+        ${deviceSelect('ndc-device-a', NDC.deviceA, 'Συσκευή Α')}
+        ${ports(NDC.deviceA, 'a')}
+      </div>
+      <div class="ndc-side">
+        <h4>Β · πού καταλήγει</h4>
+        ${deviceSelect('ndc-device-b', NDC.deviceB, 'Συσκευή Β')}
+        ${ports(NDC.deviceB, 'b')}
+      </div>
+    </div>
+    ${summary}
+    <label class="ndc-field"><span>Ετικέτα καλωδίου</span>
+      <input id="ndc-cable" value="${esc(NDC.cable || ndcCableName())}" maxlength="40" /></label>
+    <div class="ndc-foot">
+      <span class="ndc-hint">Δεν αποθηκεύεται τίποτα μέχρι να πατήσεις «Αποθήκευση καλωδίου».</span>
+      <button type="button" class="btn primary" id="ndc-save"${NDC.a && NDC.b ? '' : ' disabled'}>Αποθήκευση καλωδίου</button>
+    </div>`;
+
+  body.querySelector('#ndc-device-a').onchange = (event) => {
+    NDC.deviceA = event.target.value; NDC.a = null; ndcRender();
+  };
+  body.querySelector('#ndc-device-b').onchange = (event) => {
+    NDC.deviceB = event.target.value; NDC.b = null; ndcRender();
+  };
+  const cable = body.querySelector('#ndc-cable');
+  if (cable) cable.oninput = () => { NDC.cable = cable.value; };
+  body.querySelectorAll('[data-ndc-port]').forEach((button) => {
+    button.onclick = () => {
+      const side = button.dataset.ndcSide;
+      const deviceId = side === 'a' ? NDC.deviceA : NDC.deviceB;
+      const device = ndcDevices().find((item) => String(item.id) === String(deviceId));
+      if (!device) return;
+      const portId = Number(button.dataset.ndcPort);
+      const chosen = { deviceId: device.id, device: device.name, rack: device.rackName, port: button.dataset.ndcLabel, portId };
+      if (side === 'a') NDC.a = chosen; else NDC.b = chosen;
+      if (NDC.a && NDC.b && NDC.a.portId === NDC.b.portId) {
+        toast('Διάλεξε δύο διαφορετικές θύρες', 'err');
+        if (side === 'a') NDC.a = null; else NDC.b = null;
+      }
+      ndcRender();
+    };
+  });
+  const save = body.querySelector('#ndc-save');
+  if (save) save.onclick = ndcSave;
+}
+
+async function ndcSave() {
+  if (!NDC.a || !NDC.b) return;
+  const save = document.querySelector('#ndc-save');
+  if (save) { save.disabled = true; save.textContent = 'Αποθήκευση…'; }
+  try {
+    await api('/netdoc/links', {
+      method: 'POST',
+      json: {
+        port_a: NDC.a.portId,
+        port_b: NDC.b.portId,
+        cable: (document.querySelector('#ndc-cable')?.value || ndcCableName()).slice(0, 40),
+      },
+    });
+    closeModal();
+    NDC.a = null; NDC.b = null;
+    await loadNetdoc();
+    renderNetdoc();
+    toast('Το καλώδιο καταχωρήθηκε');
+  } catch (error) {
+    if (save) { save.disabled = false; save.textContent = 'Αποθήκευση καλωδίου'; }
+    toast(`Το καλώδιο δεν αποθηκεύτηκε: ${error.message}`, 'err');
+  }
+}
+
+async function ndcOpen(preset) {
+  NDC.deviceA = preset?.deviceId ? String(preset.deviceId) : '';
+  NDC.deviceB = '';
+  NDC.a = preset?.port ? { ...preset.port } : null;
+  NDC.b = null;
+  NDC.cable = ndcCableName();
+  openModal(`<h3>Νέο καλώδιο</h3>
+    <p class="lead">Διάλεξε θύρα Α, μετά θύρα Β — ακόμη και σε άλλο rack ή χώρο. Η σύνοψη εμφανίζεται πριν την αποθήκευση.</p>
+    <div id="ndc-body"><p class="ndc-hint">Φόρτωση θυρών…</p></div>`);
+  await ndcLoadPorts();
+  ndcRender();
+}

@@ -446,31 +446,36 @@ kbd { font-family: var(--mono); font-size: 10px; border: 1px solid var(--line); 
 /* ------------------------------------------------- racks: NETDOC visuals */
 .nd-tabs { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
 .nd-tabs .spacer { flex: 1; }
-.nd-tab { background: transparent; border: 1px solid transparent; color: var(--muted); font: inherit; font-size: 12.5px; padding: 5px 10px; border-radius: 7px; cursor: pointer; }
+.nd-tab { background: transparent; border: 1px solid transparent; color: var(--muted); font: inherit; font-size: 13px; padding: 8px 14px; min-height: 34px; border-radius: 8px; cursor: pointer; }
 .nd-tab:hover { color: var(--text); background: rgba(255, 255, 255, .04); }
 .nd-tab.on { color: var(--text); border-color: var(--line); background: var(--bg-2); }
-.nd-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 240px); gap: 14px; align-items: start; }
+.nd-layout { display: grid; grid-template-columns: minmax(300px, 430px) minmax(320px, 1fr); gap: 16px; align-items: start; }
 .nd-quick { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; font-size: 12.5px; background: rgba(88, 199, 168, .07); border: 1px solid rgba(88, 199, 168, .28); border-radius: 8px; padding: 8px 10px; }
 .nd-quick.idle { background: rgba(255, 255, 255, .03); border-color: var(--line); color: var(--muted); }
 .nd-quick input { background: var(--bg-2); border: 1px solid var(--line); border-radius: 6px; color: var(--text); font: inherit; font-size: 12px; padding: 4px 7px; width: 120px; }
+.nd-rack-frame { display: flex; flex-direction: column; gap: 6px; width: 100%; max-width: 430px; height: clamp(360px, calc(100vh - 300px), 720px); min-height: 360px; }
 .nd-rack-view {
   display: grid;
-  grid-template-columns: 32px minmax(0, 1fr);
-  grid-auto-rows: 24px;
+  grid-template-columns: 38px minmax(0, 1fr);
+  grid-auto-rows: 21px;
   column-gap: 8px;
   row-gap: 2px;
   background: rgba(255, 255, 255, .02);
   border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 6px;
-  max-height: 520px;
+  border-radius: 10px;
+  padding: 8px;
+  height: 100%;
+  min-height: 320px;
   overflow-y: auto;
+  scrollbar-width: thin;
 }
-.nd-u { font-family: var(--mono); font-size: 10px; color: var(--muted); text-align: right; line-height: 24px; }
+.nd-rack-legend { margin: 0; font-size: 11px; color: var(--muted); }
+.nd-u { font-family: var(--mono); font-size: 10.5px; color: var(--muted); text-align: right; line-height: 21px; }
+.nd-u.muted { opacity: .45; }
 .nd-u.muted { opacity: .55; }
 .nd-gap { display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted); border: 1px dashed rgba(255, 255, 255, .07); border-radius: 4px; }
 .nd-empty { border: 1px dashed rgba(255, 255, 255, .05); border-radius: 4px; }
-.nd-device { display: flex; flex-direction: column; justify-content: center; gap: 1px; padding: 3px 9px; border-radius: 5px; border: 1px solid var(--line); background: var(--bg-2); cursor: pointer; overflow: hidden; }
+.nd-device { display: flex; flex-direction: column; justify-content: center; gap: 1px; padding: 2px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg-2); cursor: pointer; overflow: hidden; min-height: 19px; }
 .nd-device:hover { border-color: var(--accent); }
 .nd-device b { font-size: 12.5px; font-weight: 600; }
 .nd-device span { font-size: 10.5px; color: var(--muted); }
@@ -482,8 +487,8 @@ kbd { font-family: var(--mono); font-size: 10px; border: 1px solid var(--line); 
 .nd-ports { background: var(--bg-2); border: 1px solid var(--line); border-radius: 9px; padding: 10px; }
 .nd-ports-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12.5px; }
 .nd-ports-head .hint { flex: 1; }
-.nd-port-grid { display: flex; flex-wrap: wrap; gap: 4px; }
-.nd-port { font-family: var(--mono); font-size: 10.5px; padding: 3px 6px; border-radius: 5px; border: 1px solid var(--line); background: transparent; color: var(--text); cursor: pointer; }
+.nd-port-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 6px; }
+.nd-port { font-family: var(--mono); font-size: 11.5px; padding: 6px 8px; min-height: 30px; border-radius: 6px; border: 1px solid var(--line); background: rgba(255,255,255,.02); color: var(--text); cursor: pointer; text-align: center; }
 .nd-port:hover { border-color: var(--accent); }
 .nd-port.linked { border-color: rgba(88, 199, 168, .55); color: #8fe0c9; }
 .nd-port.sel { background: var(--accent); color: #06120f; border-color: var(--accent); }
@@ -509,11 +514,11 @@ kbd { font-family: var(--mono); font-size: 10px; border: 1px solid var(--line); 
    remaining columns, so .main would inherit the sidebar's 296px track. */
 #app.view-racks, #app.view-diagram { grid-template-columns: 62px minmax(0, 1fr); }
 #app.view-racks .sidebar, #app.view-diagram .sidebar { display: none; }
-#app.view-racks .nd-split { grid-template-columns: minmax(170px, 230px) minmax(0, 1fr); }
+#app.view-racks .nd-split { grid-template-columns: minmax(200px, 260px) minmax(0, 1fr); }
 #app.view-diagram .page { padding: 26px 28px 40px; }
 
 /* device panel must never grow a second scroll owner */
-.nd-rack-view { max-height: none; overflow: visible; }
+.nd-rack-view { height: clamp(330px, calc(100vh - 340px), 680px); overflow-y: auto; }
 .nd-ports { max-height: none; overflow: visible; }
 .nd-conn-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; min-width: 0; }
 .nd-conn-row .btn { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -531,7 +536,7 @@ kbd { font-family: var(--mono); font-size: 10px; border: 1px solid var(--line); 
 
 @media (max-width: 1100px) {
   .page { padding: 26px 22px 40px; }
-  .nd-rack-view { max-height: 360px; overflow-y: auto; }
+  .nd-rack-view { max-height: 52vh; overflow-y: auto; }
 }
 
 @media (max-width: 960px) {
@@ -595,3 +600,25 @@ kbd { font-family: var(--mono); font-size: 10px; border: 1px solid var(--line); 
 @media (max-width: 1099px) {
   .main.split-on .split-pane { width: 46% !important; min-width: 280px; }
 }
+
+/* ---------------------------------------------- διορθώσεις διάταξης (0.4.7) */
+.nd-site-head { flex-wrap: wrap; row-gap: 4px; }
+.nd-site-head > span:first-child {
+  flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.nd-site-actions { flex: 0 0 auto; flex-wrap: wrap; }
+.nd-site-actions .btn { white-space: nowrap; }
+.nd-tree { min-width: 0; }
+.nd-tree h2 { white-space: nowrap; }
+.nd-layout { align-items: stretch; }
+.nd-ports { min-width: 0; }
+.nd-ports-head { flex-wrap: wrap; row-gap: 6px; }
+.nd-ports-head .btn { white-space: nowrap; min-height: 30px; }
+.nd-conn-row .btn { min-height: 30px; }
+/* τα κουμπιά ενεργειών του rack να μη στοιβάζονται σε στήλη */
+.nd-tabs { gap: 8px; }
+.page-head .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+/* 1U συσκευές: μία γραμμή με όνομα + θύρες, χωρίς κομμένο κείμενο */
+.nd-device.one { flex-direction: row; align-items: center; gap: 8px; }
+.nd-device.one b { flex: 0 1 auto; min-width: 0; }
+.nd-device.one span { flex: 0 0 auto; font-size: 10px; }

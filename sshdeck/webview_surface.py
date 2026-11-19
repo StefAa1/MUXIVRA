@@ -127,13 +127,22 @@ def launch(url: str, customer_id: int | None, device_label: str,
 
 
 # ------------------------------------------------------------------ Qt surface
-def _run_surface(cfg: dict) -> int:            # pragma: no cover - needs a display
-    from PyQt6.QtCore import QUrl
-    from PyQt6.QtWebEngineCore import QWebEngineProfile, QWebEnginePage
-    from PyQt6.QtWebEngineWidgets import QWebEngineView
-    from PyQt6.QtWidgets import QApplication
+def _run_surface(cfg: dict, selftest: bool = False) -> int:   # pragma: no cover - GUI
+    """Native window with its own storage: the vendor page never touches the app."""
+    import sys as _sys
 
-    app = QApplication.instance() or QApplication(sys.argv[:1])
+    from PyQt6.QtCore import QTimer, QUrl
+    from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
+    from PyQt6.QtWebEngineWidgets import QWebEngineView
+    from PyQt6.QtWidgets import (
+        QApplication, QLabel, QMainWindow, QToolBar, QWidget,
+    )
+
+    app = QApplication.instance() or QApplication(_sys.argv[:1])
+    window = QMainWindow()
+    window.setWindowTitle(cfg["title"])
+    window.resize(1180, 840)
+
     profile = QWebEngineProfile("muxivra-device", app)
     profile.setPersistentStoragePath(cfg["profile"])
     profile.setCachePath(str(Path(cfg["profile"]) / "cache"))
@@ -145,27 +154,75 @@ def _run_surface(cfg: dict) -> int:            # pragma: no cover - needs a disp
     view = QWebEngineView()
     page = QWebEnginePage(profile, view)
     view.setPage(page)
-    view.setWindowTitle(cfg["title"])
-    view.resize(1180, 820)
 
-    trust = (cfg.get("trust_sha256") or "").strip().lower()
+    toolbar = QToolBar("Περιήγηση")
+    toolbar.setMovable(False)
+    window.addToolBar(toolbar)
+    back = toolbar.addAction("←")
+    forward = toolbar.addAction("→")
+    reload_action = toolbar.addAction("⟳")
+    toolbar.addSeparator()
+    address = QLabel(cfg["url"])
+    address.setStyleSheet("padding: 0 10px; color: #8a94a6;")
+    toolbar.addWidget(address)
+    toolbar.addSeparator()
+    scope = QLabel("απομονωμένο περιβάλλον · χωρίς πρόσβαση στην εφαρμογή")
+    scope.setStyleSheet("padding: 0 10px; color: #c9a227; font-size: 11px;")
+    toolbar.addWidget(scope)
 
-    def on_certificate_error(error):
-        # explicit, per-destination trust only: the operator pastes one fingerprint
-        try:
-            cert = error.certificate()
-            fingerprint = bytes(cert.digest()).hex()
-        except Exception:  # noqa: BLE001
+    back.triggered.connect(view.back)
+    forward.triggered.connect(view.forward)
+    reload_action.triggered.connect(view.reload)
+    view.urlChanged.connect(lambda url: address.setText(url.toString()))
+    view.titleChanged.connect(
+        lambda title: window.setWindowTitle(f"{cfg['title']} — {title}" if title else cfg["title"])
+    )
+
+    trust = (cfg.get("trust_sha256") or "").strip().lower().replace(":", "")
+    refused: list[str] = []
+
+    class SurfacePage(QWebEnginePage):
+        def certificateError(self, error):        # noqa: N802 - Qt naming
+            try:
+                fingerprint = bytes(error.certificate().digest()).hex()
+            except Exception:                     # noqa: BLE001
+                refused.append("unknown")
+                return False
+            if trust and fingerprint == trust:
+                print(f"[surface] certificate accepted for {error.url().toString()} "
+                      f"sha256={fingerprint}", flush=True)
+                return True
+            refused.append(fingerprint)
+            print(f"[surface] certificate REFUSED for {error.url().toString()} "
+                  f"sha256={fingerprint} — βάλε το fingerprint στη συσκευή για ρητή εμπιστοσύνη.",
+                  flush=True)
             return False
-        if trust and fingerprint == trust.replace(":", "").lower():
-            return True
-        print(f"[surface] certificate refused: {error.url().toString()} sha256={fingerprint}",
-              flush=True)
-        return False
 
-    page.certificateError = on_certificate_error  # type: ignore[assignment]
+    isolated = SurfacePage(profile, view)
+    view.setPage(isolated)
+    window.setCentralWidget(view)
     view.load(QUrl(cfg["url"]))
-    view.show()
+
+    if selftest:
+        result = {"code": 1}
+
+        def finish(ok: bool) -> None:
+            result["code"] = 0 if ok else 1
+            print(f"SELFTEST {'ok' if ok else 'fail'} url={cfg['url']} "
+                  f"title={view.title()!r} profile={cfg['profile']}", flush=True)
+            app.quit()
+
+        view.loadFinished.connect(lambda ok: QTimer.singleShot(400, lambda: finish(ok)))
+
+        def timeout() -> None:
+            print(f"SELFTEST fail timeout profile={cfg['profile']}", flush=True)
+            app.quit()
+
+        QTimer.singleShot(20000, timeout)
+        window.show()
+        return app.exec()
+
+    window.show()
     return app.exec()
 
 
@@ -173,7 +230,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if "--json" in argv:
         cfg = json.loads(argv[argv.index("--json") + 1])
-        return _run_surface(cfg)
+        return _run_surface(cfg, selftest="--selftest" in argv)
     # check mode: print what would be launched, without opening anything
     url = argv[argv.index("--url") + 1] if "--url" in argv else ""
     customer = int(argv[argv.index("--customer") + 1]) if "--customer" in argv else None

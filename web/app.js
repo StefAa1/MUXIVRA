@@ -719,7 +719,7 @@ async function decorateDeviceConnections() {
     buttons || '<span class="hint">χωρίς profile</span>'
   }<button class="btn ghost xs" data-nd-add-profile="${device.id}" title="Προσθήκη profile">+ profile</button>${
     hosts.length ? `<button class="btn ghost xs" data-nd-drop-profile="${device.id}" title="Αφαίρεση όλων των profiles">× όλα</button>` : ''
-  }${winbox}`;
+  }${winbox}<button class="btn ghost xs" data-nd-web="${device.id}" title="Web management σε ξεχωριστό παράθυρο, χωρίς browser">Web</button>`;
   panel.insertBefore(row, panel.querySelector('.nd-port-grid'));
 }
 
@@ -1219,6 +1219,24 @@ document.addEventListener('click', async (event) => {
       toast(`WinBox: pid ${res.pid || '—'}`);
     } catch (err) {
       toast(err.message.startsWith('winbox') ? 'Το WinBox δεν είναι εγκατεστημένο' : err.message, 'err');
+    }
+    return;
+  }
+
+  const ndWeb = event.target.closest('[data-nd-web]');
+  if (ndWeb) {
+    const deviceId = Number(ndWeb.dataset.ndWeb);
+    try {
+      const res = await api(`/netdoc/devices/${deviceId}/web`, { method: 'POST', json: {} });
+      if (res.mode === 'window') toast(`Web management: ${res.url} — ξεχωριστό παράθυρο`);
+      else {
+        toast(res.warning, 'err');
+        if (res.url) window.open(res.url, '_blank', 'noopener');
+      }
+    } catch (err) {
+      toast(err.detail === 'no_address'
+        ? 'Η συσκευή δεν έχει management IP'
+        : `Το web management δεν άνοιξε: ${err.message}`, 'err');
     }
     return;
   }
