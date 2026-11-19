@@ -88,3 +88,18 @@ def test_api_opens_surface_only_for_owned_device(auth_client, monkeypatch):
     assert auth_client.post(f"/api/netdoc/devices/{dev['id']}/web", headers=hb, json={}).status_code in (404, 409)
     assert auth_client.post(f"/api/netdoc/devices/{dev['id']}/web", headers=ha,
                             json={"url": "file:///etc/passwd"}).status_code == 422
+
+
+def test_host_level_web_endpoint_uses_the_host_address(auth_client, monkeypatch):
+    from sshdeck import webview_surface as surface
+
+    auth_client.headers.update({"x-requested-with": "sshdeck"})
+    monkeypatch.setattr(surface, "qt_available", lambda: True)
+    seen = []
+    monkeypatch.setattr(surface, "launch",
+                        lambda url, cid, label, trust=None: seen.append((url, cid, label)) or {"mode": "window", "pid": 2, "url": url})
+    host = auth_client.post("/api/hosts", json={"label": "core", "hostname": "10.44.0.1", "protocol": "ssh"}).json()
+    res = auth_client.post(f"/api/hosts/{host['id']}/web", json={})
+    assert res.status_code == 200 and res.json()["mode"] == "window"
+    assert seen and "10.44.0.1" in seen[0][0]
+    assert auth_client.post(f"/api/hosts/{host['id']}/web", json={"url": "file:///etc/passwd"}).status_code == 422

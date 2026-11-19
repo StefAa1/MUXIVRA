@@ -622,3 +622,58 @@ kbd { font-family: var(--mono); font-size: 10px; border: 1px solid var(--line); 
 .nd-device.one { flex-direction: row; align-items: center; gap: 8px; }
 .nd-device.one b { flex: 0 1 auto; min-width: 0; }
 .nd-device.one span { flex: 0 0 auto; font-size: 10px; }
+
+/* ------------------------------------------------- γραμμή context: πελάτης */
+.cust-bar { padding: 0; }
+.cust-pick { display: flex; flex-direction: column; gap: 3px; }
+.cust-pick > span { font-size: 10px; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); }
+.ctx-group {
+  display: flex; align-items: center; gap: 6px; padding: 4px 6px 4px 10px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--bg-2);
+  min-height: 44px;
+}
+.ctx-group:focus-within { border-color: var(--accent); }
+.ctx-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); flex: 0 0 auto; box-shadow: 0 0 0 3px rgba(61,220,151,.12); }
+.ctx-group select {
+  background: transparent; border: 0; color: var(--text); font: inherit; font-size: 14px;
+  font-weight: 500; padding: 6px 4px; min-width: 170px; max-width: 260px; appearance: none;
+}
+.ctx-group select:focus { outline: none; }
+.ctx-add {
+  border: 1px solid var(--line); background: rgba(255,255,255,.03); color: var(--text);
+  font: inherit; font-size: 12.5px; padding: 7px 11px; border-radius: 8px; cursor: pointer;
+  white-space: nowrap;
+}
+.ctx-add:hover { border-color: var(--accent); color: var(--accent); }
+.ctx-pick select { min-height: 44px; font-size: 14px; }
+.ctx-search input { min-height: 44px; font-size: 14px; }
+.context-strip .btn.primary { min-height: 44px; }
+.chip.web-chip { border: 1px solid var(--line); background: rgba(255,255,255,.03); color: var(--text); cursor: pointer; font: inherit; font-size: 11px; padding: 2px 8px; }
+.chip.web-chip:hover { border-color: var(--accent); color: var(--accent); }
+.host-tags { flex-wrap: wrap; }
+
+/* το page ζει ΚΑΙ στο πλαϊνό panel: εκεί δεν είναι απόλυτα τοποθετημένο */
+.split-pane { position: relative; }
+.split-pane .page { position: static !important; inset: auto !important; z-index: auto !important; width: 100%; height: 100%; padding: 14px 14px 18px; }
+.split-pane #page-diagram .dg-shell { height: 100%; }
+.split-pane .dg-canvas { min-height: 320px; }
+.split-pane .dg-head h2 { font-size: 16px; }
+.split-pane .dg-head p { display: none; }
+.split-hint { padding: 22px; font-size: 13px; color: var(--muted); display: flex; flex-direction: column; gap: 8px; }
+.split-hint b { color: var(--text); font-size: 14px; }
+.split-hint p { margin: 0; line-height: 1.5; }
+#split-pane .terminals { flex: 1 1 auto; height: 100%; }
+
+/* split mode: η σελίδα γίνεται στήλη δίπλα στο pane, όχι overlay πάνω του */
+.main.split-on .stage { display: flex; flex-direction: row; align-items: stretch; }
+.main.split-on .stage > .page {
+  position: static !important; inset: auto !important; z-index: auto !important;
+  flex: 1 1 auto; min-width: 0; height: 100%; overflow: auto;
+}
+.main.split-on .stage > #terminals { flex: 1 1 auto; min-width: 0; height: 100%; }
+.main.split-on .split-pane { flex: 0 0 auto; }
+/* σειρά: κύρια προβολή αριστερά, διάγραμμα/terminal δεξιά, divider ανάμεσα */
+.main.split-on .stage > .page, .main.split-on .stage > #terminals { order: 1; }
+.main.split-on .stage > .split-handle { order: 2; }
+.main.split-on .stage > .split-pane { order: 3; }
+.split-pane > #page-diagram { display: block !important; }

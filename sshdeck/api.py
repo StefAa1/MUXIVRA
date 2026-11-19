@@ -765,6 +765,27 @@ def host_trust_state(host_id: int, request: Request):
     }
 
 
+@api.post("/hosts/{host_id}/web")
+def open_host_web(host_id: int, payload: dict | None = None, request: Request = None):
+    """Open this connection's device web interface in an isolated window."""
+    from . import webview_surface
+
+    require_customer(request, ("host", host_id))
+    payload = payload or {}
+    with db.db() as conn:
+        row = fetch_host(conn, host_id)
+        cid = customers.request_customer(conn, request)
+    url = str(payload.get("url") or "").strip() or webview_surface.default_url(
+        {"mgmt_ip": row["hostname"], "hostname": row["hostname"]}
+    )
+    try:
+        webview_surface.validate_url(url)
+        result = webview_surface.launch(url, cid, row["label"], payload.get("trust_sha256") or None)
+    except webview_surface.SurfaceError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    return {**result, "host_id": host_id, "device": row["label"]}
+
+
 @api.post("/hosts/{host_id}/ping")
 async def ping_host(host_id: int, request: Request):
     target = target_or_404(host_id, request)

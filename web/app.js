@@ -160,6 +160,9 @@ async function loadCustomers() {
       toast(`Active customer: ${S.customers.find((c) => c.id === S.customerId)?.name || ''}`);
     };
   }
+  const dot = $('#ctx-dot');
+  const active = (S.customers || []).find((c) => c.id === S.customerId);
+  if (dot && active) dot.style.background = active.color || '#3ddc97';
   const add = $('#customer-add');
   if (add) add.onclick = openCustomerModal;
 }
@@ -248,9 +251,12 @@ function hostRowHtml(host) {
     <div class="host-meta">
       <div class="host-name">${esc(host.label)}</div>
       <div class="host-sub">${sub}</div>
-      ${protoChip || cred || tags ? `<div class="host-tags">${protoChip}${cred}${tags}</div>` : ''}
+      <div class="host-tags">${protoChip}${cred}${tags}
+        <button class="chip web-chip" data-act="web" data-id="${host.id}" title="Open the device web interface">Web</button>
+      </div>
     </div>
     <div class="host-actions">
+      <button class="icon-btn" data-act="web" data-id="${host.id}" title="Device web interface">🌐</button>
       <button class="icon-btn" data-act="edit" data-id="${host.id}" title="Edit">✎</button>
       <button class="icon-btn" data-act="del" data-id="${host.id}" title="Delete">🗑</button>
     </div>
@@ -686,7 +692,8 @@ function watchDiagramPanel() {
     row.innerHTML = `<span class="hint">Connection</span>${
       (payload.hosts || []).map((h) => `<button class="btn ghost xs" data-nd-open="${h.id}">${esc((h.protocol || 'ssh').toUpperCase())} · ${esc(h.label)}</button>`).join('')
         || '<span class="hint">no profile</span>'
-    }${payload.device && payload.device.mgmt_ip ? `<button class="btn ghost xs" data-nd-winbox="${deviceId}">WinBox</button>` : ''}`;
+    }${payload.device && payload.device.mgmt_ip ? `<button class="btn ghost xs" data-nd-winbox="${deviceId}">WinBox</button>
+      <button class="btn ghost xs" data-nd-web="${deviceId}" title="Device web interface in its own window">Web UI</button>` : ''}`;
     const target = panel.querySelector('[data-dg-act="open-rack"]');
     if (target && target.parentElement) target.parentElement.insertBefore(row, target);
   };
@@ -1313,6 +1320,23 @@ document.addEventListener('click', async (event) => {
 
   const closeBtn = event.target.closest('[data-close]');
   if (closeBtn) { closeModal(); return; }
+
+  const webAct = event.target.closest('[data-act="web"]');
+  if (webAct) {
+    event.stopPropagation();
+    try {
+      const res = await api(`/hosts/${Number(webAct.dataset.id)}/web`, { method: 'POST', json: {} });
+      if (res.mode === 'window') toast(`Web UI: ${res.url}`);
+      else {
+        toast(res.warning, 'err');
+        if (res.url) window.open(res.url, '_blank', 'noopener');
+      }
+    } catch (err) {
+      toast(err.detail === 'no_address' ? 'This device has no address yet'
+        : `Web UI did not open: ${err.message}`, 'err');
+    }
+    return;
+  }
 
   const hostRow = event.target.closest('.host-row');
   if (hostRow) {

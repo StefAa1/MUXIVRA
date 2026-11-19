@@ -134,34 +134,63 @@ function shFilterHosts(query) {
 }
 
 /* --------------------------------------------------------------- split view */
+function shRefitTerminals() {
+  const tabs = (typeof S !== 'undefined' && S && Array.isArray(S.tabs)) ? S.tabs : [];
+  tabs.forEach((tab) => {
+    if (!tab || !tab.fit || !tab.pane) return;
+    window.setTimeout(() => {
+      try {
+        tab.fit.fit();
+        if (typeof sendResize === 'function') sendResize(tab);
+      } catch (_) { /* ο τερματικός θα επανέλθει στο επόμενο resize */ }
+    }, 60);
+  });
+}
+
 function shApplySplit() {
   const main = document.querySelector('.main');
   const pane = document.querySelector('#split-pane');
+  const handle = document.querySelector('#split-handle');
+  const stage = document.querySelector('#stage');
   const page = document.querySelector('#page-diagram');
-  if (!main || !pane || !page) return;
+  const terminals = document.querySelector('#terminals');
+  if (!main || !pane || !stage || !page) return;
+
   main.classList.toggle('split-on', SH.split);
+  pane.classList.toggle('hidden', !SH.split);
+  if (handle) handle.classList.toggle('hidden', !SH.split);
   const button = document.querySelector('#btn-split');
   if (button) {
     button.classList.toggle('on', SH.split);
     button.setAttribute('aria-pressed', SH.split ? 'true' : 'false');
-    button.textContent = SH.split ? 'Close diagram' : 'Diagram side-by-side';
+    button.textContent = SH.split ? 'Close split' : 'Diagram side-by-side';
   }
+
+  const hasTab = typeof S !== 'undefined' && S && S.activeTabId
+    && Array.isArray(S.tabs) && S.tabs.some((tab) => tab.id === S.activeTabId);
+
   if (SH.split) {
+    if (SH.splitWidth) pane.style.width = `${SH.splitWidth}px`;
+    // το διάγραμμα πάει στο πλαϊνό panel· η κύρια σκηνή κρατά σελίδα ή terminal
+    pane.innerHTML = '';
     pane.appendChild(page);
     page.classList.remove('hidden');
-    pane.classList.remove('hidden');
-    if (SH.splitWidth) pane.style.width = `${SH.splitWidth}px`;
-    if (typeof renderDiagram === 'function') {
-      try { renderDiagram(true); } catch (_) { /* το διάγραμμα θα ζωγραφιστεί στην επόμενη αλλαγή */ }
+    if (typeof showPage === 'function') {
+      const keep = (S.view && S.view !== 'diagram') ? S.view : 'hosts';
+      showPage(keep);
+      // το showPage κρύβει όλα τα .page — το διάγραμμα ζει πλέον στο pane
+      page.classList.remove('hidden');
     }
   } else {
-    const stage = document.querySelector('#stage');
     if (stage && page.parentNode !== stage) stage.appendChild(page);
-    pane.classList.add('hidden');
+    if (stage && terminals && terminals.parentNode !== stage) stage.appendChild(terminals);
     pane.innerHTML = '';
-    if (typeof renderDiagram === 'function') {
-      try { renderDiagram(true); } catch (_) { /* ignored */ }
-    }
+    if (typeof showPage === 'function') showPage(S.view || 'hosts');
+  }
+
+  shRefitTerminals();
+  if (typeof renderDiagram === 'function') {
+    try { renderDiagram(true); } catch (_) { /* ignored */ }
   }
   try { window.localStorage.setItem('muxivra.split.on', SH.split ? '1' : '0'); } catch (_) { /* ignored */ }
 }
@@ -187,12 +216,20 @@ function shWireSplit() {
     pane.style.width = `${Math.round(width)}px`;
     SH.splitWidth = Math.round(width);
   });
+  window.addEventListener('resize', () => {
+    if (!SH.split) return;
+    shRefitTerminals();
+    if (typeof renderDiagram === 'function') {
+      try { renderDiagram(true); } catch (_) { /* ignored */ }
+    }
+  });
   handle.addEventListener('pointerup', () => {
     SH.splitDragging = false;
     try { window.localStorage.setItem('muxivra.split.width', String(SH.splitWidth)); } catch (_) { /* ignored */ }
     if (typeof renderDiagram === 'function') {
       try { renderDiagram(true); } catch (_) { /* ignored */ }
     }
+    shRefitTerminals();
   });
   try {
     const saved = Number(window.localStorage.getItem('muxivra.split.width'));
