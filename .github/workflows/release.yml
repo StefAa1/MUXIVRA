@@ -49,10 +49,21 @@ jobs:
           cache-dependency-path: requirements.txt
 
       - name: Install build tools (mingw-w64 for the launcher)
+        timeout-minutes: 12
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends mingw-w64
-          x86_64-w64-mingw32-gcc --version | head -1
+          set -x
+          export APT_OPTS="-y -qq --no-install-recommends -o Acquire::Retries=3 -o Acquire::http::Timeout=20"
+          # η προεγκατεστημένη toolchain γλιτώνει το apt όταν υπάρχει
+          if ! command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+            timeout 300 sudo apt-get update -qq || echo "apt update timed out — continuing with what is installed"
+            timeout 420 sudo apt-get install $APT_OPTS mingw-w64 nsis || true
+          else
+            timeout 300 sudo apt-get install $APT_OPTS nsis || true
+          fi
+          x86_64-w64-mingw32-gcc --version | head -1 || echo "::warning::mingw-w64 missing — the launcher cannot be rebuilt"
+          command -v makensis || echo "::warning::nsis missing — the installer step will be skipped"
 
       - name: Create venv and install dependencies
         run: |
@@ -79,8 +90,11 @@ jobs:
 
       - name: Build Windows installer
         run: |
-          sudo apt-get install -y -qq --no-install-recommends nsis
-          .venv/bin/python scripts/build_installer.py
+          if command -v makensis >/dev/null 2>&1; then
+            .venv/bin/python scripts/build_installer.py
+          else
+            echo "::warning::makensis is unavailable on this runner — shipping the portable ZIP only"
+          fi
 
       - name: Verify bundle matches source
         run: .venv/bin/python scripts/verify_bundle.py
