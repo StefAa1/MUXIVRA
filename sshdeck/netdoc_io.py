@@ -7,35 +7,75 @@ import time
 FORMAT = "muxivra.netdoc/1"
 
 
-def export_payload(conn: sqlite3.Connection) -> dict:
-    def rows(sql: str) -> list[dict]:
-        return [dict(r) for r in conn.execute(sql)]
+def export_payload(conn: sqlite3.Connection, customer_id: int | None = None) -> dict:
+    """Everything the customer owns, and nothing else (ids are local to the export)."""
+    scope = ""
+    params: tuple = ()
+    if customer_id:
+        scope = " WHERE s.customer_id = ?"
+        params = (int(customer_id),)
+
+    sites = [dict(r) for r in conn.execute(
+        "SELECT s.id, s.name, s.note FROM sites s" + scope + " ORDER BY s.id", params
+    )]
+    site_ids = [s["id"] for s in sites]
+    placeholders = ",".join("?" * len(site_ids)) or "NULL"
+
+    racks = [dict(r) for r in conn.execute(
+        f"SELECT id, site_id, name, units FROM racks WHERE site_id IN ({placeholders}) ORDER BY id",
+        site_ids,
+    )]
+    rack_ids = [r["id"] for r in racks]
+    rack_ph = ",".join("?" * len(rack_ids)) or "NULL"
+
+    devices = [dict(r) for r in conn.execute(
+        "SELECT id, rack_id, name, kind, units, position, note, host_id, vendor, model, mgmt_ip"
+        f" FROM devices WHERE rack_id IN ({rack_ph}) ORDER BY id",
+        rack_ids,
+    )]
+    device_ids = [d["id"] for d in devices]
+    device_ph = ",".join("?" * len(device_ids)) or "NULL"
+
+    ports = [dict(r) for r in conn.execute(
+        f"SELECT id, device_id, name, kind FROM ports WHERE device_id IN ({device_ph}) ORDER BY id",
+        device_ids,
+    )]
+    port_ids = [p["id"] for p in ports]
+    port_ph = ",".join("?" * len(port_ids)) or "NULL"
+
+    links = [dict(r) for r in conn.execute(
+        "SELECT id, port_a, port_b, cable, length_m FROM links"
+        f" WHERE port_a IN ({port_ph}) AND port_b IN ({port_ph}) ORDER BY id",
+        port_ids + port_ids,
+    )]
+
+    profiles = [dict(r) for r in conn.execute(
+        """SELECT dp.device_id, h.uuid AS host_uuid, h.label AS host_label,
+                  CASE WHEN d.host_id = h.id THEN 1 ELSE 0 END AS is_primary
+             FROM device_profiles dp
+             JOIN hosts h ON h.id = dp.host_id
+             JOIN devices d ON d.id = dp.device_id
+            UNION
+           SELECT d.id AS device_id, h.uuid AS host_uuid, h.label AS host_label, 1 AS is_primary
+             FROM devices d JOIN hosts h ON h.id = d.host_id
+            ORDER BY device_id, is_primary DESC"""
+    )]
+    profiles = [p for p in profiles if p["device_id"] in set(device_ids)]
 
     return {
         "format": FORMAT,
+        "customer_id": customer_id,
         "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "sites": rows("SELECT id, name, note FROM sites ORDER BY id"),
-        "racks": rows("SELECT id, site_id, name, units FROM racks ORDER BY id"),
-        "devices": rows(
-            "SELECT id, rack_id, name, kind, units, position, note, host_id, vendor, model, mgmt_ip"
-            " FROM devices ORDER BY id"
-        ),
-        "ports": rows("SELECT id, device_id, name, kind FROM ports ORDER BY id"),
-        "links": rows("SELECT id, port_a, port_b, cable, length_m FROM links ORDER BY id"),
-        # profile relations travel as host *labels*: importing a backup must never
-        # bind a device to a host id that belongs to another database
+        "sites": sites,
+        "racks": racks,
+        "devices": devices,
+        "ports": ports,
+        "links": links,
         # identity travels as UUID: labels are not unique (two customers may both
         # have a host called "Router"), so they can never be the mapping key
-        "profiles": rows(
-            """SELECT dp.device_id, h.uuid AS host_uuid, h.label AS host_label
-                 FROM device_profiles dp JOIN hosts h ON h.id = dp.host_id
-                UNION
-               SELECT d.id AS device_id, h.uuid AS host_uuid, h.label AS host_label
-                 FROM devices d JOIN hosts h ON h.id = d.host_id
-                ORDER BY device_id"""
-        ),
-        "scope": "documentation data only: sites, racks, devices, ports, links, profile links; "
-                 "no credentials, no vault material, no diagram layout (that stays local)",
+        "profiles": profiles,
+        "scope": "documentation data of ONE customer: sites, racks, devices, ports, links, "
+                 "profile links; no credentials, no vault material, no diagram layout",
     }
 
 
@@ -58,11 +98,16 @@ def validate(payload: dict) -> dict:
     return counters
 
 
-def _site_key(conn, name: str) -> int:
-    row = conn.execute("SELECT id FROM sites WHERE name = ?", (name,)).fetchone()
+def _site_key(conn, name: str, customer_id: int | None = None) -> int:
+    row = conn.execute(
+        "SELECT id FROM sites WHERE name = ? AND (customer_id IS ? OR ? IS NULL)",
+        (name, customer_id, customer_id),
+    ).fetchone()
     if row:
         return row["id"]
-    cur = conn.execute("INSERT INTO sites (name, note) VALUES (?, '')", (name,))
+    cur = conn.execute(
+        "INSERT INTO sites (name, note, customer_id) VALUES (?, '', ?)", (name, customer_id)
+    )
     return cur.lastrowid
 
 
@@ -93,6 +138,21 @@ def _device_key(conn, rack_id: int, device: dict) -> int | None:
 
 
 KINDS = {"switch", "router", "patch-panel", "server", "pdu", "other"}
+
+
+def _num(value, field: str, row_id, default=None):
+    """Coerce a JSON number, raising a clean 422 instead of a 500."""
+    if value in (None, ""):
+        if default is None:
+            raise ImportError_("bad_number", f"Το «{field}» λείπει στη γραμμή #{row_id}.")
+        return default
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ImportError_("bad_number", f"Το «{field}» δεν είναι αριθμός στη γραμμή #{row_id}.")
+    if number != number or number in (float("inf"), float("-inf")):
+        raise ImportError_("bad_number", f"Το «{field}» δεν είναι έγκυρος αριθμός (#{row_id}).")
+    return number
 PORT_KINDS = {"rj45", "sfp", "fiber", "power", "other"}
 
 
@@ -114,8 +174,7 @@ def _validate_rows(payload: dict) -> None:
     # smaller than the payload claims, and it may already be occupied
     rack_units: dict = {}
     for rack in payload["racks"]:
-        units = rack.get("units", 42)
-        units = 42 if units is None else int(units)
+        units = int(_num(rack.get("units"), "units", rack["id"], 42))
         if not 1 <= units <= 60:
             raise ImportError_("bad_geometry", f"Το rack #{rack['id']} έχει άκυρο ύψος.")
         rack_units[rack["id"]] = units
@@ -125,7 +184,9 @@ def _validate_rows(payload: dict) -> None:
             raise ImportError_("dangling_ref", f"Η συσκευή #{device['id']} δείχνει σε άγνωστο rack.")
         if (device.get("kind") or "switch") not in KINDS:
             raise ImportError_("bad_device_kind", f"Άγνωστος τύπος συσκευής: {device.get('kind')}")
-        if int(device.get("position") or 1) < 1 or int(device.get("units") or 1) < 1:
+        if _num(device.get("position"), "position", device["id"], 1) < 1 or _num(
+            device.get("units"), "units", device["id"], 1
+        ) < 1:
             raise ImportError_("bad_geometry", f"Άκυρη θέση για τη συσκευή #{device['id']}.")
 
     port_ids = {row["id"] for row in payload["ports"]}
@@ -141,14 +202,15 @@ def _validate_rows(payload: dict) -> None:
         if link.get("port_a") == link.get("port_b"):
             raise ImportError_("self_link", f"Η σύνδεση #{link['id']} ενώνει το port με τον εαυτό του.")
         try:
-            length = float(link.get("length_m") or 0)
-        except (TypeError, ValueError):
-            raise ImportError_("bad_length", f"Άκυρο μήκος στη σύνδεση #{link['id']}.")
+            length = _num(link.get("length_m"), "length_m", link["id"], 0)
+        except ImportError_ as exc:
+            raise ImportError_("bad_length", exc.message)
         if not 0 <= length <= 10000:
             raise ImportError_("bad_length", f"Άκυρο μήκος στη σύνδεση #{link['id']}.")
 
 
-def import_payload(conn: sqlite3.Connection, payload: dict, dry_run: bool = False) -> dict:
+def import_payload(conn: sqlite3.Connection, payload: dict, dry_run: bool = False,
+                    customer_id: int | None = None) -> dict:
     """Restore documentation data. Never overwrites: existing rows are reused.
 
     A dry run performs exactly the same work and then rolls back, so the preview
@@ -173,13 +235,19 @@ def import_payload(conn: sqlite3.Connection, payload: dict, dry_run: bool = Fals
         name = str(site.get("name") or "").strip()
         if not name:
             raise ImportError_("bad_format", "Ο χώρος χρειάζεται όνομα.")
-        row = conn.execute("SELECT id FROM sites WHERE name = ?", (name,)).fetchone()
+        row = conn.execute(
+            "SELECT id FROM sites WHERE name = ? AND (customer_id IS ? OR ? IS NULL)",
+            (name, customer_id, customer_id),
+        ).fetchone()
         if row:
             site_map[site["id"]] = row["id"]
             report["skipped"]["sites"] += 1
             report["conflicts"].append({"kind": "site", "name": name, "action": "kept-existing"})
         else:
-            cur = conn.execute("INSERT INTO sites (name, note) VALUES (?, ?)", (name, site.get("note") or ""))
+            cur = conn.execute(
+                "INSERT INTO sites (name, note, customer_id) VALUES (?, ?, ?)",
+                (name, site.get("note") or "", customer_id),
+            )
             site_map[site["id"]] = cur.lastrowid
             report["created"]["sites"] += 1
 
@@ -310,6 +378,9 @@ def import_payload(conn: sqlite3.Connection, payload: dict, dry_run: bool = Fals
         if (device_new, host["id"]) in seen_pairs:
             continue        # primary link and device_profiles row describe the same pair
         seen_pairs.add((device_new, host["id"]))
+        if int(profile.get("is_primary") or 0) == 1:
+            # restore the primary profile the device panel shows in its dropdown
+            conn.execute("UPDATE devices SET host_id = ? WHERE id = ?", (host["id"], device_new))
         conn.execute(
             "INSERT OR IGNORE INTO device_profiles (device_id, host_id) VALUES (?, ?)",
             (device_new, host["id"]),

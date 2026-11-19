@@ -5,7 +5,7 @@ from contextlib import contextmanager
 
 from . import config
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -79,6 +79,17 @@ CREATE TABLE IF NOT EXISTS events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS customers (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    uuid       TEXT NOT NULL UNIQUE,
+    name       TEXT NOT NULL,
+    code       TEXT NOT NULL DEFAULT '',
+    color      TEXT NOT NULL DEFAULT '#3ddc97',
+    notes      TEXT NOT NULL DEFAULT '',
+    archived   INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL DEFAULT 0
+);
 
 CREATE TABLE IF NOT EXISTS sites (
     id   INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -215,6 +226,14 @@ def _add_missing_columns(conn: sqlite3.Connection, table: str, columns: dict) ->
 def migrate(conn: sqlite3.Connection) -> None:
     """Bring an older database up to the current schema without losing data."""
     _add_missing_columns(conn, "hosts", HOST_COLUMNS)
+    _add_missing_columns(conn, "sites", {"customer_id": "INTEGER REFERENCES customers(id)"})
+    _add_missing_columns(conn, "hosts", {"customer_id": "INTEGER REFERENCES customers(id)"})
+    _add_missing_columns(conn, "credentials", {"customer_id": "INTEGER REFERENCES customers(id)"})
+    from . import customers as _customers
+
+    _customers.backfill_ownership(conn)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sites_customer ON sites(customer_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_hosts_customer ON hosts(customer_id)")
     # fill stable identities for pre-0.4.3 rows (UUIDs, never labels)
     import uuid as _uuid
 

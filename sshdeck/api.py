@@ -26,7 +26,7 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from . import buildinfo, config, db, security, sshconfig, sshconn, transports, update
+from . import buildinfo, config, customers, db, security, sshconfig, sshconn, transports, update
 from .sshconn import SshError, Target
 
 MAX_DOWNLOAD = 200 * 1024 * 1024
@@ -462,30 +462,86 @@ def vault_unlock():
     return {"ok": True, "locked": False, **security.vault_state()}
 
 
-@api.get("/credentials")
-def list_credentials():
+# ---------------------------------------------------------------- customers
+class CustomerIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    code: str = Field(default="", max_length=12)
+    color: str = "#3ddc97"
+    notes: str = Field(default="", max_length=400)
+
+
+@api.get("/customers")
+def list_customers(include_archived: bool = False):
     with db.db() as conn:
-        rows = conn.execute("SELECT * FROM credentials ORDER BY name COLLATE NOCASE").fetchall()
+        return customers.list_customers(conn, include_archived=include_archived)
+
+
+@api.post("/customers", status_code=201)
+def create_customer(payload: CustomerIn):
+    with db.db() as conn:
+        try:
+            created = customers.create_customer(conn, payload.name, payload.code, payload.color, payload.notes)
+        except customers.CustomerError as exc:
+            raise HTTPException(status_code=409 if exc.code == "duplicate_name" else 422, detail=exc.code)
+        db.log_event(None, "customer_created", created["name"], conn=conn)
+        return created
+
+
+@api.patch("/customers/{customer_id}")
+def update_customer(customer_id: int, payload: dict):
+    with db.db() as conn:
+        row = customers.get_customer(conn, customer_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="not_found")
+        fields, values = [], []
+        for key in ("name", "code", "color", "notes", "archived"):
+            if key in payload:
+                fields.append(f"{key} = ?")
+                values.append(payload[key])
+        if not fields:
+            return row
+        values.append(customer_id)
+        conn.execute(f"UPDATE customers SET {', '.join(fields)} WHERE id = ?", values)
+        return customers.get_customer(conn, customer_id)
+
+
+@api.get("/customers/{customer_id}/summary")
+def customer_summary(customer_id: int):
+    with db.db() as conn:
+        if not customers.get_customer(conn, customer_id):
+            raise HTTPException(status_code=404, detail="not_found")
+        return customers.summary(conn, customer_id)
+
+
+@api.get("/credentials")
+def list_credentials(request: Request):
+    with db.db() as conn:
+        cid = customers.request_customer(conn, request)
+        rows = conn.execute(
+            "SELECT * FROM credentials WHERE customer_id = ? ORDER BY name COLLATE NOCASE", (cid,)
+        ).fetchall()
         return [_credential_out(r) for r in rows]
 
 
 @api.post("/credentials", status_code=201)
-def create_credential(payload: CredentialIn):
+def create_credential(payload: CredentialIn, request: Request):
     if not payload.secret.strip():
         raise HTTPException(status_code=422, detail="secret_required")
     if payload.kind == "key" and "PRIVATE KEY" not in payload.secret:
         raise HTTPException(status_code=422, detail="not_a_private_key")
     now = db.now()
     with db.db() as conn:
+        cid = customers.request_customer(conn, request)
         cur = conn.execute(
-            "INSERT INTO credentials(name, kind, username, secret_enc, passphrase_enc, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO credentials(name, kind, username, secret_enc, passphrase_enc, customer_id,"
+            " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 payload.name.strip(),
                 payload.kind,
                 payload.username.strip(),
                 security.seal(payload.secret.strip()),
                 security.seal(payload.passphrase) if payload.passphrase else None,
+                cid,
                 now,
                 now,
             ),
@@ -533,24 +589,27 @@ def delete_credential(credential_id: int):
 
 # -------------------------------------------------------------------- hosts
 @api.get("/hosts")
-def list_hosts():
+def list_hosts(request: Request):
     with db.db() as conn:
+        cid = customers.request_customer(conn, request)
         rows = conn.execute(
             "SELECT h.*, c.name AS credential_name FROM hosts h "
             "LEFT JOIN credentials c ON c.id = h.credential_id "
-            "ORDER BY h.group_name COLLATE NOCASE, h.label COLLATE NOCASE"
+            "WHERE h.customer_id = ? "
+            "ORDER BY h.group_name COLLATE NOCASE, h.label COLLATE NOCASE",
+            (cid,),
         ).fetchall()
         return [row_to_host(r, r["credential_name"]) for r in rows]
 
 
 @api.post("/hosts", status_code=201)
-def create_host(payload: HostIn):
+def create_host(payload: HostIn, request: Request):
     now = db.now()
     with db.db() as conn:
         cur = conn.execute(
             "INSERT INTO hosts(label, protocol, hostname, port, username, credential_id, group_name, tags, "
-            "color, notes, serial_port, baud, bytesize, parity, stopbits, flow, uuid, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "color, notes, serial_port, baud, bytesize, parity, stopbits, flow, uuid, customer_id,"
+            " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 payload.label.strip(),
                 payload.protocol,
@@ -569,6 +628,7 @@ def create_host(payload: HostIn):
                 payload.stopbits,
                 payload.flow,
                 uuid.uuid4().hex,
+                customers.request_customer(conn, request),
                 now,
                 now,
             ),
@@ -810,6 +870,7 @@ async def update_prepare(payload: UpdateReleaseIn):
             config.STAGING_DIR,
             None,
             snapshot if config.DB_PATH.exists() else None,
+            config.DB_PATH,
         )
     except update.UpdateError as exc:
         with db.db() as conn:
@@ -960,7 +1021,7 @@ async def rename_path(host_id: int, payload: RenameIn):
 
 # ------------------------------------------------------------------- import
 @api.post("/import/ssh-config")
-def import_ssh_config(payload: ImportIn):
+def import_ssh_config(payload: ImportIn, request: Request):
     text = payload.text
     if not text and payload.path:
         expanded = os.path.expanduser(payload.path)
@@ -982,7 +1043,7 @@ def import_ssh_config(payload: ImportIn):
                 continue
             cur = conn.execute(
                 "INSERT INTO hosts(uuid, label, hostname, port, username, credential_id, group_name, tags, color, "
-                "notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "notes, customer_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     uuid.uuid4().hex,
                     item.alias,
@@ -994,6 +1055,7 @@ def import_ssh_config(payload: ImportIn):
                     "imported",
                     "#7c9cff",
                     f"IdentityFile: {item.identity_file}" if item.identity_file else "",
+                    customers.request_customer(conn, request),
                     now,
                     now,
                 ),

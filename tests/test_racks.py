@@ -447,3 +447,31 @@ def test_import_checks_geometry_against_existing_rack(rack):
     tree = rack["client"].get("/api/netdoc/tree").json()
     small = next(s for s in tree["sites"] if s["name"] == "Μικρό")
     assert small["racks"][0]["units"] == 10 and small["racks"][0]["devices"] == []
+
+
+def test_export_marks_primary_profile_and_restore_keeps_it(rack):
+    host = rack["client"].post("/api/hosts", json={"label": "core", "hostname": "10.4.4.4", "protocol": "ssh"}).json()
+    rack["client"].post("/api/netdoc/import", json={"data": _payload()})
+    exported = rack["client"].get("/api/netdoc/export").json()
+    sw = next(d for d in exported["devices"] if d["name"] == "sw1")
+
+    rack["client"].patch(f"/api/netdoc/devices/{sw['id']}", json={"host_id": host["id"]})
+    exported = rack["client"].get("/api/netdoc/export").json()
+    primaries = [p for p in exported["profiles"] if p["device_id"] == sw["id"] and p.get("is_primary") == 1]
+    assert len(primaries) == 1 and primaries[0]["host_uuid"] == host["uuid"]
+
+    # wipe the relation, then restore from the backup
+    rack["client"].patch(f"/api/netdoc/devices/{sw['id']}", json={"host_id": None})
+    assert rack["client"].get(f"/api/netdoc/devices/{sw['id']}/connections").json()["hosts"] == []
+    rack["client"].post("/api/netdoc/import", json={"data": exported})
+    conns = rack["client"].get(f"/api/netdoc/devices/{sw['id']}/connections").json()
+    assert any(h["id"] == host["id"] for h in conns["hosts"])
+
+
+@pytest.mark.parametrize("field,value", [("units", "πολύ"), ("position", "abc")])
+def test_import_rejects_bad_numbers_as_422(rack, field, value):
+    payload = _payload()
+    payload["devices"][0][field] = value
+    res = rack["client"].post("/api/netdoc/import", json={"data": payload})
+    assert res.status_code == 422, res.text
+    assert "bad_number" in res.json()["detail"] or "bad_geometry" in res.json()["detail"]

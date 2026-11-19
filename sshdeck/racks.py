@@ -9,14 +9,14 @@ import csv
 import io
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 import json
 import sqlite3
 
-from . import db
+from . import customers, db
 from .api import guard
 
 router = APIRouter(prefix="/api/netdoc", dependencies=[Depends(guard)])
@@ -74,6 +74,17 @@ class LinkIn(BaseModel):
     length_m: float = Field(default=0, ge=0, le=10000)
 
 
+def _cid(conn, request) -> int:
+    return customers.request_customer(conn, request)
+
+
+def _ensure_same(conn, customer_id, *pairs) -> None:
+    try:
+        customers.assert_same_customer(conn, customer_id, *pairs)
+    except customers.CustomerError as exc:
+        raise HTTPException(status_code=409 if exc.code == "cross_customer" else 404, detail=exc.code)
+
+
 def _conn():
     return db.db()
 
@@ -87,12 +98,22 @@ def _one(conn, sql: str, params=()):
 
 # ------------------------------------------------------------------- sites
 @router.get("/tree")
-def tree():
+def tree(request: Request):
     with _conn() as conn:
-        sites = [dict(r) for r in conn.execute("SELECT * FROM sites ORDER BY name")]
+        cid = _cid(conn, request)
+        sites = [dict(r) for r in conn.execute(
+            "SELECT * FROM sites WHERE customer_id = ? ORDER BY name", (cid,))]
         racks = [dict(r) for r in conn.execute("SELECT * FROM racks ORDER BY name")]
         devices = [dict(r) for r in conn.execute("SELECT * FROM devices ORDER BY position DESC")]
-        links = conn.execute("SELECT COUNT(*) AS n FROM links").fetchone()["n"]
+        links = conn.execute(
+            """SELECT COUNT(*) AS n FROM links l
+                 JOIN ports p ON p.id = l.port_a
+                 JOIN devices d ON d.id = p.device_id
+                 JOIN racks r ON r.id = d.rack_id
+                 JOIN sites st ON st.id = r.site_id
+                WHERE st.customer_id = ?""",
+            (cid,),
+        ).fetchone()["n"]
     for rack in racks:
         rack["devices"] = [d for d in devices if d["rack_id"] == rack["id"]]
     for site in sites:
@@ -101,9 +122,13 @@ def tree():
 
 
 @router.post("/sites")
-def create_site(payload: SiteIn):
+def create_site(payload: SiteIn, request: Request):
     with _conn() as conn:
-        cur = conn.execute("INSERT INTO sites (name, note) VALUES (?, ?)", (payload.name.strip(), payload.note))
+        cid = _cid(conn, request)
+        cur = conn.execute(
+            "INSERT INTO sites (name, note, customer_id) VALUES (?, ?, ?)",
+            (payload.name.strip(), payload.note, cid),
+        )
         conn.commit()
         return dict(conn.execute("SELECT * FROM sites WHERE id = ?", (cur.lastrowid,)).fetchone())
 
@@ -121,9 +146,10 @@ def delete_site(site_id: int):
 
 
 @router.post("/racks")
-def create_rack(payload: RackIn):
+def create_rack(payload: RackIn, request: Request):
     with _conn() as conn:
         _one(conn, "SELECT id FROM sites WHERE id = ?", (payload.site_id,))
+        _ensure_same(conn, _cid(conn, request), ("site", payload.site_id))
         cur = conn.execute(
             "INSERT INTO racks (site_id, name, units) VALUES (?, ?, ?)",
             (payload.site_id, payload.name.strip(), payload.units),
@@ -152,9 +178,10 @@ def delete_rack(rack_id: int):
 
 # ----------------------------------------------------------------- devices
 @router.post("/devices")
-def create_device(payload: DeviceIn):
+def create_device(payload: DeviceIn, request: Request):
     with _conn() as conn:
         rack = _one(conn, "SELECT units FROM racks WHERE id = ?", (payload.rack_id,))
+        _ensure_same(conn, _cid(conn, request), ("rack", payload.rack_id))
         if payload.position + payload.units - 1 > rack["units"]:
             raise HTTPException(status_code=422, detail="device_outside_rack")
         clash = conn.execute(
@@ -178,9 +205,10 @@ def create_device(payload: DeviceIn):
 
 
 @router.delete("/devices/{device_id}")
-def delete_device(device_id: int):
+def delete_device(device_id: int, request: Request):
     with _conn() as conn:
         _one(conn, "SELECT id FROM devices WHERE id = ?", (device_id,))
+        _ensure_same(conn, _cid(conn, request), ("device", device_id))
         for port in conn.execute("SELECT id FROM ports WHERE device_id = ?", (device_id,)).fetchall():
             conn.execute("DELETE FROM links WHERE port_a = ? OR port_b = ?", (port["id"], port["id"]))
         conn.execute("DELETE FROM ports WHERE device_id = ?", (device_id,))
@@ -265,10 +293,17 @@ def list_links():
 
 
 @router.post("/links")
-def create_link(payload: LinkIn):
+def create_link(payload: LinkIn, request: Request):
     if payload.port_a == payload.port_b:
         raise HTTPException(status_code=422, detail="same_port")
     with _conn() as conn:
+        cid = _cid(conn, request)
+        # a cable may not join two customers, and both ends must be ours
+        try:
+            customers.assert_same_customer(conn, cid, ("port", payload.port_a), ("port", payload.port_b))
+        except customers.CustomerError as exc:
+            raise HTTPException(status_code=422 if exc.code == "cross_customer" else 404,
+                                detail=f"{exc.code}: {exc.message}")
         for port_id in (payload.port_a, payload.port_b):
             port = _one(conn, "SELECT id FROM ports WHERE id = ?", (port_id,))
             busy = conn.execute(
@@ -412,9 +447,10 @@ def audit():
 
 
 @router.patch("/devices/{device_id}")
-def update_device(device_id: int, payload: DevicePatch):
+def update_device(device_id: int, payload: DevicePatch, request: Request):
     with _conn() as conn:
         device = _one(conn, "SELECT * FROM devices WHERE id = ?", (device_id,))
+        _ensure_same(conn, _cid(conn, request), ("device", device_id))
         rack = _one(conn, "SELECT units FROM racks WHERE id = ?", (device["rack_id"],))
         given = payload.model_dump(exclude_unset=True)
         merged = {**dict(device), **given}   # an explicit null (host_id) clears the field
@@ -581,17 +617,17 @@ def launch_winbox(device_id: int, payload: dict | None = None):
 
 # --------------------------------------------------------- backup / import
 @router.get("/export")
-def export_netdoc():
-    """Versioned JSON backup of documentation data (no credentials, no secrets)."""
+def export_netdoc(request: Request):
+    """Versioned JSON backup of THIS customer's documentation (no secrets)."""
     from . import netdoc_io
 
     with _conn() as conn:
-        payload = netdoc_io.export_payload(conn)
+        payload = netdoc_io.export_payload(conn, _cid(conn, request))
     return payload
 
 
 @router.post("/import")
-def import_netdoc(payload: dict):
+def import_netdoc(payload: dict, request: Request):
     """Restore a backup. dry_run=true shows what would be created, changing nothing."""
     from . import netdoc_io
 
@@ -599,7 +635,9 @@ def import_netdoc(payload: dict):
     dry_run = bool(payload.get("dry_run"))
     with _conn() as conn:
         try:
-            report = netdoc_io.import_payload(conn, data, dry_run=dry_run)
+            report = netdoc_io.import_payload(
+                conn, data, dry_run=dry_run, customer_id=_cid(conn, request)
+            )
         except netdoc_io.ImportError_ as exc:
             raise HTTPException(status_code=422, detail=f"{exc.code}: {exc.message}")
     if not dry_run:
@@ -608,12 +646,13 @@ def import_netdoc(payload: dict):
 
 
 @router.post("/devices/{device_id}/profiles")
-def add_device_profile(device_id: int, payload: dict):
-    """Attach another connection profile explicitly (device ⇄ host)."""
+def add_device_profile(device_id: int, payload: dict, request: Request):
+    """Attach another connection profile explicitly (device ⇄ host, same customer)."""
     host_id = int(payload.get("host_id") or 0)
     with _conn() as conn:
         _one(conn, "SELECT id FROM devices WHERE id = ?", (device_id,))
         _one(conn, "SELECT id FROM hosts WHERE id = ?", (host_id,))
+        _ensure_same(conn, _cid(conn, request), ("device", device_id), ("host", host_id))
         conn.execute(
             "INSERT OR IGNORE INTO device_profiles (device_id, host_id) VALUES (?, ?)", (device_id, host_id)
         )

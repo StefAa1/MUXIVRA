@@ -62,6 +62,7 @@ function toast(message, kind) {
 
 async function api(path, opts = {}) {
   const headers = { 'x-requested-with': 'sshdeck', ...(opts.headers || {}) };
+  if (S.customerId) headers['x-customer-id'] = String(S.customerId);
   const init = { credentials: 'same-origin', ...opts, headers };
   if (opts.json !== undefined) {
     headers['content-type'] = 'application/json';
@@ -131,6 +132,7 @@ async function enterApp() {
   const status = await api('/status');
   S.status = status;
   $('#sb-user').textContent = status.username || 'admin';
+  await loadCustomers();
   await Promise.all([loadHosts(), loadCreds(), loadSnippets(), loadEvents(), loadUpdateState()]);
   if (typeof loadNetdoc === 'function') await loadNetdoc();
   setView('hosts');
@@ -142,6 +144,55 @@ async function loadHosts() { S.hosts = await api('/hosts'); }
 async function loadCreds() { S.creds = await api('/credentials'); }
 async function loadSnippets() { S.snippets = await api('/snippets'); }
 async function loadEvents() { S.events = await api('/events'); }
+async function loadCustomers() {
+  S.customers = await api('/customers');
+  if (!S.customerId && S.customers.length) S.customerId = S.customers[0].id;
+  const select = $('#customer-select');
+  if (select) {
+    select.innerHTML = S.customers
+      .map((c) => `<option value="${c.id}"${c.id === S.customerId ? ' selected' : ''}>${esc(c.name)}</option>`)
+      .join('');
+    select.onchange = async () => {
+      S.customerId = Number(select.value);
+      await Promise.all([loadHosts(), loadCreds(), loadSnippets(), loadNetdoc()]);
+      renderSidebar();
+      renderPage();
+      toast(`Ενεργός πελάτης: ${S.customers.find((c) => c.id === S.customerId)?.name || ''}`);
+    };
+  }
+  const add = $('#customer-add');
+  if (add) add.onclick = openCustomerModal;
+}
+
+function openCustomerModal() {
+  openModal(`<h3>Προσθήκη πελάτη</h3>
+    <form id="customer-form">
+      <label class="field"><span>Όνομα</span><input name="name" required placeholder="Κεντρικό Αθήνας" /></label>
+      <label class="field"><span>Κωδικός (προαιρετικό)</span><input name="code" maxlength="12" placeholder="ATH" /></label>
+      <label class="field"><span>Σημειώσεις</span><input name="notes" placeholder="Στοιχεία επικοινωνίας, σύμβαση" /></label>
+      <p class="error-text" id="customer-error"></p>
+      <div class="modal-actions"><button type="button" class="btn ghost" data-close>Άκυρο</button>
+      <button class="btn primary" id="customer-save">Δημιουργία</button></div>
+    </form>`);
+  $('#customer-save').onclick = async (event) => {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData($('#customer-form')).entries());
+    try {
+      const created = await api('/customers', { json: data });
+      S.customerId = created.id;
+      await loadCustomers();
+      await Promise.all([loadHosts(), loadCreds(), loadNetdoc()]);
+      closeModal();
+      renderSidebar();
+      renderPage();
+      toast(`Ο πελάτης «${created.name}» προστέθηκε`);
+    } catch (err) {
+      $('#customer-error').textContent = err.message === 'duplicate_name'
+        ? 'Υπάρχει ήδη πελάτης με αυτό το όνομα.' : err.message;
+    }
+  };
+}
+
 async function loadUpdateState() {
   try { S.update = await api('/update/state'); } catch (_) { S.update = {}; }
 }
@@ -223,9 +274,7 @@ function activateTab(id) {
   S.tabs.forEach((tab) => {
     tab.pane.classList.toggle('active', tab.id === id);
   });
-  $$('.page').forEach((p) => p.classList.add('hidden'));
-  const terminals = $('#terminals');
-  if (terminals) terminals.classList.remove('hidden');
+  showPage('hosts');                  // shared transition: view-* classes, pages, terminals
   renderTabs();
   renderSidebar();
   requestAnimationFrame(() => {
@@ -609,7 +658,10 @@ function watchDiagramPanel() {
     if (inFlight || panel.classList.contains('hidden')) return;
     const deviceId = (typeof DG !== 'undefined' && DG.selected) || null;
     if (!deviceId) return;
-    if (panel.dataset.decoratedFor === String(deviceId)) return;   // already rendered for this node
+    const currentRow = panel.querySelector('.nd-conn-row');
+    if (currentRow && currentRow.dataset.forDevice === String(deviceId) && currentRow.isConnected) {
+      return;                                   // this render already shows this device
+    }
     inFlight = true;
     let payload;
     try {
@@ -619,13 +671,17 @@ function watchDiagramPanel() {
       return;
     }
     inFlight = false;
-    // the user may have clicked another node while the request was in flight
-    if (((typeof DG !== 'undefined' && DG.selected) || null) !== deviceId) return;
+    // the user may have clicked another node while the request was in flight:
+    // drop this answer and let the new selection render itself
+    if (((typeof DG !== 'undefined' && DG.selected) || null) !== deviceId) {
+      setTimeout(decorate, 0);
+      return;
+    }
     if (panel.classList.contains('hidden')) return;
-    panel.dataset.decoratedFor = String(deviceId);
     panel.querySelectorAll('.nd-conn-row').forEach((el) => el.remove());
     const row = document.createElement('div');
     row.className = 'nd-conn-row';
+    row.dataset.forDevice = String(deviceId);
     row.innerHTML = `<span class="hint">Σύνδεση</span>${
       (payload.hosts || []).map((h) => `<button class="btn ghost xs" data-nd-open="${h.id}">${esc((h.protocol || 'ssh').toUpperCase())} · ${esc(h.label)}</button>`).join('')
         || '<span class="hint">χωρίς profile</span>'
