@@ -273,3 +273,31 @@ def test_serial_flow_control_is_passed_to_pyserial(monkeypatch):
     Target.flow = "xonxoff"
     transports.SerialSession(Target())
     assert captured["rtscts"] is False and captured["xonxoff"] is True
+
+
+def test_telnet_write_normalises_every_line_ending():
+    """Regression: pasted CRLF became CR CR LF."""
+    from sshdeck.transports import TelnetSession
+
+    sent = []
+
+    class FakeSock:
+        def sendall(self, data):
+            sent.append(data)
+
+        def close(self):
+            pass
+
+    session = TelnetSession.__new__(TelnetSession)
+    session.sock = FakeSock()
+    import threading
+    session._send_lock = threading.Lock()
+
+    for raw, expected in [
+        ("a\r", b"a\r\n"),          # Enter key
+        ("a\r\nb\r\n", b"a\r\nb\r\n"),  # pasted Windows text
+        ("a\nb", b"a\r\nb"),          # pasted unix text
+        ("a\rb", b"a\r\nb"),          # stray CR
+    ]:
+        session._write(raw.encode())
+        assert sent[-1] == expected, (raw, sent[-1])

@@ -427,13 +427,30 @@ function renderPage() {
   renderActivity();
   if (typeof renderRacks === 'function') renderRacks();
   if (S.view === 'racks') { decorateDeviceConnections(); decorateNetdocBackup(); }
-  if (S.view === 'diagram' && typeof renderDiagram === 'function') renderDiagram();
+  if (S.view === 'diagram' && typeof renderDiagram === 'function') { renderDiagram(); setTimeout(watchDiagramPanel, 60); }
   renderSettings();
-  if (S.view !== 'hosts') {
-    $('#page-hosts').classList.add('hidden');
-    const page = $('#page-' + S.view);
-    if (page) page.classList.remove('hidden');
+  showPage(S.view);
+}
+
+/* One canonical rule: exactly one page is visible, and the terminal area only
+   belongs to the hosts view. Everything else leads to overlapping pages. */
+function showPage(view) {
+  const target = 'page-' + view;
+  document.querySelectorAll('.page').forEach((page) => {
+    page.classList.toggle('hidden', page.id !== target);
+  });
+  const app = $('#app');
+  if (app) {
+    app.classList.toggle('view-hosts', view === 'hosts');
+    app.classList.toggle('view-racks', view === 'racks');
+    app.classList.toggle('view-diagram', view === 'diagram');
   }
+  // terminals belong to the hosts view only; the stage keeps the pages
+  const terminals = $('#terminals');
+  if (terminals) terminals.classList.toggle('hidden', view !== 'hosts');
+  document.querySelectorAll('.page').forEach((page) => {
+    page.style.zIndex = page.id === target ? '5' : '1';
+  });
 }
 
 function renderHero() {
@@ -581,6 +598,29 @@ function decorateNetdocBackup() {
   actions.appendChild(restore);
 }
 
+function watchDiagramPanel() {
+  const panel = document.querySelector('#dg-panel');
+  if (!panel || panel.dataset.connWatch) return;
+  panel.dataset.connWatch = '1';
+  const decorate = async () => {
+    if (panel.classList.contains('hidden')) return;
+    if (panel.querySelector('[data-nd-open]')) return;
+    const deviceId = (typeof DG !== 'undefined' && DG.selected) || null;
+    if (!deviceId) return;
+    let payload;
+    try { payload = await api(`/netdoc/devices/${deviceId}/connections`); } catch (_) { return; }
+    const row = document.createElement('div');
+    row.className = 'nd-conn-row';
+    row.innerHTML = `<span class="hint">Σύνδεση</span>${
+      (payload.hosts || []).map((h) => `<button class="btn ghost xs" data-nd-open="${h.id}">${esc((h.protocol || 'ssh').toUpperCase())} · ${esc(h.label)}</button>`).join('')
+        || '<span class="hint">χωρίς profile</span>'
+    }${payload.device && payload.device.mgmt_ip ? `<button class="btn ghost xs" data-nd-winbox="${deviceId}">WinBox</button>` : ''}`;
+    const target = panel.querySelector('[data-dg-act="open-rack"]');
+    if (target && target.parentElement) target.parentElement.insertBefore(row, target);
+  };
+  new MutationObserver(() => { decorate(); }).observe(panel, { childList: true, subtree: true });
+}
+
 async function decorateDeviceConnections() {
   const layout = (typeof ND !== 'undefined' && ND.layout) || null;
   if (!layout || !layout.devices || !layout.devices.length) return;
@@ -602,7 +642,12 @@ async function decorateDeviceConnections() {
     : '';
   const row = document.createElement('div');
   row.className = 'nd-conn-row';
-  row.innerHTML = `<span class="hint">Συνδέσεις συσκευής</span>${buttons || '<span class="hint">χωρίς profile — σύνδεσέ τη με host από τις Ρυθμίσεις</span>'}${winbox}`;
+  row.dataset.deviceId = device.id;
+  row.innerHTML = `<span class="hint">Συνδέσεις συσκευής</span>${
+    buttons || '<span class="hint">χωρίς profile</span>'
+  }<button class="btn ghost xs" data-nd-add-profile="${device.id}" title="Προσθήκη profile">+ profile</button>${
+    hosts.length ? `<button class="btn ghost xs" data-nd-drop-profile="${device.id}" title="Αφαίρεση όλων των profiles">× όλα</button>` : ''
+  }${winbox}`;
   panel.insertBefore(row, panel.querySelector('.nd-port-grid'));
 }
 
@@ -1101,6 +1146,45 @@ document.addEventListener('click', async (event) => {
     } catch (err) {
       toast(err.message.startsWith('winbox') ? 'Το WinBox δεν είναι εγκατεστημένο' : err.message, 'err');
     }
+    return;
+  }
+
+  const ndAddProfile = event.target.closest('[data-nd-add-profile]');
+  if (ndAddProfile) {
+    const deviceId = Number(ndAddProfile.dataset.ndAddProfile);
+    const options = (S.hosts || []).map((h) => `<option value="${h.id}">${esc(h.label)} · ${esc(h.hostname || '')}</option>`).join('');
+    openModal(`<h3>Προσθήκη profile</h3>
+      <p class="lead">Η σχέση συσκευής ⇄ host είναι ρητή: μόνο ό,τι προσθέσεις εδώ εμφανίζεται ως σύνδεση.</p>
+      <label class="field"><span>Host</span><select id="ndp-host">${options || '<option value="">— κανένας host —</option>'}</select></label>
+      <p class="error-text" id="ndp-error"></p>
+      <div class="modal-actions"><button class="btn ghost" data-close>Άκυρο</button>
+      <button class="btn primary" id="ndp-save">Προσθήκη</button></div>`);
+    $('#ndp-save').onclick = async () => {
+      const hostId = Number($('#ndp-host').value || 0);
+      if (!hostId) { $('#ndp-error').textContent = 'Δεν υπάρχει host για σύνδεση.'; return; }
+      try {
+        await api(`/netdoc/devices/${deviceId}/profiles`, { json: { host_id: hostId } });
+        closeModal();
+        await loadNetdoc();
+        renderPage();
+        toast('Το profile προστέθηκε');
+      } catch (err) { $('#ndp-error').textContent = err.message; }
+    };
+    return;
+  }
+
+  const ndDropProfile = event.target.closest('[data-nd-drop-profile]');
+  if (ndDropProfile) {
+    const deviceId = Number(ndDropProfile.dataset.ndDropProfile);
+    const payload = await api(`/netdoc/devices/${deviceId}/connections`);
+    try {
+      for (const h of payload.hosts) {
+        await api(`/netdoc/devices/${deviceId}/profiles/${h.id}`, { method: 'DELETE' });
+      }
+      await loadNetdoc();
+      renderPage();
+      toast('Τα profiles αφαιρέθηκαν');
+    } catch (err) { toast(err.message, 'err'); }
     return;
   }
 

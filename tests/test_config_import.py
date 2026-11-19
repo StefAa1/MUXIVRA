@@ -1,4 +1,5 @@
 """Importing the package must never touch the filesystem or move user data."""
+import json
 import os
 import subprocess
 import sys
@@ -68,7 +69,8 @@ def test_migration_never_overwrites_existing_database(tmp_path, monkeypatch):
     assert (legacy / "sshdeck.db").exists(), "legacy folder must stay untouched"
     imported = list(target.glob("legacy-import-*"))
     assert imported and (imported[0] / "sshdeck.db").read_bytes() == b"legacy-db"
-    assert "kept existing database" in (target / "migration.txt").read_text()
+    marker = json.loads((target / "migration.json").read_text())
+    assert marker["mode"] == "kept-existing" and marker["status"] == "ok"
 
 
 def test_migration_adopts_into_an_empty_created_target(tmp_path, monkeypatch):
@@ -107,3 +109,37 @@ def test_migration_does_not_copy_twice(tmp_path, monkeypatch):
     config.migrate_legacy_data()   # second start: data is already there
     assert (target / "sshdeck.db").read_bytes() == b"legacy-db"
     assert not list(target.glob("legacy-import-*"))
+
+
+def test_marker_stops_repeat_migration(tmp_path, monkeypatch):
+    """Regression: the marker was written but never read, so every start copied again."""
+    legacy = tmp_path / "program" / "data"
+    legacy.mkdir(parents=True)
+    (legacy / "sshdeck.db").write_bytes(b"legacy-db")
+    target = tmp_path / "userdata"
+    monkeypatch.setattr(config, "_legacy_data_dir", lambda: legacy)
+    monkeypatch.setattr(config, "DATA_DIR", target)
+    monkeypatch.delenv("SSHDECK_DATA", raising=False)
+
+    config.migrate_legacy_data()          # adopt
+    config.migrate_legacy_data()          # second start
+    config.migrate_legacy_data()          # desktop + serve in the same boot
+    assert not list(target.glob("legacy-import-*")), "repeat migration created a backup"
+    assert (target / "sshdeck.db").read_bytes() == b"legacy-db"
+
+
+def test_marker_also_stops_repeat_for_existing_destination(tmp_path, monkeypatch):
+    legacy = tmp_path / "program" / "data"
+    legacy.mkdir(parents=True)
+    (legacy / "sshdeck.db").write_bytes(b"legacy-db")
+    target = tmp_path / "userdata"
+    target.mkdir()
+    (target / "sshdeck.db").write_bytes(b"current-db")
+    monkeypatch.setattr(config, "_legacy_data_dir", lambda: legacy)
+    monkeypatch.setattr(config, "DATA_DIR", target)
+    monkeypatch.delenv("SSHDECK_DATA", raising=False)
+
+    config.migrate_legacy_data()
+    config.migrate_legacy_data()
+    assert len(list(target.glob("legacy-import-*"))) == 1
+    assert (target / "sshdeck.db").read_bytes() == b"current-db"

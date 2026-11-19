@@ -218,6 +218,7 @@ def row_to_host(row, credential_name: str | None = None) -> dict:
         "bytesize": row["bytesize"] or 8,
         "parity": row["parity"] or "N",
         "stopbits": row["stopbits"] or 1,
+        "flow": (row["flow"] or "none") if "flow" in row.keys() else "none",
         "last_connected_at": row["last_connected_at"],
         "updated_at": row["updated_at"],
         "fingerprint": (
@@ -268,6 +269,7 @@ def load_target(conn, host_id: int) -> Target:
         bytesize=row["bytesize"] or 8,
         parity=row["parity"] or "N",
         stopbits=row["stopbits"] or 1.0,
+        flow=(row["flow"] or "none"),
     )
 
 
@@ -545,8 +547,8 @@ def create_host(payload: HostIn):
     with db.db() as conn:
         cur = conn.execute(
             "INSERT INTO hosts(label, protocol, hostname, port, username, credential_id, group_name, tags, "
-            "color, notes, serial_port, baud, bytesize, parity, stopbits, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "color, notes, serial_port, baud, bytesize, parity, stopbits, flow, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 payload.label.strip(),
                 payload.protocol,
@@ -563,6 +565,7 @@ def create_host(payload: HostIn):
                 payload.bytesize,
                 payload.parity,
                 payload.stopbits,
+                payload.flow,
                 now,
                 now,
             ),
@@ -579,7 +582,7 @@ def update_host(host_id: int, payload: HostIn):
         conn.execute(
             "UPDATE hosts SET label = ?, protocol = ?, hostname = ?, port = ?, username = ?, "
             "credential_id = ?, group_name = ?, tags = ?, color = ?, notes = ?, serial_port = ?, "
-            "baud = ?, bytesize = ?, parity = ?, stopbits = ?, updated_at = ? WHERE id = ?",
+            "baud = ?, bytesize = ?, parity = ?, stopbits = ?, flow = ?, updated_at = ? WHERE id = ?",
             (
                 payload.label.strip(),
                 payload.protocol,
@@ -596,6 +599,7 @@ def update_host(host_id: int, payload: HostIn):
                 payload.bytesize,
                 payload.parity,
                 payload.stopbits,
+                payload.flow,
                 db.now(),
                 host_id,
             ),

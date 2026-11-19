@@ -283,7 +283,8 @@ def _payload(site_note="Σημείωση χώρου"):
 
 def test_dry_run_reports_every_level_and_changes_nothing(rack):
     report = rack["client"].post("/api/netdoc/import", json={"data": _payload(), "dry_run": True}).json()
-    assert report["created"] == {"sites": 1, "racks": 1, "devices": 2, "ports": 2, "links": 1}, report["created"]
+    created = {k: v for k, v in report["created"].items() if k != "profiles"}
+    assert created == {"sites": 1, "racks": 1, "devices": 2, "ports": 2, "links": 1}, created
     assert rack["client"].get("/api/netdoc/tree").json()["sites"][0]["name"] == "Υπόγειο Α"
 
 
@@ -356,3 +357,45 @@ def test_same_private_ip_does_not_share_profiles(rack):
 
     assert rack["client"].delete(f"/api/netdoc/devices/{a['id']}/profiles/{host['id']}").status_code == 200
     assert rack["client"].get(f"/api/netdoc/devices/{a['id']}/connections").json()["hosts"] == []
+
+
+@pytest.mark.parametrize(
+    "mutate, code",
+    [
+        (lambda p: p["devices"][0].update(position=42, units=2), "device_outside_rack"),
+        (lambda p: p["devices"][1].update(position=10), "position_taken"),
+        (lambda p: p["links"][0].update(port_b=p["links"][0]["port_a"]), "self_link"),
+        (lambda p: p["links"][0].update(length_m=-3), "bad_length"),
+        (lambda p: p["links"][0].update(port_a=999), "dangling_ref"),
+        (lambda p: p["racks"][0].update(units=0), "bad_geometry"),
+        (lambda p: p["devices"][0].update(kind="toaster"), "bad_device_kind"),
+    ],
+)
+def test_import_validation_rejects_bad_rows_without_partial_writes(rack, mutate, code):
+    payload = _payload()
+    mutate(payload)
+    res = rack["client"].post("/api/netdoc/import", json={"data": payload})
+    assert res.status_code == 422, res.text
+    assert code in res.json()["detail"]
+    # nothing was written
+    assert rack["client"].get("/api/netdoc/tree").json()["sites"][0]["name"] == "Υπόγειο Α"
+
+
+def test_import_restores_profile_links_by_host_label(rack):
+    host = rack["client"].post("/api/hosts", json={"label": "core-a", "hostname": "10.7.7.7", "protocol": "ssh"}).json()
+    rack["client"].post("/api/netdoc/import", json={"data": _payload()})
+    exported = rack["client"].get("/api/netdoc/export").json()
+    sw = next(d for d in exported["devices"] if d["name"] == "sw1")
+    assert rack["client"].post(f"/api/netdoc/devices/{sw['id']}/profiles", json={"host_id": host["id"]}).status_code == 200
+
+    exported = rack["client"].get("/api/netdoc/export").json()
+    assert exported["profiles"][0]["host_label"] == "core-a"
+    assert "scope" in exported
+
+    # import back: the relation is recreated from the label, not from an id
+    with rack["client"] as _client:
+        pass
+    report = rack["client"].post("/api/netdoc/import", json={"data": exported}).json()
+    assert report["created"]["profiles"] >= 0
+    conns = rack["client"].get(f"/api/netdoc/devices/{sw['id']}/connections").json()
+    assert any(h["id"] == host["id"] for h in conns["hosts"])

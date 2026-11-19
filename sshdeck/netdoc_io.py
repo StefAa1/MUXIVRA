@@ -22,6 +22,15 @@ def export_payload(conn: sqlite3.Connection) -> dict:
         ),
         "ports": rows("SELECT id, device_id, name, kind FROM ports ORDER BY id"),
         "links": rows("SELECT id, port_a, port_b, cable, length_m FROM links ORDER BY id"),
+        # profile relations travel as host *labels*: importing a backup must never
+        # bind a device to a host id that belongs to another database
+        "profiles": rows(
+            """SELECT dp.device_id, h.label AS host_label
+                 FROM device_profiles dp JOIN hosts h ON h.id = dp.host_id
+                ORDER BY dp.device_id, h.label"""
+        ),
+        "scope": "documentation data only: sites, racks, devices, ports, links, profile links; "
+                 "no credentials, no vault material, no diagram layout (that stays local)",
     }
 
 
@@ -83,6 +92,12 @@ PORT_KINDS = {"rj45", "sfp", "fiber", "power", "other"}
 
 
 def _validate_rows(payload: dict) -> None:
+    for collection in ("sites", "racks", "devices", "ports", "links", "profiles"):
+        rows = payload.get(collection)
+        if rows is None:
+            continue
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise ImportError_("bad_format", f"Το «{collection}» πρέπει να είναι λίστα από αντικείμενα.")
     for collection in ("sites", "racks", "devices", "ports", "links"):
         ids = [row.get("id") for row in payload[collection]]
         if any(not isinstance(i, int) for i in ids):
@@ -90,6 +105,13 @@ def _validate_rows(payload: dict) -> None:
         if len(set(ids)) != len(ids):
             raise ImportError_("duplicate_id", f"Διπλά ids στο «{collection}».")
     rack_ids = {row["id"] for row in payload["racks"]}
+    rack_units: dict = {}
+    for rack in payload["racks"]:
+        units = rack.get("units", 42)
+        units = 42 if units is None else int(units)
+        if not 1 <= units <= 60:
+            raise ImportError_("bad_geometry", f"Το rack #{rack['id']} έχει άκυρο ύψος.")
+        rack_units[rack["id"]] = units
     for rack in payload["racks"]:
         if rack.get("site_id") not in {row["id"] for row in payload["sites"]}:
             raise ImportError_("dangling_ref", f"Το rack #{rack['id']} δείχνει σε άγνωστο χώρο.")
@@ -101,6 +123,19 @@ def _validate_rows(payload: dict) -> None:
         units, position = int(device.get("units") or 1), int(device.get("position") or 1)
         if units < 1 or position < 1:
             raise ImportError_("bad_geometry", f"Άκυρη θέση για τη συσκευή #{device['id']}.")
+        if position + units - 1 > rack_units.get(device.get("rack_id"), 42):
+            raise ImportError_("device_outside_rack",
+                               f"Η συσκευή #{device['id']} βγαίνει έξω από το rack.")
+    # overlap check inside the payload itself
+    for rack_id in rack_ids:
+        spans = sorted(
+            (int(d.get("position") or 1), int(d.get("position") or 1) + int(d.get("units") or 1) - 1, d["id"])
+            for d in payload["devices"] if d.get("rack_id") == rack_id
+        )
+        for (start_a, end_a, id_a), (start_b, end_b, id_b) in zip(spans, spans[1:]):
+            if start_b <= end_a:
+                raise ImportError_("position_taken",
+                                   f"Οι συσκευές #{id_a} και #{id_b} επικαλύπτονται στο ίδιο rack.")
     port_ids = {row["id"] for row in payload["ports"]}
     device_ids = {row["id"] for row in payload["devices"]}
     for port in payload["ports"]:
@@ -111,6 +146,14 @@ def _validate_rows(payload: dict) -> None:
     for link in payload["links"]:
         if link.get("port_a") not in port_ids or link.get("port_b") not in port_ids:
             raise ImportError_("dangling_ref", f"Η σύνδεση #{link['id']} δείχνει σε άγνωστο port.")
+        if link.get("port_a") == link.get("port_b"):
+            raise ImportError_("self_link", f"Η σύνδεση #{link['id']} ενώνει το port με τον εαυτό του.")
+        try:
+            length = float(link.get("length_m") or 0)
+        except (TypeError, ValueError):
+            raise ImportError_("bad_length", f"Άκυρο μήκος στη σύνδεση #{link['id']}.")
+        if not 0 <= length <= 10000:
+            raise ImportError_("bad_length", f"Άκυρο μήκος στη σύνδεση #{link['id']}.")
 
 
 def import_payload(conn: sqlite3.Connection, payload: dict, dry_run: bool = False) -> dict:
@@ -123,8 +166,8 @@ def import_payload(conn: sqlite3.Connection, payload: dict, dry_run: bool = Fals
     _validate_rows(payload)
     report = {
         "dry_run": dry_run,
-        "created": {"sites": 0, "racks": 0, "devices": 0, "ports": 0, "links": 0},
-        "skipped": {"sites": 0, "racks": 0, "devices": 0, "ports": 0, "links": 0},
+        "created": {"sites": 0, "racks": 0, "devices": 0, "ports": 0, "links": 0, "profiles": 0},
+        "skipped": {"sites": 0, "racks": 0, "devices": 0, "ports": 0, "links": 0, "profiles": 0},
         "source": counters,
         "conflicts": [],
     }
@@ -222,6 +265,23 @@ def import_payload(conn: sqlite3.Connection, payload: dict, dry_run: bool = Fals
             (a, b, link.get("cable") or "", float(link.get("length_m") or 0), time.time()),
         )
         report["created"]["links"] += 1
+
+    # profile relations: match hosts by label, never by foreign id
+    for profile in payload.get("profiles") or []:
+        device_new = device_map.get(profile.get("device_id"))
+        label = str(profile.get("host_label") or "").strip()
+        if not device_new or not label:
+            report["skipped"]["profiles"] = report["skipped"].get("profiles", 0) + 1
+            continue
+        host = conn.execute("SELECT id FROM hosts WHERE label = ?", (label,)).fetchone()
+        if not host:
+            report["skipped"]["profiles"] = report["skipped"].get("profiles", 0) + 1
+            continue
+        conn.execute(
+            "INSERT OR IGNORE INTO device_profiles (device_id, host_id) VALUES (?, ?)",
+            (device_new, host["id"]),
+        )
+        report["created"]["profiles"] = report["created"].get("profiles", 0) + 1
 
     if dry_run:
         conn.rollback()      # identical work, nothing kept

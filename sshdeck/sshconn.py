@@ -42,6 +42,7 @@ class Target:
     bytesize: int = 8
     parity: str = "N"
     stopbits: float = 1.0
+    flow: str = "none"  # none | rtscts | xonxoff | dsrdtr
 
     def describe(self) -> str:
         if self.protocol == "serial":

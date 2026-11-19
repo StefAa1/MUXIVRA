@@ -141,16 +141,44 @@ def cmd_desktop(args) -> int:
         return 1
 
 
+def cmd_backup_db(args) -> int:
+    """Copy sshdeck.db to data/backups before a schema migration (rollback safety)."""
+    import shutil
+    from . import db
+
+    if not config.DB_PATH.exists():
+        print("backup-db: no database yet")
+        return 0
+    target = config.DATA_DIR / "backups"
+    target.mkdir(parents=True, exist_ok=True)
+    stamp = __import__("time").strftime("%Y%m%d-%H%M%S")
+    destination = target / f"sshdeck-{stamp}.db"
+    conn = db.connect()
+    try:
+        destination.write_bytes(b"")
+        backup = db.connect()
+        backup.close()
+    finally:
+        conn.close()
+    shutil.copy2(config.DB_PATH, destination)
+    print(f"backup-db: {destination}")
+    return 0
+
+
 def cmd_healthcheck(args) -> int:
     """Post-update sanity check: the new build must open its data, schema and UI."""
     from . import db, security
 
     try:
+        _startup_config()
         db.init()
         with db.db() as conn:
             conn.execute("SELECT COUNT(*) FROM hosts").fetchone()
             conn.execute("SELECT COUNT(*) FROM racks").fetchone()
-        security.vault_key_status()
+        probe = security.seal("healthcheck-probe")
+        if security.open_sealed(probe) != "healthcheck-probe":
+            print("healthcheck: vault round-trip failed")
+            return 3
         if not (config.WEB_DIR / "index.html").exists():
             print("healthcheck: web assets missing")
             return 2
@@ -161,14 +189,19 @@ def cmd_healthcheck(args) -> int:
     return 0
 
 
+def _startup_config() -> None:
+    """Entrypoint startup: adopt legacy data, then create dirs."""
+    config.migrate_legacy_data()
+    config.ensure_dirs()
+
+
 def cmd_serve(args) -> int:
     import threading
     import webbrowser
 
     import uvicorn
 
-    config.migrate_legacy_data()
-    config.ensure_dirs()
+    _startup_config()
     db.init()
     if not args.no_reminder:
         with db.db() as conn:
@@ -207,6 +240,9 @@ def main(argv: list[str] | None = None) -> int:
 
     h = sub.add_parser("healthcheck", help="verify the install opens its data and UI")
     h.set_defaults(func=cmd_healthcheck)
+
+    dbk = sub.add_parser("backup-db", help="copy the database aside before a schema change")
+    dbk.set_defaults(func=cmd_backup_db)
 
     p = sub.add_parser("serve", help="run the web server")
     p.add_argument("--host", default=config.BIND_HOST)

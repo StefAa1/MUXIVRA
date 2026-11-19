@@ -264,3 +264,34 @@ def test_host_colour_is_sanitised(auth_client):
     payload = {"label": "c", "hostname": "h", "port": 22, "username": "root", "color": "red;background:url(x)"}
     host = auth_client.post("/api/hosts", json=payload, headers=HEADERS).json()
     assert host["color"] == "#3ddc97"
+
+
+def test_serial_flow_control_survives_create_update_and_reload(auth_client):
+    """Regression: the select saved nothing — flow was dropped on insert/update/load."""
+    auth_client.headers.update(HEADERS)
+    base = {"label": "plc", "protocol": "serial", "serial_port": "/dev/null", "baud": 9600}
+    created = auth_client.post("/api/hosts", json={**base, "flow": "rtscts"}).json()
+    assert created["flow"] == "rtscts"
+
+    rows = auth_client.get("/api/hosts").json()
+    assert next(h for h in rows if h["id"] == created["id"])["flow"] == "rtscts"
+
+    with db.db() as conn:
+        stored = conn.execute("SELECT flow FROM hosts WHERE id = ?", (created["id"],)).fetchone()["flow"]
+    assert stored == "rtscts"
+
+    updated = auth_client.put(f"/api/hosts/{created['id']}", json={**base, "flow": "xonxoff"}).json()
+    assert updated["flow"] == "xonxoff"
+
+    from sshdeck import sshconn
+
+    with db.db() as conn:
+        target = sshconn.Target(
+            host_id=created["id"], label="t", hostname="", port=0, username="", kind="none",
+            serial_port="/dev/null", baud=9600, flow=conn.execute(
+                "SELECT flow FROM hosts WHERE id = ?", (created["id"],)).fetchone()["flow"],
+        )
+    assert target.flow == "xonxoff"
+
+    bad = auth_client.post("/api/hosts", json={**base, "flow": "carrier-pigeon"})
+    assert bad.status_code == 422

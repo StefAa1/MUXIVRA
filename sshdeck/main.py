@@ -60,8 +60,7 @@ def origin_is_allowed(origin: str | None) -> bool:
 
 
 def create_app() -> FastAPI:
-    config.migrate_legacy_data()
-    config.ensure_dirs()
+    config.ensure_dirs()   # migration is an entrypoint concern (cli/desktop), not an import
     configure_logging()
     db.init()
     with db.db() as conn:

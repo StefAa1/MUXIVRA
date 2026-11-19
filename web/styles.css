@@ -497,3 +497,45 @@ kbd { font-family: var(--mono); font-size: 10px; border: 1px solid var(--line); 
 .nd-issue em { font-style: normal; color: var(--muted); }
 .nd-issue.ok { border-color: rgba(88, 199, 168, .4); }
 .nd-issue.overlap b, .nd-issue.outside_rack b, .nd-issue.duplicate_port b { color: #e0a15c; }
+
+/* ------------------------------------------------ view / layout discipline */
+.stage { position: relative; min-height: 0; overflow: hidden; }
+.page { z-index: 5; }
+.page.hidden { display: none; }
+#terminals.hidden { display: none; }
+
+/* racks/graph: collapse the host sidebar to buy width.
+   The grid columns must change too — hiding a grid item does not re-flow the
+   remaining columns, so .main would inherit the sidebar's 296px track. */
+#app.view-racks, #app.view-diagram { grid-template-columns: 62px minmax(0, 1fr); }
+#app.view-racks .sidebar, #app.view-diagram .sidebar { display: none; }
+#app.view-racks .nd-split { grid-template-columns: minmax(170px, 230px) minmax(0, 1fr); }
+#app.view-diagram .page { padding: 26px 28px 40px; }
+
+/* device panel must never grow a second scroll owner */
+.nd-rack-view { max-height: none; overflow: visible; }
+.nd-ports { max-height: none; overflow: visible; }
+.nd-conn-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; min-width: 0; }
+.nd-conn-row .btn { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nd-device { min-width: 0; }
+.nd-device b, .nd-device span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nd-tabs { flex-wrap: wrap; row-gap: 6px; }
+.nd-tabs .hint { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-width: 1180px) {
+  .nd-split, #app.view-racks .nd-split { grid-template-columns: minmax(0, 1fr); }
+  .nd-tree { max-height: 220px; overflow-y: auto; }
+  .nd-layout { grid-template-columns: minmax(0, 1fr); }
+  .nd-ports { order: -1; }
+}
+
+@media (max-width: 1100px) {
+  .page { padding: 26px 22px 40px; }
+  .nd-rack-view { max-height: 360px; overflow-y: auto; }
+}
+
+@media (max-width: 960px) {
+  .nd-form { row-gap: 6px; }
+  .nd-form input, .nd-form select { flex: 1 1 120px; min-width: 0; }
+  .nd-table { font-size: 12px; }
+}

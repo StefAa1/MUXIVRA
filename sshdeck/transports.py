@@ -224,7 +224,9 @@ class TelnetSession(SessionBase):
     def _write(self, data: bytes) -> None:
         # Enter arrives as CR; telnet hosts expect CRLF line endings.
         text = data.decode("utf-8", "replace")
-        normalised = text.replace("\r\n", "\n").replace("\r", "\r\n")
+        # normalise every line ending to CRLF: pasted text arrives as CRLF or LF,
+        # Enter arrives as a lone CR — all three must produce exactly one CRLF
+        normalised = text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")
         with self._send_lock:
             self.sock.sendall(normalised.encode("utf-8"))
 

@@ -34,6 +34,18 @@ def _migration_marker(target: Path) -> Path:
     return target / "migration.json"
 
 
+def _completed_migration(target: Path, source: Path) -> bool:
+    """A finished migration (any mode) must not run again for the same source."""
+    marker = _migration_marker(target)
+    if not marker.exists():
+        return False
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return data.get("status") == "ok" and data.get("source") == str(source)
+
+
 def _migrate_legacy_data(target: Path) -> None:
     """Adopt a pre-0.4 `<bundle>/data` folder without ever overwriting data.
 
@@ -44,6 +56,8 @@ def _migrate_legacy_data(target: Path) -> None:
     legacy = _legacy_data_dir()
     if not legacy.exists():
         return
+    if _completed_migration(target, legacy):
+        return                      # already adopted/copied once: nothing to do
     if _looks_like_data(target):
         stamp = time.strftime("%Y%m%d-%H%M%S")
         destination = target / f"legacy-import-{stamp}"
@@ -55,8 +69,12 @@ def _migrate_legacy_data(target: Path) -> None:
                 shutil.copytree(item, destination / item.name, dirs_exist_ok=True)
             else:
                 shutil.copy2(item, destination / item.name)
-        (target / "migration.txt").write_text(
-            f"kept existing database; copied legacy data to {destination.name}\n", encoding="utf-8"
+        _migration_marker(target).write_text(
+            json.dumps(
+                {"source": str(legacy), "mode": "kept-existing", "status": "ok",
+                 "copied_to": destination.name, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ")}
+            ),
+            encoding="utf-8",
         )
         return
     if target.exists() and not _looks_like_data(target):
@@ -71,7 +89,8 @@ def _migrate_legacy_data(target: Path) -> None:
             else:
                 shutil.copy2(item, destination)
         _migration_marker(target).write_text(
-            json.dumps({"source": str(legacy), "mode": "adopted", "at": time.strftime("%Y-%m-%dT%H:%M:%SZ")}),
+            json.dumps({"source": str(legacy), "mode": "adopted", "status": "ok",
+                        "at": time.strftime("%Y-%m-%dT%H:%M:%SZ")}),
             encoding="utf-8",
         )
         return

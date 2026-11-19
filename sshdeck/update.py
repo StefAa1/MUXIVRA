@@ -35,6 +35,7 @@ ALLOWED_DOWNLOAD_HOSTS = {
     "objects.githubusercontent.com",
     "release-assets.githubusercontent.com",
 }
+MOVE_OLD = "__MOVE_OLD__"
 MANIFEST_NAME = "release.json"
 SIGNATURE_NAME = "release.json.sig"
 
@@ -292,6 +293,12 @@ def stage(archive: Path, staging_root: Path) -> Path:
 
 
 # ------------------------------------------------------------------- apply
+def a_drive(path: Path) -> str:
+    """Drive letter of a Windows path ('' when the path is not drive-qualified)."""
+    text = str(path)
+    return text[0].lower() if len(text) > 1 and text[1] == ":" else ""
+
+
 def _cmd_path(path: Path) -> str:
     """Escape a path for a batch file: % is the only character batch expands."""
     return str(path).replace("%", "%%")
@@ -315,6 +322,7 @@ def write_apply_script(
     backup = staging_root / (backup_name or f"backup-{time.strftime('%Y%m%d-%H%M%S')}")
     script = staging_root / "apply-update.cmd"
     script.parent.mkdir(parents=True, exist_ok=True)
+    same_drive = a_drive(bundle) == a_drive(staging_root)
     lines = [
         "@echo off",
         "chcp 65001 >nul",
@@ -337,7 +345,8 @@ def write_apply_script(
         "  exit /b 1",
         ")",
         'if exist "%BACKUP%" rmdir /S /Q "%BACKUP%"',
-        'move "%OLD%" "%BACKUP%" >nul || (echo Cannot move the current install - close explorer windows on it. & pause & exit /b 1)',
+        'if exist "%LOCALAPPDATA%\\MUXIVRA\\data\\sshdeck.db" copy /Y "%LOCALAPPDATA%\\MUXIVRA\\data\\sshdeck.db" "%BACKUP%-db.sqlite" >nul',
+        MOVE_OLD,
         'robocopy "%NEW%" "%OLD%" /E /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS >nul',
         "if errorlevel 8 goto rollback",
         '"%OLD%\\runtime\\python\\python.exe" -m sshdeck healthcheck >"%HEALTHLOG%" 2>&1',
@@ -352,9 +361,13 @@ def write_apply_script(
         'start "" "%OLD%\\MUXIVRA.exe"',
         ":done",
         "timeout /t 3 >nul",
-        'del "%~f0"',
+        "(goto) 2>nul & del \"%~f0\" & exit /b 0",
         "",
     ]
+    if same_drive:
+        lines[lines.index(MOVE_OLD)] = 'move "%OLD%" "%BACKUP%" >nul || (echo Cannot move the current install - close explorer windows on it. & pause & exit /b 1)'
+    else:
+        lines[lines.index(MOVE_OLD)] = 'robocopy "%OLD%" "%BACKUP%" /E /MOVE /NFL /NDL /NJH /NJS >nul || (echo Cannot move the current install across drives. & pause & exit /b 1)'
     script.write_bytes("\r\n".join(lines).encode("utf-8"))
     return script
 

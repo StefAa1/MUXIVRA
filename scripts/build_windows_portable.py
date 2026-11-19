@@ -81,26 +81,44 @@ pause
 exit /b 1
 """
 
-README_WIN = """MUXIVRA portable (Windows x64)
-================================
-
-Native desktop app: δικό του παράθυρο, χωρίς browser και χωρίς URL.
-Δεν χρειάζεται εγκατάσταση, admin rights ή Python.
+README_WIN = """MUXIVRA portable (Windows x64) — χωρίς εγκατάσταση
 
 1. Διπλό κλικ  MUXIVRA.exe   (native παράθυρο, χωρίς console/browser)
 2. Αν κάτι δεν ανοίξει: MUXIVRA-debug.cmd  (ίδιο mode, με console + devtools)
-3. MUXIVRA-web.cmd = παλιά λειτουργία browser στο http://127.0.0.1:8722
-4. Ενημερώσεις: Ρυθμίσεις → GitHub repo (owner/name) → Έλεγχος → Κατέβασε &amp; ετοίμασε,
-   μετά κλείσε την εφαρμογή και τρέξε το apply-update.cmd που δημιουργείται δίπλα στο MUXIVRA.exe.
+3. MUXIVRA-web.cmd = λειτουργία browser στο http://127.0.0.1:8722
+4. Έλεγχος εγκατάστασης: MUXIVRA-debug.cmd ή "runtime\\python\\python.exe -m sshdeck healthcheck"
 
-Το παράθυρο είναι Qt6 WebEngine μέσα στο bundle (δικό του Chromium) — δεν χρειάζεται
-Edge, WebView2 runtime ή .NET. Αν το παράθυρο δεν ανοίξει, τρέξε MUXIVRA-debug.cmd
-και στείλε το data\\sshdeck.log.
+ΠΟΥ ΕΙΝΑΙ ΤΑ ΔΕΔΟΜΕΝΑ
+- Βάση, vault key, known_hosts: %LOCALAPPDATA%\\MUXIVRA\\data  (ΟΧΙ μέσα σε αυτόν τον φάκελο)
+- Ο φάκελος της εφαρμογής περιέχει μόνο binaries: μια ενημέρωση αντικαθιστά μόνο αυτά.
+- Παλιός φάκελος .\\data υιοθετείται στην πρώτη εκκίνηση. Αν το νέο σημείο έχει ήδη
+  βάση/vault ΔΕΝ αντικαθίσταται: τα παλιά αντιγράφονται σε legacy-import-<timestamp>
+  και γράφεται migration.json. Δεύτερη εκκίνηση δεν ξανααντιγράφει.
 
-Data (hosts, κρυπτογραφημένα credentials, host keys) μένουν στο .\\data —
-αντίγραφο του φακέλου = μεταφορά/backup (μαζί με το data\\vault.key).
+VAULT / DPAPI
+- Τα credentials κρυπτογραφούνται με Fernet. Στα Windows το κλειδί τυλίγεται με DPAPI
+  (vault.key.dpapi) και είναι δεμένο με τον Windows λογαριασμό σου.
+- Αντίγραφο του φακέλου σε άλλο PC ή άλλον χρήστη ΔΕΝ ανοίγει τα secrets. Κράτα το
+  vault.key.dpapi μαζί με τη βάση όταν κάνεις backup.
+- Ρυθμίσεις → Vault: Κλείδωμα / Ξεκλείδωμα και auto-lock. Όσο είναι κλειδωμένο, κάθε
+  πρόσβαση σε secret επιστρέφει 423 (vault_locked).
 
-Σειριακές θύρες: η εφαρμογή βλέπει τις COM του μηχανήματος όπου τρέχει.
+BACKUP / RESTORE
+- Πλήρες backup: σταμάτησε την εφαρμογή και αντίγραψε ΟΛΟ το %LOCALAPPDATA%\\MUXIVRA\\data.
+- Backup τεκμηρίωσης (χώροι/racks/συσκευές/ports/συνδέσεις/profiles): Racks → Backup JSON.
+  Δεν περιέχει secrets ούτε κάτοψη διαγράμματος (οι θέσεις μένουν τοπικά).
+- Πριν από κάθε schema migration η βάση αντιγράφεται αυτόματα σε data\\backups.
+
+ΕΝΗΜΕΡΩΣΕΙΣ
+- Μόνο υπογεγραμμένο release (release.json + release.json.sig, Ed25519) γίνεται δεκτό.
+- Ρυθμίσεις → GitHub repo → Έλεγχος → Κατέβασε & ετοίμασε. Το apply-update.cmd γράφεται
+  στο staging (%LOCALAPPDATA%\\MUXIVRA\\updates) και τρέχει ΑΦΟΥ κλείσεις την εφαρμογή:
+  περιμένει το PID, κρατά backup, αντιγράφει, εκτελεί healthcheck και κάνει rollback αν
+  η νέα έκδοση δεν ξεκινήσει.
+- Χωρίς δημόσιο κλειδί (update-pubkey.txt ή ενσωματωμένο) καμία ενημέρωση δεν εφαρμόζεται.
+
+ΕΛΕΓΧΟΙ
+- NATIVE-TESTS.md = checklist για πραγματικό Windows (vault, SSH trust, racks, update, rollback).
 """
 
 

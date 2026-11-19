@@ -221,3 +221,23 @@ def test_apply_script_handles_unicode_and_special_paths(tmp_path):
     assert "! 100" in text or "!" in text            # kept, delayed expansion is off
     assert "DisableDelayedExpansion" in text
     assert b"\r\n" in script.read_bytes()
+
+
+def test_a_drive_detection_for_cross_drive_swaps():
+    assert U.a_drive(Path("C:/Users/x/MUXIVRA")) == "c"
+    assert U.a_drive(Path("d:/staging")) == "d"
+    assert U.a_drive(Path("/root/sshdeck")) == ""
+
+
+def test_apply_script_backs_up_database_and_exits_zero(tmp_path):
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "MUXIVRA.exe").write_bytes(b"MZ")
+    staged = tmp_path / "staging" / "staged"
+    staged.mkdir(parents=True)
+    (staged / "MUXIVRA.exe").write_bytes(b"MZ")
+
+    text = U.write_apply_script(bundle, staged, 7, tmp_path / "staging").read_text()
+    assert "-db.sqlite" in text                       # DB copied aside before the swap
+    assert text.rstrip().endswith("exit /b 0")        # headless fixture got 1 after del
+    assert "healthcheck" in text

@@ -222,8 +222,37 @@ def migrate(conn: sqlite3.Connection) -> None:
     )
 
 
+def _schema_on_disk() -> int:
+    if not config.DB_PATH.exists():
+        return -1
+    try:
+        conn = connect()
+        try:
+            row = conn.execute("SELECT value FROM settings WHERE key = 'schema_version'").fetchone()
+            return int(row["value"]) if row else 0
+        finally:
+            conn.close()
+    except Exception:
+        return 0
+
+
+def backup_before_migration() -> str | None:
+    """Copy the DB before an upgrade so a rollback of the binaries still opens it."""
+    import shutil
+
+    current = _schema_on_disk()
+    if current < 0 or current >= SCHEMA_VERSION:
+        return None
+    target = config.DATA_DIR / "backups"
+    target.mkdir(parents=True, exist_ok=True)
+    destination = target / f"sshdeck-v{current}-{time.strftime('%Y%m%d-%H%M%S')}.db"
+    shutil.copy2(config.DB_PATH, destination)
+    return str(destination)
+
+
 def init() -> None:
     config.ensure_dirs()
+    backup_before_migration()
     with db() as conn:
         conn.execute("PRAGMA journal_mode = WAL")
         conn.executescript(SCHEMA)
