@@ -118,7 +118,8 @@ function cfgRender() {
   const diff = CFG.diff
     ? `<div class="cfg-diff">
          <div class="cfg-diff-head"><b>+${CFG.diff.added}</b> / <b>−${CFG.diff.removed}</b>
-           <span>version ${CFG.diff.left} → ${CFG.diff.right}</span></div>
+           <span>version ${CFG.diff.left} → ${CFG.diff.right}</span>
+           ${CFG.diff.secrets_changed ? '<span class="cfg-secret-flag">secret values changed (hidden)</span>' : ''}</div>
          <pre class="mono">${CFG.diff.diff.split('\n').map((line) => {
     const cls = line.startsWith('+') && !line.startsWith('+++') ? 'add'
       : (line.startsWith('-') && !line.startsWith('---') ? 'del' : 'ctx');

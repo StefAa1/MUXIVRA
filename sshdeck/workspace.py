@@ -50,8 +50,8 @@ KV_SECRET = re.compile(
 SPACE_SECRET = [
     re.compile(r"(?i)^(\s*snmp-server\s+community\s+)(\S+)(.*)$"),
     re.compile(r"(?i)^(\s*(?:enable|username\s+\S+\s+privilege\s+\d+)\s+(?:secret|password)\s+(?:\d+\s+)?)(\S+)(.*)$"),
-    re.compile(r"(?i)^(\s*key-string\s+(?:\d+\s+)?)(\S+)(.*)$"),
-    re.compile(r"(?i)^(\s*key\s+(?:\d+\s+)?)(\S+)(.*)$"),
+    re.compile(r"(?i)^(\s*key-string\s+(?:\d+\s+)?)(\"(?:[^\"]|\\\")*\"|'(?:[^']|\\')*'|\S+)(.*)$"),
+    re.compile(r"(?i)^(\s*key\s+(?:\d+\s+)?)(\"(?:[^\"]|\\\")*\"|\S+)(.*)$"),
     re.compile(r"(?i)^(\s*(?:password|secret)\s+(?:\d+\s+)?)(\"[^\"]*\"|\S+)(.*)$"),
     re.compile(r"(?i)^(\s*crypto\s+isakmp\s+key\s+)(\S+)(.*)$"),
     re.compile(r"(?i)^(\s*neighbor\s+\S+\s+password\s+(?:\d+\s+)?)(\S+)(.*)$"),
@@ -278,6 +278,8 @@ def version_text(conn, version_id: int) -> str:
 
 def diff(conn, left_id: int, right_id: int, context: int = 3) -> dict:
     # redaction ΠΡΙΝ το diff: αλλιώς το "+"/"-" σπάει το anchored matching
+    left_lines_raw = version_text(conn, left_id).splitlines()
+    right_lines_raw = version_text(conn, right_id).splitlines()
     left = redact(version_text(conn, left_id))
     right = redact(version_text(conn, right_id))
     lines = list(difflib.unified_diff(
@@ -287,6 +289,8 @@ def diff(conn, left_id: int, right_id: int, context: int = 3) -> dict:
     return {
         "left": left_id, "right": right_id,
         "changed": bool(lines),
+        # redaction κάνει δύο διαφορετικά secrets ίδια: δηλώνουμε ότι κάτι άλλαξε
+        "secrets_changed": bool(left_lines_raw != right_lines_raw) and not bool(lines),
         "added": sum(1 for l in lines if l.startswith("+") and not l.startswith("+++")),
         "removed": sum(1 for l in lines if l.startswith("-") and not l.startswith("---")),
         "diff": "\n".join(lines),

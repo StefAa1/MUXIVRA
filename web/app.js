@@ -391,8 +391,10 @@ function renderTabs() {
   list.innerHTML = S.tabs.map((tab) => {
     const state = tab.state || 'connecting';
     const dotClass = state === 'open' ? 'ok' : state === 'closed' ? 'bad' : '';
-    return `<div class="tab${tab.id === S.activeTabId ? ' active' : ''}" data-tab="${tab.id}">
+    const stateText = state === 'open' ? 'Ready' : state === 'closed' ? 'Disconnected' : 'Connecting';
+    return `<div class="tab${tab.id === S.activeTabId ? ' active' : ''}" data-tab="${tab.id}" title="${stateText}">
       <span class="dot ${dotClass}"></span><span>${esc(tab.host.label)}</span>
+      <span class="tab-state ${dotClass}" aria-label="${stateText}">${stateText}</span>
       <span class="x" data-tab-close="${tab.id}">✕</span></div>`;
   }).join('');
   updateStatusbar();
@@ -508,9 +510,106 @@ function connectTab(tab) {
   ws.onerror = () => {};
 
   tab.onData = tab.term.onData((data) => {
-    if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'input', data }));
+    if (ws.readyState === 1) { ws.send(JSON.stringify({ type: 'input', data })); return; }
+    // δεν καταπίνουμε χαρακτήρες: λέμε στον χρήστη γιατί δεν έφυγαν
+    inputNotReady(tab);
   });
   tab.onResize = tab.term.onResize(() => sendResize(tab));
+  attachTerminalClipboard(tab);
+}
+
+let inputNotReadyShown = new WeakSet();
+
+function inputNotReady(tab) {
+  if (inputNotReadyShown.has(tab)) return;
+  inputNotReadyShown.add(tab);
+  tab.term.writeln('\r\n\x1b[33m! not connected — input was not sent\x1b[0m');
+  toast('Not connected yet — wait for “Ready”', 'err');
+  setTimeout(() => inputNotReadyShown.delete(tab), 4000);
+}
+
+// ---------------------------------------------------------------- clipboard
+async function clipWrite(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (_) {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
+    ta.remove();
+    return ok;
+  }
+}
+
+async function clipRead() {
+  try { return await navigator.clipboard.readText(); } catch (_) { return null; }
+}
+
+function terminalCopy(tab) {
+  const sel = tab.term.getSelection();
+  if (!sel) { toast('Nothing selected'); return; }
+  clipWrite(sel).then((ok) => toast(ok ? `Copied ${sel.length} chars` : 'Copy blocked — use Ctrl+Shift+C', ok ? 'ok' : 'err'));
+}
+
+async function terminalPaste(tab) {
+  const text = await clipRead();
+  if (text === null) { toast('Paste blocked — use Ctrl+Shift+V', 'err'); return; }
+  if (!text) return;
+  if (tab.ws && tab.ws.readyState !== 1) { inputNotReady(tab); return; }
+  const lines = text.split(/\r?\n/).filter((l) => l.trim() !== '');
+  if (lines.length > 1) {
+    // πολυγραμμικό paste: δείξε τι θα εκτελεστεί πριν φύγει
+    const ok = window.confirm(`Send ${lines.length} lines to ${tab.host.label}?\n\n${text.slice(0, 600)}`);
+    if (!ok) return;
+  }
+  tab.term.paste(text);          // bracketed paste μέσω xterm, μία φορά
+  tab.term.focus();
+}
+
+function attachTerminalClipboard(tab) {
+  tab.term.attachCustomKeyEventHandler((ev) => {
+    if (ev.type !== 'keydown') return true;
+    const ctrlShift = ev.ctrlKey && ev.shiftKey;
+    if (ctrlShift && ev.code === 'KeyC') { if (tab.term.hasSelection()) terminalCopy(tab); return false; }
+    if ((ctrlShift && ev.code === 'KeyV') || (ev.shiftKey && ev.code === 'Insert')) {
+      terminalPaste(tab); return false;
+    }
+    if (ctrlShift && ev.code === 'KeyA') { tab.term.selectAll(); return false; }
+    return true;                 // Ctrl+C παραμένει interrupt
+  });
+
+  tab.pane.addEventListener('contextmenu', (ev) => {
+    ev.preventDefault();
+    showTermMenu(ev.clientX, ev.clientY, tab);
+  });
+}
+
+let termMenuEl = null;
+function showTermMenu(x, y, tab) {
+  termMenuEl && termMenuEl.remove();
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+  menu.innerHTML = `
+    <button data-act="copy">Copy selection<span class="kbd">Ctrl+Shift+C</span></button>
+    <button data-act="paste">Paste<span class="kbd">Ctrl+Shift+V</span></button>
+    <button data-act="all">Select all<span class="kbd">Ctrl+Shift+A</span></button>`;
+  menu.style.left = `${x}px`; menu.style.top = `${y}px`;
+  document.body.appendChild(menu);
+  termMenuEl = menu;
+  menu.addEventListener('click', (ev) => {
+    const act = ev.target.closest('[data-act]');
+    if (!act) return;
+    if (act.dataset.act === 'copy') terminalCopy(tab);
+    if (act.dataset.act === 'paste') terminalPaste(tab);
+    if (act.dataset.act === 'all') tab.term.selectAll();
+    menu.remove(); termMenuEl = null;
+  });
+  setTimeout(() => document.addEventListener('mousedown', function off(e) {
+    if (!menu.contains(e.target)) { menu.remove(); termMenuEl = null; document.removeEventListener('mousedown', off); }
+  }), 0);
 }
 
 function sendResize(tab) {
@@ -842,8 +941,7 @@ function renderSettings() {
           <p class="hint" id="upd-status">${upd.last_check ? 'last check: ' + esc(upd.last_check) : 'no checks yet'}</p>
           <div class="actions">
             <button class="btn xs" id="upd-check">Check for updates</button>
-            <button class="btn primary xs${upd.asset ? '' : ' hidden'}" id="upd-prepare">Download &amp; verify</button>
-            <button class="btn primary xs hidden" id="upd-apply">Restart &amp; install</button>
+            <button class="btn primary xs${upd.asset ? '' : ' hidden'}" id="upd-prepare">Update now</button>
           </div>
         </div></div>
       <div class="card"><h3>Vault</h3>
@@ -1528,7 +1626,10 @@ function runSnippet(snippet) {
 }
 
 document.addEventListener('keydown', (event) => {
-  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); openPalette(); return; }
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+    if (event.target && event.target.closest && event.target.closest('.xterm')) return;  // terminal κρατά το Ctrl+K
+    event.preventDefault(); openPalette(); return;
+  }
   if (event.key === 'Escape') { closeModal(); closePalette(); closeDrawer(); return; }
   if (!$('#palette-backdrop').classList.contains('hidden')) {
     if (event.key === 'ArrowDown') { event.preventDefault(); S.paletteIndex += 1; renderPalette($('#palette-input').value); }
@@ -1665,14 +1766,6 @@ document.addEventListener('click', (event) => {
         toast(err.message, 'err');
       }
     },
-    'upd-apply': async () => {
-      try {
-        const res = await api('/update/apply', { json: {} });
-        toast(res.started ? 'Restarting to install the update…' : 'Updater could not start');
-      } catch (err) {
-        toast(`Could not start the updater: ${err.message}`, 'err');
-      }
-    },
     'upd-prepare': async () => {
       const release = S.updateRelease || (S.update || {});
       const asset = release.asset;
@@ -1688,10 +1781,13 @@ document.addEventListener('click', (event) => {
             signature: release.signature || null,
           },
         });
-        if (line) line.textContent = `Ready: ${result.version} · ${result.script}`;
-        const apply = $('#upd-apply');
-        if (apply) apply.classList.remove('hidden');
-        toast('Update ready — press “Restart & install”');
+        if (line) line.textContent = `Prepared ${result.version} — installing and restarting…`;
+        // one click: αμέσως μετά το staging ξεκινά η εγκατάσταση και η επανεκκίνηση
+        const started = await api('/update/apply', { json: {} });
+        if (line) line.textContent = started.started
+          ? 'Installing — MUXIVRA restarts itself, no manual steps.'
+          : 'Staged, but the installer could not start. Open Details.';
+        toast(started.started ? 'Installing update — the app will restart' : 'Could not start the installer', started.started ? 'ok' : 'err');
       } catch (err) {
         if (line) line.textContent = err.message;
         toast(err.message, 'err');

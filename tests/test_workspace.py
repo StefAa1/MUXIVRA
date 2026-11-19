@@ -298,3 +298,21 @@ def test_r3_diff_and_failures_are_redacted(auth_client):
     assert "AUDITTAIL" not in str(result)
     assert result["failed"] and "<redacted" in result["failed"]["command"]
     assert "AUDITTAIL" not in result["failed"]["error"]
+
+
+def test_r3_quoted_value_with_spaces_and_secret_only_diff(auth_client):
+    from sshdeck import workspace
+
+    assert "alpha TAIL" not in workspace.redact('key-string 7 "alpha TAIL"')
+    assert "alpha TAIL" not in workspace.redact('key 7 "alpha TAIL"')
+
+    auth_client.headers.update({"x-requested-with": "sshdeck"})
+    host, rack, device = device_with_profile(auth_client, {})
+    a = auth_client.post(f"/api/inventory/devices/{device['id']}/config/paste", json={
+        "text": "snmp-server community ALPHA1 RO", "vendor": "cisco"}).json()
+    b = auth_client.post(f"/api/inventory/devices/{device['id']}/config/paste", json={
+        "text": "snmp-server community ALPHA2 RO", "vendor": "cisco"}).json()
+    d = auth_client.get(f"/api/inventory/config/diff?left={a['id']}&right={b['id']}", headers={}).json()
+    # κρυμμένη αλλαγή: κανένα ορατό diff, αλλά δηλώνεται ότι άλλαξε μυστικό
+    assert "ALPHA1" not in d["diff"] and "ALPHA2" not in d["diff"]
+    assert d["secrets_changed"] is True

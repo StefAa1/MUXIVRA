@@ -310,3 +310,29 @@ def test_apply_is_honest_off_windows(auth_client):
     res = auth_client.post("/api/update/apply", json={})
     assert res.status_code == 409
     assert res.json()["detail"] in {"nothing_staged"} or "apply_requires_windows" in res.json()["detail"]
+
+
+def test_apply_windows_branch_actually_launches(auth_client, tmp_path, monkeypatch):
+    """Ο κλάδος Windows δεν επιστρέφει NameError: φτιάχνει process με το script."""
+    import types
+
+    from sshdeck import api, config
+
+    script = tmp_path / "apply-update.cmd"
+    script.write_text("@echo off\r\n", encoding="utf-8")
+    monkeypatch.setattr(config, "STAGING_DIR", tmp_path, raising=False)
+    called = {}
+
+    class FakePopen:
+        def __init__(self, args, **kwargs):
+            called["args"] = args
+
+    monkeypatch.setattr(api, "subprocess", types.SimpleNamespace(
+        Popen=FakePopen, CREATE_NEW_PROCESS_GROUP=0), raising=False)
+    monkeypatch.setattr(api.os, "name", "nt")
+
+    auth_client.headers.update({"x-requested-with": "sshdeck"})
+    res = auth_client.post("/api/update/apply", json={})
+    assert res.status_code == 200, res.text
+    assert res.json()["started"] is True
+    assert str(script) in " ".join(called["args"])

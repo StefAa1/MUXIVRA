@@ -9,6 +9,7 @@ import os
 import posixpath
 import re
 import secrets
+import subprocess
 import tempfile
 import threading
 import time
