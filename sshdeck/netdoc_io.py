@@ -24,10 +24,15 @@ def export_payload(conn: sqlite3.Connection) -> dict:
         "links": rows("SELECT id, port_a, port_b, cable, length_m FROM links ORDER BY id"),
         # profile relations travel as host *labels*: importing a backup must never
         # bind a device to a host id that belongs to another database
+        # identity travels as UUID: labels are not unique (two customers may both
+        # have a host called "Router"), so they can never be the mapping key
         "profiles": rows(
-            """SELECT dp.device_id, h.label AS host_label
+            """SELECT dp.device_id, h.uuid AS host_uuid, h.label AS host_label
                  FROM device_profiles dp JOIN hosts h ON h.id = dp.host_id
-                ORDER BY dp.device_id, h.label"""
+                UNION
+               SELECT d.id AS device_id, h.uuid AS host_uuid, h.label AS host_label
+                 FROM devices d JOIN hosts h ON h.id = d.host_id
+                ORDER BY device_id"""
         ),
         "scope": "documentation data only: sites, racks, devices, ports, links, profile links; "
                  "no credentials, no vault material, no diagram layout (that stays local)",
@@ -105,6 +110,8 @@ def _validate_rows(payload: dict) -> None:
         if len(set(ids)) != len(ids):
             raise ImportError_("duplicate_id", f"Διπλά ids στο «{collection}».")
     rack_ids = {row["id"] for row in payload["racks"]}
+    # geometry is validated against the MERGED state: an existing rack may be
+    # smaller than the payload claims, and it may already be occupied
     rack_units: dict = {}
     for rack in payload["racks"]:
         units = rack.get("units", 42)
@@ -112,30 +119,15 @@ def _validate_rows(payload: dict) -> None:
         if not 1 <= units <= 60:
             raise ImportError_("bad_geometry", f"Το rack #{rack['id']} έχει άκυρο ύψος.")
         rack_units[rack["id"]] = units
-    for rack in payload["racks"]:
-        if rack.get("site_id") not in {row["id"] for row in payload["sites"]}:
-            raise ImportError_("dangling_ref", f"Το rack #{rack['id']} δείχνει σε άγνωστο χώρο.")
+
     for device in payload["devices"]:
         if device.get("rack_id") not in rack_ids:
             raise ImportError_("dangling_ref", f"Η συσκευή #{device['id']} δείχνει σε άγνωστο rack.")
         if (device.get("kind") or "switch") not in KINDS:
             raise ImportError_("bad_device_kind", f"Άγνωστος τύπος συσκευής: {device.get('kind')}")
-        units, position = int(device.get("units") or 1), int(device.get("position") or 1)
-        if units < 1 or position < 1:
+        if int(device.get("position") or 1) < 1 or int(device.get("units") or 1) < 1:
             raise ImportError_("bad_geometry", f"Άκυρη θέση για τη συσκευή #{device['id']}.")
-        if position + units - 1 > rack_units.get(device.get("rack_id"), 42):
-            raise ImportError_("device_outside_rack",
-                               f"Η συσκευή #{device['id']} βγαίνει έξω από το rack.")
-    # overlap check inside the payload itself
-    for rack_id in rack_ids:
-        spans = sorted(
-            (int(d.get("position") or 1), int(d.get("position") or 1) + int(d.get("units") or 1) - 1, d["id"])
-            for d in payload["devices"] if d.get("rack_id") == rack_id
-        )
-        for (start_a, end_a, id_a), (start_b, end_b, id_b) in zip(spans, spans[1:]):
-            if start_b <= end_a:
-                raise ImportError_("position_taken",
-                                   f"Οι συσκευές #{id_a} και #{id_b} επικαλύπτονται στο ίδιο rack.")
+
     port_ids = {row["id"] for row in payload["ports"]}
     device_ids = {row["id"] for row in payload["devices"]}
     for port in payload["ports"]:
@@ -209,6 +201,18 @@ def import_payload(conn: sqlite3.Connection, payload: dict, dry_run: bool = Fals
             rack_map[rack["id"]] = cur.lastrowid
             report["created"]["racks"] += 1
 
+    occupancy: dict[int, list[tuple[int, int, str]]] = {}
+
+    def _occupied(rack_id: int):
+        if rack_id not in occupancy:
+            occupancy[rack_id] = [
+                (int(r["position"]), int(r["position"]) + int(r["units"]) - 1, r["name"])
+                for r in conn.execute(
+                    "SELECT position, units, name FROM devices WHERE rack_id = ?", (rack_id,)
+                )
+            ]
+        return occupancy[rack_id]
+
     for device in payload["devices"]:
         new_rack = rack_map[device["rack_id"]]
         name = str(device.get("name") or "").strip()
@@ -222,6 +226,20 @@ def import_payload(conn: sqlite3.Connection, payload: dict, dry_run: bool = Fals
             report["skipped"]["devices"] += 1
             report["conflicts"].append({"kind": "device", "name": name, "action": "kept-existing"})
         else:
+            # merged-state geometry: real rack height + already placed devices
+            rack_row = conn.execute("SELECT units FROM racks WHERE id = ?", (new_rack,)).fetchone()
+            actual_units = int(rack_row["units"])
+            top = int(device.get("position") or 1) + int(device.get("units") or 1) - 1
+            if top > actual_units:
+                raise ImportError_(
+                    "device_outside_rack",
+                    f"Η συσκευή «{name}» βγαίνει έξω από το rack ({actual_units}U).",
+                )
+            for start_u, end_u, owner in _occupied(new_rack):
+                if int(device.get("position") or 1) <= end_u and start_u <= top:
+                    raise ImportError_(
+                        "position_taken", f"Η θέση της «{name}» είναι πιασμένη από «{owner}»."
+                    )
             cur = conn.execute(
                 """INSERT INTO devices (rack_id, name, kind, units, position, note, host_id, vendor, model, mgmt_ip)
                    VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)""",
@@ -232,6 +250,7 @@ def import_payload(conn: sqlite3.Connection, payload: dict, dry_run: bool = Fals
                 ),
             )
             device_map[device["id"]] = cur.lastrowid
+            _occupied(new_rack).append((int(device.get("position") or 1), top, name))
             report["created"]["devices"] += 1
 
     for port in payload["ports"]:
@@ -266,17 +285,31 @@ def import_payload(conn: sqlite3.Connection, payload: dict, dry_run: bool = Fals
         )
         report["created"]["links"] += 1
 
-    # profile relations: match hosts by label, never by foreign id
+    # profile relations: match by stable UUID only. An unknown UUID is reported
+    # as unresolved — never silently bound to another host that shares a label.
+    report["unresolved_profiles"] = []
+    seen_pairs: set[tuple[int, int]] = set()
     for profile in payload.get("profiles") or []:
         device_new = device_map.get(profile.get("device_id"))
-        label = str(profile.get("host_label") or "").strip()
-        if not device_new or not label:
-            report["skipped"]["profiles"] = report["skipped"].get("profiles", 0) + 1
+        host_uuid = str(profile.get("host_uuid") or "").strip()
+        if not device_new or not host_uuid:
+            report["skipped"]["profiles"] += 1
+            report["unresolved_profiles"].append(
+                {"device_id": profile.get("device_id"), "host_label": profile.get("host_label"),
+                 "reason": "missing_uuid"}
+            )
             continue
-        host = conn.execute("SELECT id FROM hosts WHERE label = ?", (label,)).fetchone()
+        host = conn.execute("SELECT id FROM hosts WHERE uuid = ?", (host_uuid,)).fetchone()
         if not host:
-            report["skipped"]["profiles"] = report["skipped"].get("profiles", 0) + 1
+            report["skipped"]["profiles"] += 1
+            report["unresolved_profiles"].append(
+                {"device_id": profile.get("device_id"), "host_label": profile.get("host_label"),
+                 "reason": "host_not_found"}
+            )
             continue
+        if (device_new, host["id"]) in seen_pairs:
+            continue        # primary link and device_profiles row describe the same pair
+        seen_pairs.add((device_new, host["id"]))
         conn.execute(
             "INSERT OR IGNORE INTO device_profiles (device_id, host_id) VALUES (?, ?)",
             (device_new, host["id"]),

@@ -399,3 +399,51 @@ def test_import_restores_profile_links_by_host_label(rack):
     assert report["created"]["profiles"] >= 0
     conns = rack["client"].get(f"/api/netdoc/devices/{sw['id']}/connections").json()
     assert any(h["id"] == host["id"] for h in conns["hosts"])
+
+
+def test_profile_mapping_uses_uuid_not_label(rack):
+    """Two hosts may share a label; the import must bind by stable UUID only."""
+    a = rack["client"].post("/api/hosts", json={"label": "Router", "hostname": "192.168.1.1", "protocol": "ssh"}).json()
+    b = rack["client"].post("/api/hosts", json={"label": "Router", "hostname": "192.168.1.2", "protocol": "ssh"}).json()
+    assert a["uuid"] and b["uuid"] and a["uuid"] != b["uuid"]
+
+    rack["client"].post("/api/netdoc/import", json={"data": _payload()})
+    exported = rack["client"].get("/api/netdoc/export").json()
+    sw = next(d for d in exported["devices"] if d["name"] == "sw1")
+    rack["client"].post(f"/api/netdoc/devices/{sw['id']}/profiles", json={"host_id": b["id"]})
+
+    exported = rack["client"].get("/api/netdoc/export").json()
+    bound = [p for p in exported["profiles"] if p["device_id"] == sw["id"]]
+    assert [p["host_uuid"] for p in bound] == [b["uuid"]]
+
+    report = rack["client"].post("/api/netdoc/import", json={"data": exported, "dry_run": True}).json()
+    assert report.get("unresolved_profiles") is not None
+
+
+def test_import_reports_unresolved_profile_instead_of_guessing(rack):
+    payload = _payload()
+    payload["profiles"] = [{"device_id": 3, "host_uuid": "deadbeef" * 8, "host_label": "Router"}]
+    report = rack["client"].post("/api/netdoc/import", json={"data": payload}).json()
+    assert report["unresolved_profiles"]
+    assert report["unresolved_profiles"][0]["reason"] == "host_not_found"
+    assert report["created"]["profiles"] == 0
+
+
+def test_import_checks_geometry_against_existing_rack(rack):
+    """A 42U/U40 device must not be squeezed into an existing 10U rack."""
+    site = rack["client"].post("/api/netdoc/sites", json={"name": "Μικρό"}).json()
+    rack["client"].post("/api/netdoc/racks", json={"site_id": site["id"], "name": "R9", "units": 10})
+
+    payload = {
+        "format": "muxivra.netdoc/1",
+        "sites": [{"id": 10, "name": "Μικρό", "note": ""}],
+        "racks": [{"id": 11, "site_id": 10, "name": "R9", "units": 42}],
+        "devices": [{"id": 12, "rack_id": 11, "name": "big", "kind": "switch", "units": 2, "position": 40}],
+        "ports": [], "links": [],
+    }
+    res = rack["client"].post("/api/netdoc/import", json={"data": payload})
+    assert res.status_code == 422
+    assert "device_outside_rack" in res.json()["detail"]
+    tree = rack["client"].get("/api/netdoc/tree").json()
+    small = next(s for s in tree["sites"] if s["name"] == "Μικρό")
+    assert small["racks"][0]["units"] == 10 and small["racks"][0]["devices"] == []

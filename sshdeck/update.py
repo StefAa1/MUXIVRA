@@ -35,7 +35,6 @@ ALLOWED_DOWNLOAD_HOSTS = {
     "objects.githubusercontent.com",
     "release-assets.githubusercontent.com",
 }
-MOVE_OLD = "__MOVE_OLD__"
 MANIFEST_NAME = "release.json"
 SIGNATURE_NAME = "release.json.sig"
 
@@ -310,6 +309,7 @@ def write_apply_script(
     pid: int,
     staging_root: Path,
     backup_name: str | None = None,
+    db_snapshot: Path | None = None,
 ) -> Path:
     """Generate a .cmd that waits for THIS pid, swaps with backup/rollback/health check.
 
@@ -322,7 +322,8 @@ def write_apply_script(
     backup = staging_root / (backup_name or f"backup-{time.strftime('%Y%m%d-%H%M%S')}")
     script = staging_root / "apply-update.cmd"
     script.parent.mkdir(parents=True, exist_ok=True)
-    same_drive = a_drive(bundle) == a_drive(staging_root)
+    # the snapshot was taken by the app through the SQLite backup API (WAL-safe)
+    snapshot_src = _cmd_path(db_snapshot) if db_snapshot else "%DBFILE%"
     lines = [
         "@echo off",
         "chcp 65001 >nul",
@@ -331,6 +332,7 @@ def write_apply_script(
         f'set "NEW={_cmd_path(new_root)}"',
         f'set "BACKUP={_cmd_path(backup)}"',
         f'set "HEALTHLOG={_cmd_path(staging_root)}\\health.log"',
+        f'set "DBFILE={_cmd_path(Path(os.environ.get("LOCALAPPDATA", "")) / "MUXIVRA" / "data" / "sshdeck.db")}"',
         f"set PID={int(pid)}",
         "echo Waiting for MUXIVRA (pid %PID%) to close...",
         ":wait",
@@ -345,10 +347,23 @@ def write_apply_script(
         "  exit /b 1",
         ")",
         'if exist "%BACKUP%" rmdir /S /Q "%BACKUP%"',
-        'if exist "%LOCALAPPDATA%\\MUXIVRA\\data\\sshdeck.db" copy /Y "%LOCALAPPDATA%\\MUXIVRA\\data\\sshdeck.db" "%BACKUP%-db.sqlite" >nul',
-        MOVE_OLD,
+        f'if exist "{snapshot_src}" copy /Y "{snapshot_src}" "%BACKUP%-db.sqlite" >nul',
+        "rem 1) COPY (never move) the install aside; robocopy 0-7 means success",
+        'robocopy "%OLD%" "%BACKUP%" /E /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS >nul',
+        "if errorlevel 8 (",
+        "  echo Backup failed - the current install was not touched.",
+        "  pause",
+        "  exit /b 1",
+        ")",
+        'if not exist "%BACKUP%\\MUXIVRA.exe" (',
+        "  echo Backup incomplete - the current install was not touched.",
+        "  pause",
+        "  exit /b 1",
+        ")",
+        "rem 2) copy the staged build over the installation",
         'robocopy "%NEW%" "%OLD%" /E /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS >nul',
         "if errorlevel 8 goto rollback",
+        "rem 3) the new build must open its data, schema and vault",
         '"%OLD%\\runtime\\python\\python.exe" -m sshdeck healthcheck >"%HEALTHLOG%" 2>&1',
         "if errorlevel 1 goto rollback",
         'start "" "%OLD%\\MUXIVRA.exe"',
@@ -356,18 +371,14 @@ def write_apply_script(
         "goto done",
         ":rollback",
         "echo Update failed - restoring the previous version.",
-        'rmdir /S /Q "%OLD%"',
-        'move "%BACKUP%" "%OLD%" >nul',
+        'robocopy "%BACKUP%" "%OLD%" /E /COPY:DAT /R:1 /W:1 /PURGE >nul',
+        'if exist "%BACKUP%-db.sqlite" copy /Y "%BACKUP%-db.sqlite" "%DBFILE%" >nul',
         'start "" "%OLD%\\MUXIVRA.exe"',
         ":done",
         "timeout /t 3 >nul",
         "(goto) 2>nul & del \"%~f0\" & exit /b 0",
         "",
     ]
-    if same_drive:
-        lines[lines.index(MOVE_OLD)] = 'move "%OLD%" "%BACKUP%" >nul || (echo Cannot move the current install - close explorer windows on it. & pause & exit /b 1)'
-    else:
-        lines[lines.index(MOVE_OLD)] = 'robocopy "%OLD%" "%BACKUP%" /E /MOVE /NFL /NDL /NJH /NJS >nul || (echo Cannot move the current install across drives. & pause & exit /b 1)'
     script.write_bytes("\r\n".join(lines).encode("utf-8"))
     return script
 

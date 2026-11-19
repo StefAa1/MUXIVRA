@@ -210,21 +210,22 @@ function hostRowHtml(host) {
 function activeTab() { return S.tabs.find((t) => t.id === S.activeTabId) || null; }
 
 function setView(view) {
-  S.view = view;
+  S.view = view;                       // keep the selected tab: switching sections is not closing
   $$('.rail-btn[data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
-  if (view === 'hosts') S.activeTabId = null;
   renderTabs();
   renderPage();
-  const hasTabs = S.tabs.length > 0 && S.activeTabId;
-  $('#page-hosts').classList.toggle('hidden', view !== 'hosts' || !!hasTabs);
 }
 
 function activateTab(id) {
   S.activeTabId = id;
+  S.view = 'hosts';                    // a terminal always belongs to the hosts view
+  $$('.rail-btn[data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === 'hosts'));
   S.tabs.forEach((tab) => {
     tab.pane.classList.toggle('active', tab.id === id);
   });
   $$('.page').forEach((p) => p.classList.add('hidden'));
+  const terminals = $('#terminals');
+  if (terminals) terminals.classList.remove('hidden');
   renderTabs();
   renderSidebar();
   requestAnimationFrame(() => {
@@ -436,8 +437,9 @@ function renderPage() {
    belongs to the hosts view. Everything else leads to overlapping pages. */
 function showPage(view) {
   const target = 'page-' + view;
+  const tabOpen = view === 'hosts' && !!(S.activeTabId && S.tabs.some((t) => t.id === S.activeTabId));
   document.querySelectorAll('.page').forEach((page) => {
-    page.classList.toggle('hidden', page.id !== target);
+    page.classList.toggle('hidden', page.id !== target || tabOpen);
   });
   const app = $('#app');
   if (app) {
@@ -447,7 +449,7 @@ function showPage(view) {
   }
   // terminals belong to the hosts view only; the stage keeps the pages
   const terminals = $('#terminals');
-  if (terminals) terminals.classList.toggle('hidden', view !== 'hosts');
+  if (terminals) terminals.classList.toggle('hidden', !tabOpen);
   document.querySelectorAll('.page').forEach((page) => {
     page.style.zIndex = page.id === target ? '5' : '1';
   });
@@ -602,13 +604,26 @@ function watchDiagramPanel() {
   const panel = document.querySelector('#dg-panel');
   if (!panel || panel.dataset.connWatch) return;
   panel.dataset.connWatch = '1';
+  let inFlight = false;
   const decorate = async () => {
-    if (panel.classList.contains('hidden')) return;
-    if (panel.querySelector('[data-nd-open]')) return;
+    if (inFlight || panel.classList.contains('hidden')) return;
     const deviceId = (typeof DG !== 'undefined' && DG.selected) || null;
     if (!deviceId) return;
+    if (panel.dataset.decoratedFor === String(deviceId)) return;   // already rendered for this node
+    inFlight = true;
     let payload;
-    try { payload = await api(`/netdoc/devices/${deviceId}/connections`); } catch (_) { return; }
+    try {
+      payload = await api(`/netdoc/devices/${deviceId}/connections`);
+    } catch (_) {
+      inFlight = false;
+      return;
+    }
+    inFlight = false;
+    // the user may have clicked another node while the request was in flight
+    if (((typeof DG !== 'undefined' && DG.selected) || null) !== deviceId) return;
+    if (panel.classList.contains('hidden')) return;
+    panel.dataset.decoratedFor = String(deviceId);
+    panel.querySelectorAll('.nd-conn-row').forEach((el) => el.remove());
     const row = document.createElement('div');
     row.className = 'nd-conn-row';
     row.innerHTML = `<span class="hint">Σύνδεση</span>${
@@ -827,6 +842,7 @@ function openHostModal(host) {
       bytesize: Number(d.bytesize) || 8,
       parity: d.parity || 'N',
       stopbits: Number(d.stopbits) || 1,
+      flow: d.flow || 'none',
     };
   };
 
@@ -877,6 +893,7 @@ function openHostModal(host) {
       bytesize: Number(data.bytesize) || 8,
       parity: data.parity || 'N',
       stopbits: Number(data.stopbits) || 1,
+      flow: data.flow || 'none',
     };
     try {
       if (host) await api(`/hosts/${host.id}`, { method: 'PUT', json: payload });

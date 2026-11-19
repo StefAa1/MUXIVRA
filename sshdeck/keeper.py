@@ -14,6 +14,8 @@ the mapping and merge logic below are unit-tested without any Keeper account.
 """
 from __future__ import annotations
 
+import uuid
+
 import json
 import os
 import sqlite3
@@ -226,10 +228,11 @@ def import_records(
         summary["credentials"] += 1
 
         conn.execute(
-            "INSERT INTO hosts(label, protocol, hostname, port, username, credential_id, group_name, tags, "
+            "INSERT INTO hosts(uuid, label, protocol, hostname, port, username, credential_id, group_name, tags, "
             "color, notes, serial_port, baud, bytesize, parity, stopbits, created_at, updated_at) "
-            "VALUES (?, 'ssh', ?, ?, ?, ?, ?, ?, ?, ?, '', 115200, 8, 'N', 1, ?, ?)",
+            "VALUES (?, ?, 'ssh', ?, ?, ?, ?, ?, ?, ?, ?, '', 115200, 8, 'N', 1, ?, ?)",
             (
+                uuid.uuid4().hex,
                 label,
                 rec.host,
                 rec.port,

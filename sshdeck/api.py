@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 import hashlib
 import base64
 import os
@@ -219,6 +220,7 @@ def row_to_host(row, credential_name: str | None = None) -> dict:
         "parity": row["parity"] or "N",
         "stopbits": row["stopbits"] or 1,
         "flow": (row["flow"] or "none") if "flow" in row.keys() else "none",
+        "uuid": row["uuid"] if "uuid" in row.keys() else "",
         "last_connected_at": row["last_connected_at"],
         "updated_at": row["updated_at"],
         "fingerprint": (
@@ -547,8 +549,8 @@ def create_host(payload: HostIn):
     with db.db() as conn:
         cur = conn.execute(
             "INSERT INTO hosts(label, protocol, hostname, port, username, credential_id, group_name, tags, "
-            "color, notes, serial_port, baud, bytesize, parity, stopbits, flow, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "color, notes, serial_port, baud, bytesize, parity, stopbits, flow, uuid, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 payload.label.strip(),
                 payload.protocol,
@@ -566,6 +568,7 @@ def create_host(payload: HostIn):
                 payload.parity,
                 payload.stopbits,
                 payload.flow,
+                uuid.uuid4().hex,
                 now,
                 now,
             ),
@@ -971,9 +974,10 @@ def import_ssh_config(payload: ImportIn):
                 skipped += 1
                 continue
             cur = conn.execute(
-                "INSERT INTO hosts(label, hostname, port, username, credential_id, group_name, tags, color, "
-                "notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO hosts(uuid, label, hostname, port, username, credential_id, group_name, tags, color, "
+                "notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
+                    uuid.uuid4().hex,
                     item.alias,
                     item.hostname or item.alias,
                     item.port,

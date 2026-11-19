@@ -150,31 +150,46 @@ def cmd_backup_db(args) -> int:
         print("backup-db: no database yet")
         return 0
     target = config.DATA_DIR / "backups"
-    target.mkdir(parents=True, exist_ok=True)
     stamp = __import__("time").strftime("%Y%m%d-%H%M%S")
-    destination = target / f"sshdeck-{stamp}.db"
-    conn = db.connect()
-    try:
-        destination.write_bytes(b"")
-        backup = db.connect()
-        backup.close()
-    finally:
-        conn.close()
-    shutil.copy2(config.DB_PATH, destination)
+    destination = db.snapshot(target / f"sshdeck-{stamp}.db")
     print(f"backup-db: {destination}")
     return 0
 
 
+def _startup_config() -> None:
+    """Entrypoint startup: adopt legacy data, then create dirs."""
+    config.migrate_legacy_data()
+    config.ensure_dirs()
+
+
 def cmd_healthcheck(args) -> int:
-    """Post-update sanity check: the new build must open its data, schema and UI."""
+    """Post-update sanity check: data opens, vault decrypts, UI assets exist.
+
+    Fail closed: if credentials exist but the vault key is missing or unreadable,
+    exit non-zero instead of minting a new key over old ciphertext.
+    """
     from . import db, security
 
     try:
         _startup_config()
         db.init()
         with db.db() as conn:
-            conn.execute("SELECT COUNT(*) FROM hosts").fetchone()
+            credentials = conn.execute("SELECT COUNT(*) AS n FROM credentials").fetchone()["n"]
+            hosts = conn.execute("SELECT COUNT(*) AS n FROM hosts").fetchone()["n"]
             conn.execute("SELECT COUNT(*) FROM racks").fetchone()
+
+        key_files = [config.VAULT_KEY_PATH, config.VAULT_KEY_PATH.with_name(config.VAULT_KEY_PATH.name + ".dpapi")]
+        key_present = any(p.exists() and p.stat().st_size for p in key_files)
+        if credentials and not key_present:
+            print("healthcheck: vault key missing while credentials exist")
+            return 5
+        if credentials:
+            with db.db() as conn:
+                row = conn.execute(
+                    "SELECT secret_enc FROM credentials WHERE secret_enc <> '' LIMIT 1"
+                ).fetchone()
+            if row and row["secret_enc"]:
+                security.open_sealed(row["secret_enc"])   # raises when the key is wrong
         probe = security.seal("healthcheck-probe")
         if security.open_sealed(probe) != "healthcheck-probe":
             print("healthcheck: vault round-trip failed")
@@ -185,14 +200,8 @@ def cmd_healthcheck(args) -> int:
     except Exception as exc:
         print(f"healthcheck failed: {type(exc).__name__}: {exc}")
         return 1
-    print(f"healthcheck ok: {config.DATA_DIR}")
+    print(f"healthcheck ok: {config.DATA_DIR} ({hosts} hosts)")
     return 0
-
-
-def _startup_config() -> None:
-    """Entrypoint startup: adopt legacy data, then create dirs."""
-    config.migrate_legacy_data()
-    config.ensure_dirs()
 
 
 def cmd_serve(args) -> int:

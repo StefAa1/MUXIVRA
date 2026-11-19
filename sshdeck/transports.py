@@ -274,7 +274,7 @@ class SerialSession(SessionBase):
             bytesize=BYTESIZE.get(int(target.bytesize or 8), 8),
             parity=PARITY.get((target.parity or "N").upper(), "N"),
             stopbits=STOPBITS.get(float(target.stopbits or 1), 1),
-            rtscts=flow in {"rtscts", "dsrdtr"},
+            rtscts=flow == "rtscts",
             xonxoff=flow == "xonxoff",
             dsrdtr=flow == "dsrdtr",
             timeout=0.2,

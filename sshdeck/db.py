@@ -5,7 +5,7 @@ from contextlib import contextmanager
 
 from . import config
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -191,6 +191,7 @@ HOST_COLUMNS = {
     "parity": "TEXT NOT NULL DEFAULT 'N'",
     "stopbits": "REAL NOT NULL DEFAULT 1",
     "flow": "TEXT NOT NULL DEFAULT 'none'",
+    "uuid": "TEXT NOT NULL DEFAULT ''",
 }
 
 
@@ -214,6 +215,12 @@ def _add_missing_columns(conn: sqlite3.Connection, table: str, columns: dict) ->
 def migrate(conn: sqlite3.Connection) -> None:
     """Bring an older database up to the current schema without losing data."""
     _add_missing_columns(conn, "hosts", HOST_COLUMNS)
+    # fill stable identities for pre-0.4.3 rows (UUIDs, never labels)
+    import uuid as _uuid
+
+    for row in conn.execute("SELECT id FROM hosts WHERE uuid IS NULL OR uuid = ''").fetchall():
+        conn.execute("UPDATE hosts SET uuid = ? WHERE id = ?", (_uuid.uuid4().hex, row["id"]))
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_hosts_uuid ON hosts(uuid) WHERE uuid <> ''")
     _add_missing_columns(conn, "devices", DEVICE_COLUMNS)
     conn.execute(
         "INSERT INTO settings(key, value) VALUES ('schema_version', ?) "
@@ -236,6 +243,22 @@ def _schema_on_disk() -> int:
         return 0
 
 
+def snapshot(destination) -> str:
+    """Consistent copy through the SQLite backup API (WAL-safe, unlike copy2)."""
+    from pathlib import Path as _Path
+
+    destination = _Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    source = connect()
+    target = sqlite3.connect(str(destination))
+    try:
+        source.backup(target)
+    finally:
+        target.close()
+        source.close()
+    return str(destination)
+
+
 def backup_before_migration() -> str | None:
     """Copy the DB before an upgrade so a rollback of the binaries still opens it."""
     import shutil
@@ -246,8 +269,7 @@ def backup_before_migration() -> str | None:
     target = config.DATA_DIR / "backups"
     target.mkdir(parents=True, exist_ok=True)
     destination = target / f"sshdeck-v{current}-{time.strftime('%Y%m%d-%H%M%S')}.db"
-    shutil.copy2(config.DB_PATH, destination)
-    return str(destination)
+    return snapshot(destination)
 
 
 def init() -> None:
