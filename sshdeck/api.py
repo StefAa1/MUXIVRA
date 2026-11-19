@@ -258,6 +258,7 @@ def load_target(conn, host_id: int) -> Target:
     username = row["username"] or (cred["username"] if cred else "")
     return Target(
         host_id=row["id"],
+        customer_id=row["customer_id"] if "customer_id" in row.keys() else None,
         label=row["label"],
         hostname=row["hostname"],
         port=row["port"],
@@ -726,14 +727,15 @@ def delete_host(host_id: int, request: Request):
 
 
 @api.post("/hosts/{host_id}/trust")
-def trust_host_key(host_id: int, payload: dict):
-    """Approve the exact fingerprint the user was shown."""
+def trust_host_key(host_id: int, payload: dict, request: Request):
+    """Approve the exact fingerprint the user was shown, inside this customer's store."""
+    require_customer(request, ("host", host_id))
     target = target_or_404(host_id)
     fingerprint = str(payload.get("fingerprint") or "").strip()
     if not fingerprint:
         raise HTTPException(status_code=422, detail="fingerprint_required")
     try:
-        stored = sshconn.trust_pending_key(host_id, fingerprint)
+        stored = sshconn.trust_pending_key(host_id, fingerprint, target.customer_id)
     except SshError as exc:
         raise HTTPException(status_code=409, detail=f"{exc.code}: {exc.message}")
     with db.db() as conn:
@@ -742,22 +744,24 @@ def trust_host_key(host_id: int, payload: dict):
 
 
 @api.delete("/hosts/{host_id}/trust")
-def forget_host_key(host_id: int):
+def forget_host_key(host_id: int, request: Request):
+    require_customer(request, ("host", host_id))
     """Drop trust for this host:port only — other ports of the same host keep theirs."""
     target = target_or_404(host_id)
-    removed = sshconn.forget_host_key(target.hostname, int(target.port or 22))
+    removed = sshconn.forget_host_key(target.hostname, int(target.port or 22), target.customer_id)
     with db.db() as conn:
         db.log_event(host_id, "host_key_forgotten", f"{target.hostname}:{target.port}", conn=conn)
     return {"ok": True, "removed": removed}
 
 
 @api.get("/hosts/{host_id}/trust")
-def host_trust_state(host_id: int):
-    target = target_or_404(host_id)
+def host_trust_state(host_id: int, request: Request):
+    target = target_or_404(host_id, request)
     return {
         "hostname": target.hostname,
         "port": int(target.port or 22),
-        "fingerprint": sshconn.known_fingerprint(target.hostname, int(target.port or 22)),
+        "fingerprint": sshconn.known_fingerprint(target.hostname, int(target.port or 22),
+                                                 target.customer_id),
     }
 
 
@@ -785,7 +789,8 @@ def list_serial_ports():
 
 
 @api.post("/hosts/{host_id}/forget-host-key")
-def forget_host_key(host_id: int):
+def forget_host_key(host_id: int, request: Request):
+    require_customer(request, ("host", host_id))
     with db.db() as conn:
         row = fetch_host(conn, host_id)
         removed = sshconn.forget_host_keys(row["hostname"], row["port"])

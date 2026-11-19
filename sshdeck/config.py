@@ -118,7 +118,49 @@ WEB_DIR = Path(os.environ.get("SSHDECK_WEB", BASE_DIR / "web"))
 
 DB_PATH = DATA_DIR / "sshdeck.db"
 VAULT_KEY_PATH = DATA_DIR / "vault.key"
-KNOWN_HOSTS_PATH = DATA_DIR / "known_hosts"
+KNOWN_HOSTS_PATH = DATA_DIR / "known_hosts"          # legacy, customer 1
+KNOWN_HOSTS_DIR = None                               # resolved lazily (DATA_DIR may change)
+
+
+def known_hosts_file(customer_id: int | None = None):
+    """Each customer gets its own trust store: same IP, different legitimate keys."""
+    from pathlib import Path
+
+    base = Path(DATA_DIR) / "known_hosts.d"
+    if customer_id is None:
+        return Path(KNOWN_HOSTS_PATH)
+    return base / f"customer-{int(customer_id)}"
+
+
+def ensure_known_hosts(customer_id: int | None = None) -> str:
+    import os
+
+    ensure_dirs()
+    path = known_hosts_file(customer_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(fd)
+    else:
+        os.chmod(path, 0o600)
+    return str(path)
+
+
+def migrate_known_hosts(default_customer_id: int) -> bool:
+    """Adopt the pre-0.4.6 shared trust file into the unclassified customer."""
+    from pathlib import Path
+    import shutil
+
+    legacy = Path(KNOWN_HOSTS_PATH)
+    if not legacy.exists() or not legacy.stat().st_size:
+        return False
+    target = known_hosts_file(default_customer_id)
+    if target.exists() and target.stat().st_size:
+        return False                     # already migrated: never overwrite trust
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(legacy, target)
+    target.chmod(0o600)
+    return True
 LOG_PATH = DATA_DIR / "sshdeck.log"
 
 def _default_staging_dir(data_dir: Path) -> Path:

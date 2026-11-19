@@ -1,0 +1,36 @@
+/* -------------------------------------------------------- MUXIVRA · config */
+.cfg-panel { display: flex; flex-direction: column; gap: 14px; padding: 16px 18px 24px; max-width: 1040px; }
+.cfg-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.cfg-head h3 { margin: 0; font-size: 16px; }
+.cfg-sub { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
+.cfg-head-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.cfg-error { margin: 0; padding: 9px 12px; border-radius: 8px; background: rgba(255,138,122,.1); color: #ffb3a8; font-size: 13px; }
+.cfg-notice { margin: 0; padding: 9px 12px; border-radius: 8px; background: rgba(61,220,151,.09); color: #8fe6bd; font-size: 13px; }
+.cfg-block { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: var(--bg-1); }
+.cfg-block-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.cfg-block-head h4 { margin: 0; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.cfg-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.cfg-table th { text-align: left; font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.cfg-table td { padding: 7px 8px; border-bottom: 1px solid rgba(255,255,255,.04); }
+.cfg-empty { color: var(--muted); font-size: 12.5px; padding: 10px 2px; margin: 0; }
+.cfg-paste { border: 1px dashed var(--line); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.cfg-field { display: flex; flex-direction: column; gap: 5px; }
+.cfg-field > span { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.cfg-field textarea, .cfg-field select { background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; color: var(--text); font-size: 13.5px; padding: 9px 10px; min-height: 40px; }
+.cfg-field textarea { font-family: var(--mono, ui-monospace, monospace); resize: vertical; }
+.cfg-row { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
+.cfg-diff { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.cfg-diff-head { display: flex; gap: 14px; padding: 8px 12px; font-size: 12px; background: var(--bg-2); border-bottom: 1px solid var(--line); }
+.cfg-diff pre { margin: 0; padding: 10px 12px; max-height: 380px; overflow: auto; font-size: 12px; line-height: 1.5; }
+.cfg-diff i { display: block; font-style: normal; white-space: pre-wrap; }
+.cfg-diff i.add { background: rgba(61,220,151,.1); color: #9fe9c4; }
+.cfg-diff i.del { background: rgba(255,138,122,.1); color: #ffb3a8; }
+.cfg-diff i.ctx { color: var(--muted); }
+.cfg-actions { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.cfg-actions h4 { margin: 0; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.cfg-actions ul { margin: 0; padding-left: 18px; font-size: 13px; display: flex; flex-direction: column; gap: 4px; }
+.cfg-check { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.cfg-hint { margin: 0; font-size: 11.5px; color: var(--muted); }
+.cfg-warn { color: #ffcf7a; font-style: normal; font-size: 11.5px; }
+.cfg-raw { margin: 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; max-height: 420px; overflow: auto; font-size: 12px; background: var(--bg-2); }
+.mono { font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); }

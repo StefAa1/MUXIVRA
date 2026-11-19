@@ -5,7 +5,7 @@ from contextlib import contextmanager
 
 from . import config
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -223,6 +223,42 @@ def _add_missing_columns(conn: sqlite3.Connection, table: str, columns: dict) ->
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
 
+CONFIG_SCHEMA = """
+CREATE TABLE IF NOT EXISTS config_versions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id   INTEGER NOT NULL,
+    host_id     INTEGER,
+    vendor      TEXT NOT NULL DEFAULT '',
+    source      TEXT NOT NULL DEFAULT 'ssh',
+    raw_enc     BLOB,
+    sha256      TEXT NOT NULL,
+    size        INTEGER NOT NULL DEFAULT 0,
+    label       TEXT NOT NULL DEFAULT '',
+    created_at  REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_config_device ON config_versions(device_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS planned_links (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_device  INTEGER NOT NULL,
+    to_device    INTEGER NOT NULL,
+    from_port    TEXT NOT NULL DEFAULT '',
+    to_port      TEXT NOT NULL DEFAULT '',
+    label        TEXT NOT NULL DEFAULT '',
+    note         TEXT NOT NULL DEFAULT '',
+    created_at   REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS device_observed (
+    device_id   INTEGER PRIMARY KEY,
+    host_id     INTEGER,
+    vendor      TEXT NOT NULL DEFAULT '',
+    data_json   TEXT NOT NULL DEFAULT '{}',
+    collected_at REAL NOT NULL
+);
+"""
+
+
 def migrate(conn: sqlite3.Connection) -> None:
     """Bring an older database up to the current schema without losing data."""
     _add_missing_columns(conn, "hosts", HOST_COLUMNS)
@@ -241,6 +277,9 @@ def migrate(conn: sqlite3.Connection) -> None:
         conn.execute("UPDATE hosts SET uuid = ? WHERE id = ?", (_uuid.uuid4().hex, row["id"]))
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_hosts_uuid ON hosts(uuid) WHERE uuid <> ''")
     _add_missing_columns(conn, "devices", DEVICE_COLUMNS)
+    # v8: planned vs documented equipment, configuration history, observed state
+    _add_missing_columns(conn, "devices", {"origin": "TEXT DEFAULT 'documented'"})
+    conn.executescript(CONFIG_SCHEMA)
     conn.execute(
         "INSERT INTO settings(key, value) VALUES ('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",

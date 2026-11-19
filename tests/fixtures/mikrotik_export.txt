@@ -1,0 +1,8 @@
+# 2026-11-19 10:02:11 by RouterOS 7.16
+/interface bridge add name=bridge-lan comment="LAN"
+/interface ethernet set [ find default-name=ether1 ] comment=WAN
+/interface ethernet add name=ether2 comment="Uplink core"
+/ip address add address=192.168.88.1/24 interface=bridge-lan
+/interface vlan add interface=bridge-lan name=vlan100 vlan-id=100
+/ip firewall filter add chain=input action=accept
+/user add name=admin password=SuperSecret123

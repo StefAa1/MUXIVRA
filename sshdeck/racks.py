@@ -6,10 +6,12 @@ port assignments impossible to save silently.
 from __future__ import annotations
 
 import csv
+import time
 import io
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
@@ -21,7 +23,7 @@ from .api import guard
 
 router = APIRouter(prefix="/api/netdoc", dependencies=[Depends(guard)])
 
-DeviceKind = Literal["switch", "router", "patch-panel", "server", "pdu", "other"]
+DeviceKind = Literal["switch", "router", "firewall", "ap", "patch-panel", "server", "pdu", "other"]
 PortKind = Literal["rj45", "sfp", "fiber", "power", "other"]
 
 
@@ -47,10 +49,12 @@ class DeviceIn(BaseModel):
     vendor: str = Field(default="", max_length=60)
     model: str = Field(default="", max_length=60)
     mgmt_ip: str = Field(default="", max_length=64)
+    origin: Literal["documented", "planned"] = "documented"
 
 
 class DevicePatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=80)
+    origin: Literal["documented", "planned"] | None = None
     kind: DeviceKind | None = None
     units: int | None = Field(default=None, ge=1, le=48)
     position: int | None = Field(default=None, ge=1, le=60)
@@ -226,11 +230,13 @@ def create_device(payload: DeviceIn, request: Request):
             _one(conn, "SELECT id FROM hosts WHERE id = ?", (payload.host_id,))
             _ensure_same(conn, _cid(conn, request), ("host", payload.host_id))
         cur = conn.execute(
-            """INSERT INTO devices (rack_id, name, kind, units, position, note, host_id, vendor, model, mgmt_ip)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO devices (rack_id, name, kind, units, position, note, host_id, vendor, model,
+                                  mgmt_ip, origin)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 payload.rack_id, payload.name.strip(), payload.kind, payload.units, payload.position,
-                payload.note, payload.host_id, payload.vendor.strip(), payload.model.strip(), payload.mgmt_ip.strip(),
+                payload.note, payload.host_id, payload.vendor.strip(), payload.model.strip(),
+                payload.mgmt_ip.strip(), payload.origin,
             ),
         )
         conn.commit()
@@ -678,11 +684,11 @@ def update_device(device_id: int, payload: DevicePatch, request: Request):
             _ensure_same(conn, _cid(conn, request), ("host", merged["host_id"]))
         conn.execute(
             """UPDATE devices SET name = ?, kind = ?, units = ?, position = ?, note = ?,
-                      host_id = ?, vendor = ?, model = ?, mgmt_ip = ?
+                      host_id = ?, vendor = ?, model = ?, mgmt_ip = ?, origin = ?
                 WHERE id = ?""",
             (merged["name"], merged["kind"], merged["units"], merged["position"], merged["note"],
              merged.get("host_id"), merged.get("vendor") or "", merged.get("model") or "",
-             merged.get("mgmt_ip") or "", device_id),
+             merged.get("mgmt_ip") or "", merged.get("origin") or "documented", device_id),
         )
         conn.commit()
         return dict(conn.execute("SELECT * FROM devices WHERE id = ?", (device_id,)).fetchone())
@@ -726,3 +732,223 @@ def update_link(link_id: int, payload: dict, request: Request):
             raise HTTPException(status_code=409, detail=f"port_already_linked:{port_b}") from exc
         conn.commit()
         return dict(conn.execute("SELECT * FROM links WHERE id = ?", (link_id,)).fetchone())
+
+# ---------------------------------------------------------- configuration workspace
+class ConfigFetchIn(BaseModel):
+    vendor: str = ""
+    label: str = ""
+
+
+class ConfigObserveIn(BaseModel):
+    text: str
+    vendor: str = ""
+
+
+class ReconcileIn(BaseModel):
+    apply: bool = False
+
+
+def _device_or_404(conn, device_id: int, request: Request):
+    device = _one(conn, "SELECT * FROM devices WHERE id = ?", (device_id,))
+    _ensure_same(conn, _cid(conn, request), ("device", device_id))
+    return device
+
+
+def _vendor_of(conn, device) -> str:
+    if (device["vendor"] or "").strip():
+        return device["vendor"].strip()
+    if device["host_id"]:
+        row = conn.execute("SELECT * FROM hosts WHERE id = ?", (device["host_id"],)).fetchone()
+        if row:
+            keys = row.keys()
+            for column in ("vendor", "model"):
+                if column in keys and row[column]:
+                    return row[column]
+    return ""
+
+
+@router.post("/devices/{device_id}/config/fetch")
+def config_fetch(device_id: int, payload: ConfigFetchIn, request: Request):
+    """Read the running configuration with the vendor adapter (SSH only)."""
+    with _conn() as conn:
+        device = _device_or_404(conn, device_id, request)
+        vendor = payload.vendor or _vendor_of(conn, device)
+        host_id = device["host_id"]
+        if not host_id:
+            raise HTTPException(status_code=422, detail="device_without_profile")
+        from . import workspace
+        from .api import load_target
+
+        target = load_target(conn, host_id)
+        if target.protocol != "ssh":
+            raise HTTPException(status_code=422, detail="config_requires_ssh")
+        try:
+            raw = workspace.fetch(target, vendor)
+        except workspace.ConfigError as exc:
+            raise HTTPException(status_code=422, detail=exc.code) from exc
+        except Exception as exc:                       # noqa: BLE001 - surfaced, not hidden
+            raise HTTPException(status_code=502, detail=f"fetch_failed: {exc}") from exc
+        info = workspace.store_version(conn, device_id, host_id, vendor, raw, "ssh", payload.label)
+        parsed = workspace.parse(vendor, raw)
+        workspace.upsert_observed(conn, device_id, host_id, vendor, parsed)
+    return {**info, "vendor_used": vendor}
+
+
+@router.post("/devices/{device_id}/config/paste")
+def config_paste(device_id: int, payload: ConfigObserveIn, request: Request):
+    """Store a configuration pasted by the operator (no device contact)."""
+    from . import workspace
+
+    with _conn() as conn:
+        device = _device_or_404(conn, device_id, request)
+        vendor = payload.vendor or _vendor_of(conn, device)
+        info = workspace.store_version(conn, device_id, device["host_id"], vendor,
+                                       payload.text, "paste", "pasted")
+        workspace.upsert_observed(conn, device_id, device["host_id"], vendor,
+                                  workspace.parse(vendor, payload.text))
+    return {**info, "vendor_used": vendor}
+
+
+@router.get("/devices/{device_id}/config/versions")
+def config_versions(device_id: int, request: Request):
+    from . import workspace
+
+    with _conn() as conn:
+        device = _device_or_404(conn, device_id, request)
+        return {"device_id": device_id, "vendor": _vendor_of(conn, device),
+                "versions": workspace.list_versions(conn, device_id)}
+
+
+@router.get("/config/versions/{version_id}")
+def config_version_text(version_id: int, request: Request):
+    from . import workspace
+
+    with _conn() as conn:
+        row = _one(conn, "SELECT device_id FROM config_versions WHERE id = ?", (version_id,))
+        _ensure_same(conn, _cid(conn, request), ("device", row["device_id"]))
+        text = workspace.version_text(conn, version_id)
+    return {"id": version_id, "text": text, "sha256": workspace.sha256_of(text)}
+
+
+@router.get("/config/diff")
+def config_diff(left: int, right: int, request: Request):
+    from . import workspace
+
+    with _conn() as conn:
+        for version_id in (left, right):
+            row = _one(conn, "SELECT device_id FROM config_versions WHERE id = ?", (version_id,))
+            _ensure_same(conn, _cid(conn, request), ("device", row["device_id"]))
+        return workspace.diff(conn, left, right)
+
+
+@router.get("/devices/{device_id}/observed")
+def device_observed(device_id: int, request: Request):
+    from . import workspace
+
+    with _conn() as conn:
+        _device_or_404(conn, device_id, request)
+        return {"device_id": device_id, "observed": workspace.observed(conn, device_id)}
+
+
+@router.post("/devices/{device_id}/reconcile")
+def device_reconcile(device_id: int, payload: ReconcileIn, request: Request):
+    """Preview (default) or apply the supported logical elements into documentation."""
+    from . import workspace
+
+    with _conn() as conn:
+        _device_or_404(conn, device_id, request)
+        try:
+            return workspace.reconcile(conn, device_id, apply_changes=payload.apply)
+        except workspace.ConfigError as exc:
+            raise HTTPException(status_code=422, detail=exc.code) from exc
+
+
+# ------------------------------------------------------------- planned topology
+class PlannedLinkIn(BaseModel):
+    from_device: int
+    to_device: int
+    from_port: str = ""
+    to_port: str = ""
+    label: str = ""
+    note: str = ""
+
+
+@router.get("/planned-links")
+def list_planned_links(request: Request):
+    with _conn() as conn:
+        cid = _cid(conn, request)
+        rows = conn.execute(
+            """SELECT pl.* FROM planned_links pl
+                 JOIN devices d ON d.id = pl.from_device
+                 JOIN racks r ON r.id = d.rack_id
+                 JOIN sites s ON s.id = r.site_id
+                WHERE s.customer_id = ? ORDER BY pl.id""", (cid,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+@router.post("/planned-links", status_code=201)
+def create_planned_link(payload: PlannedLinkIn, request: Request):
+    with _conn() as conn:
+        cid = _cid(conn, request)
+        for device_id in (payload.from_device, payload.to_device):
+            _one(conn, "SELECT id FROM devices WHERE id = ?", (device_id,))
+            _ensure_same(conn, cid, ("device", device_id))
+        if payload.from_device == payload.to_device:
+            raise HTTPException(status_code=422, detail="same_device")
+        cur = conn.execute(
+            "INSERT INTO planned_links(from_device, to_device, from_port, to_port, label, note,"
+            " created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (payload.from_device, payload.to_device, payload.from_port[:40], payload.to_port[:40],
+             payload.label[:80], payload.note[:200], time.time()),
+        )
+        conn.commit()
+        return dict(conn.execute("SELECT * FROM planned_links WHERE id = ?", (cur.lastrowid,)).fetchone())
+
+
+@router.delete("/planned-links/{link_id}")
+def delete_planned_link(link_id: int, request: Request):
+    with _conn() as conn:
+        row = _one(conn, "SELECT * FROM planned_links WHERE id = ?", (link_id,))
+        _ensure_same(conn, _cid(conn, request), ("device", row["from_device"]))
+        conn.execute("DELETE FROM planned_links WHERE id = ?", (link_id,))
+        conn.commit()
+    return {"ok": True}
+
+
+# ------------------------------------------------------- device web management
+class WebSurfaceIn(BaseModel):
+    url: str = ""
+    trust_sha256: str = ""
+
+
+@router.post("/devices/{device_id}/web")
+def open_device_web(device_id: int, payload: WebSurfaceIn, request: Request):
+    """Open the device's own admin page in an isolated, separate surface."""
+    from . import webview_surface
+
+    with _conn() as conn:
+        device = _device_or_404(conn, device_id, request)
+        cid = _cid(conn, request)
+        url = payload.url.strip() or webview_surface.default_url(device)
+    try:
+        webview_surface.validate_url(url)          # validated here, not only inside launch
+        result = webview_surface.launch(url, cid, device["name"], payload.trust_sha256 or None)
+    except webview_surface.SurfaceError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    return {**result, "device_id": device_id, "device": device["name"]}
+
+
+@router.get("/devices/{device_id}/web/config")
+def device_web_config(device_id: int, request: Request, url: str = ""):
+    """What the surface would use — no window is opened (inspectable)."""
+    from . import webview_surface
+
+    with _conn() as conn:
+        device = _device_or_404(conn, device_id, request)
+        cid = _cid(conn, request)
+        target = url.strip() or webview_surface.default_url(device)
+    try:
+        return webview_surface.surface_config(target, cid, device["name"])
+    except webview_surface.SurfaceError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc

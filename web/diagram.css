@@ -548,3 +548,16 @@
     max-height: 52%;
   }
 }
+
+/* ---------------------------------------------------------------- σχεδιασμός */
+.dg-planned .dg-shape { fill: none; stroke-dasharray: 6 4; stroke: #7fb2ff; }
+.dg-planned .dg-halo { opacity: .35; }
+.dg-edge-planned { stroke-dasharray: 7 5; stroke: #7fb2ff; opacity: .85; }
+.dg-edge-planned .dg-edge-hit { stroke-width: 16; }
+.dg-readkey { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding: 8px 14px; font-size: 11.5px; color: var(--muted); border-bottom: 1px solid var(--line); }
+.dg-readkey b { display: inline-block; }
+.dg-readkey .dg-solid { width: 22px; height: 0; border-top: 2px solid currentColor; }
+.dg-readkey .dg-dash { width: 22px; height: 0; border-top: 2px dashed #7fb2ff; }
+.dg-readkey .dg-planned-box { width: 16px; height: 10px; border: 1px dashed #7fb2ff; border-radius: 3px; }
+.dg-readkey .dg-obs-chip { font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid rgba(61,220,151,.4); color: #3ddc97; }
+.dg-readkey-warn { margin-left: auto; color: #ffcf7a; }

@@ -1,0 +1,18 @@
+Building configuration...
+!
+hostname core-sw
+!
+vlan 10
+vlan 20
+!
+interface GigabitEthernet0/1
+ description Uplink to core
+!
+interface GigabitEthernet0/2
+ description Access port
+ ip address 10.10.10.2 255.255.255.0
+!
+line vty 0 4
+ password cisco123
+!
+end

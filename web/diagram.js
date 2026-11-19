@@ -16,8 +16,23 @@
 */
 'use strict';
 
+function dgCustomerId() {
+  try {
+    if (typeof S !== 'undefined' && S && S.customerId) return String(S.customerId);
+    const select = document.querySelector('#customer-select');
+    if (select && select.value) return String(select.value);
+  } catch (_) { /* rendering before the shell is ready */ }
+  return 'all';
+}
+
+function dgKey() {
+  return `muxivra.diagram.positions.${dgCustomerId()}.${DG.dataset || 'documented'}`;
+}
+
 const DG = {
   KEY: 'muxivra.diagram.positions',
+  dataset: 'documented',       // documented (real inventory) | planned (design)
+  planned: [],                 // planned links: design intent, NOT physical cables
   NS: 'http://www.w3.org/2000/svg',
   W: 196,              // node width
   H: 54,               // node height
@@ -127,6 +142,8 @@ function dgDevices() {
           vendor: dev.vendor || '',
           model: dev.model || '',
           mgmt_ip: dev.mgmt_ip || '',
+          origin: (dev.origin === 'planned') ? 'planned' : 'documented',
+          observed: !!dev.observed_at,
           siteId: site.id,
           siteName: site.name || 'Χωρίς χώρο',
           rackId: rack.id,
@@ -159,7 +176,7 @@ function dgPositions() {
   if (DG.pos) return DG.pos;
   DG.pos = {};
   try {
-    const raw = window.localStorage.getItem(DG.KEY);
+    const raw = window.localStorage.getItem(dgKey());
     const parsed = raw ? JSON.parse(raw) : null;
     if (parsed && typeof parsed === 'object') {
       Object.keys(parsed).forEach((key) => {
@@ -177,7 +194,7 @@ function dgPositions() {
 
 function dgWritePositions() {
   try {
-    window.localStorage.setItem(DG.KEY, JSON.stringify(dgPositions()));
+    window.localStorage.setItem(dgKey(), JSON.stringify(dgPositions()));
   } catch (_) {
     /* storage disabled or full — dragging still works for this session */
   }
@@ -197,6 +214,11 @@ async function dgReload(force) {
 
   let links = [];
   let lastError = null;
+  try {
+    DG.planned = await api('/netdoc/planned-links');
+  } catch (_) {
+    DG.planned = [];        // design links are optional; cables still render
+  }
   let loaded = false;
   try {
     let offset = 0;
@@ -337,6 +359,7 @@ function dgBuild() {
 
   const query = String(DG.filters.q || '').trim().toLowerCase();
   const nodes = all.filter((node) => {
+    if (DG.dataset === 'documented' && node.origin === 'planned') return false;
     if (DG.filters.site !== 'all' && String(node.siteId) !== String(DG.filters.site)) return false;
     if (DG.filters.rack !== 'all' && String(node.rackId) !== String(DG.filters.rack)) return false;
     if (DG.filters.linkedOnly && !(degree.get(node.id) > 0)) return false;
@@ -355,9 +378,28 @@ function dgBuild() {
 
   DG.nodes = nodes;
   DG.nodeById = new Map(nodes.map((node) => [node.id, node]));
+  // design edges: kept in a separate list so nothing can mistake them for cables
+  DG.plannedEdges = (DG.planned || []).filter((link) => DG.nodeById.has(Number(link.from_device))
+    && DG.nodeById.has(Number(link.to_device)))
+    .map((link) => ({
+      id: `planned-${link.id}`,
+      planned: true,
+      device_a_id: Number(link.from_device),
+      device_b_id: Number(link.to_device),
+      port_a_name: link.from_port || '',
+      port_b_name: link.to_port || '',
+      cable: link.label || 'σχεδιασμός',
+      label: link.label || 'σχεδιασμός',
+      length_m: '',
+    }));
   DG.edgeList = links.filter((link) => DG.nodeById.has(Number(link.device_a_id))
     && DG.nodeById.has(Number(link.device_b_id)));
-  DG.edgeById = new Map(DG.edgeList.map((edge) => [edge.id, edge]));
+  if (DG.dataset === 'planned') {
+    DG.edgeList = DG.plannedEdges.slice();
+    DG.edgeById = new Map(DG.edgeList.map((edge) => [edge.id, edge]));
+  } else {
+    DG.edgeById = new Map(DG.edgeList.map((edge) => [edge.id, edge]));
+  }
   DG.nodes.forEach((node) => { node.deg = degree.get(node.id) || 0; });
 
   // Parallel edges between the same pair get separate bows and labels.
@@ -442,6 +484,12 @@ function dgShell(el) {
       </div>
 
       <div class="dg-bar">
+        <label class="dg-field"><span>Σύνολο</span>
+          <select id="dg-dataset" aria-label="Σύνολο δεδομένων">
+            <option value="documented">Τεκμηριωμένο δίκτυο</option>
+            <option value="planned">Σχεδιασμός</option>
+          </select>
+        </label>
         <label class="dg-field"><span>Χώρος</span><select id="dg-site" aria-label="Φίλτρο χώρου"></select></label>
         <label class="dg-field"><span>Rack</span><select id="dg-rack" aria-label="Φίλτρο rack"></select></label>
         <label class="dg-field grow"><span>Αναζήτηση</span>
@@ -455,6 +503,14 @@ function dgShell(el) {
           <button class="icon-btn" data-dg-act="zoom-in" title="Μεγέθυνση">+</button>
         </div>
         <button class="btn ghost xs" data-dg-act="reset-pos" title="Επαναφορά αυτόματης διάταξης">↺ Θέσεις</button>
+      </div>
+
+      <div class="dg-readkey">
+        <span><b class="dg-solid"></b> τεκμηριωμένο καλώδιο</span>
+        <span><b class="dg-dash"></b> σχεδιασμός</span>
+        <span><b class="dg-planned-box"></b> σχεδιαζόμενη συσκευή</span>
+        <span><b class="dg-obs-chip">παρατηρήθηκε</b> πραγματική κατάσταση</span>
+        <span class="dg-readkey-warn">Το διάγραμμα δεν γράφει configuration σε εξοπλισμό.</span>
       </div>
 
       <div class="dg-note hidden" id="dg-note"></div>
@@ -521,6 +577,8 @@ function dgSyncFilters() {
   if (linked) linked.checked = !!DG.filters.linkedOnly;
   const labels = DG.el.querySelector('#dg-labels');
   if (labels) labels.checked = !DG.hideLabels;
+  const dataset = DG.el.querySelector('#dg-dataset');
+  if (dataset) dataset.value = DG.dataset || 'documented';
 }
 
 /* --------------------------------------------------------------- node shape */
@@ -579,7 +637,7 @@ function dgIconDef(kind) {
 
 function dgNodeEl(node) {
   const group = dgSvg('g', {
-    class: `dg-node dg-kind-${node.kind}`,
+    class: `dg-node dg-kind-${node.kind}${node.origin === 'planned' ? ' dg-planned' : ''}`,
     transform: `translate(${dgRound(node.gx)},${dgRound(node.gy)})`,
   });
   group.dataset.dgNode = String(node.id);
@@ -762,7 +820,8 @@ function dgEdgeEl(edge) {
   const geo = dgEdgeGeometry(a, b, edge);
   const group = dgSvg('g', {
     class: `dg-edge${String(edge.rack_a_id) !== String(edge.rack_b_id) ? ' inter' : ''}`
-      + `${geo.fit === false && !edge.parallel ? ' cramped' : ''}`,
+      + `${geo.fit === false && !edge.parallel ? ' cramped' : ''}`
+      + `${edge.planned ? ' dg-edge-planned' : ''}`,
   });
   group.dataset.dgEdge = String(edge.id);
   group.appendChild(dgSvg('path', { class: 'dg-edge-line', d: geo.d, fill: 'none' }));
@@ -1377,6 +1436,12 @@ function dgAttach(el) {
       DG.filters.rack = 'all';
       DG.fitted = false;
       dgSyncFilters();
+      dgRefresh();
+      dgFit();
+    } else if (target.id === 'dg-dataset') {
+      DG.dataset = target.value === 'planned' ? 'planned' : 'documented';
+      DG.pos = null;                 // separate layout per dataset and customer
+      DG.fitted = false;
       dgRefresh();
       dgFit();
     } else if (target.id === 'dg-rack') {
