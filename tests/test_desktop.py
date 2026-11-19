@@ -60,3 +60,20 @@ def test_second_instance_is_refused(monkeypatch, fresh):
     second = desktop.acquire_instance_lock()
     assert second is not None
     second.close()
+
+
+def test_instance_lock_records_our_pid(tmp_path, monkeypatch):
+    """Ο installer/updater πρέπει να ξέρει ποιο PID να κλείσει — όχι όλα τα pythonw."""
+    import os
+
+    from sshdeck import config, desktop
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path, raising=False)
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "x.db", raising=False)
+    lock = desktop.acquire_instance_lock()
+    assert lock is not None
+    try:
+        text = (tmp_path / "instance.lock").read_text().strip()
+        assert text == str(os.getpid())
+    finally:
+        lock.close()

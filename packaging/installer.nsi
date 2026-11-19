@@ -42,8 +42,31 @@ VIAddVersionKey "LegalCopyright" "MUXIVRA"
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "English"
 
+
+; ---------------------------------------------------------------- running app
+; Κλείνουμε ΜΟΝΟ τη δική μας διεργασία: πρώτα από το pid του instance.lock
+; (γράφεται χωρίς newline), αλλιώς από τον τίτλο παραθύρου. Ποτέ σφαιρικό kill.
+!macro StopOurApp
+  DetailPrint "Stopping a running MUXIVRA instance (ours only)..."
+  StrCpy $1 ""
+  IfFileExists "$LOCALAPPDATA\MUXIVRA\data\instance.lock" 0 stop_by_title
+    FileOpen $0 "$LOCALAPPDATA\MUXIVRA\data\instance.lock" r
+    FileRead $0 $1
+    FileClose $0
+  stop_by_title:
+  StrCmp $1 "" 0 +3
+    ExecWait 'taskkill /FI "WINDOWTITLE eq MUXIVRA*" /F'
+    Goto stop_wait
+  DetailPrint "  closing PID $1"
+  ExecWait 'taskkill /PID $1 /F'
+  ExecWait 'taskkill /FI "WINDOWTITLE eq MUXIVRA*" /F'
+  stop_wait:
+  Sleep 1500
+!macroend
+
 Section "MUXIVRA" SecMain
   SetOutPath "$INSTDIR"
+  !insertmacro StopOurApp
   ; keep user data: the bundle's data\ folder is never shipped or overwritten
   File /r "${BUNDLE_DIR}\*.*"
 
@@ -67,8 +90,7 @@ Section "MUXIVRA" SecMain
 SectionEnd
 
 Section "Uninstall"
-  ; stop only our own process if it is running
-  ExecWait 'taskkill /IM MUXIVRA.exe /F'
+  !insertmacro StopOurApp
   Delete "$DESKTOP\MUXIVRA.lnk"
   Delete "$SMPROGRAMS\MUXIVRA\MUXIVRA.lnk"
   Delete "$SMPROGRAMS\MUXIVRA\Uninstall.lnk"

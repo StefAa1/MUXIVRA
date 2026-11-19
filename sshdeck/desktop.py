@@ -90,6 +90,14 @@ def acquire_instance_lock():
     except OSError:
         handle.close()
         return None
+    # γράψε το PID: updater/installer/uninstaller κλείνουν ΜΟΝΟ αυτή τη διεργασία
+    try:
+        handle.seek(0)
+        handle.truncate()
+        handle.write(str(os.getpid()))
+        handle.flush()
+    except OSError:
+        pass
     return handle
 
 
