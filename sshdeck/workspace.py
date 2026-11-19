@@ -31,26 +31,61 @@ SECRET_LINE = re.compile(
 )
 
 
-SECRET_VALUE = re.compile(
-    r"(?i)\b(password|passwd|secret|pre-shared-key|community|key-string|snmp-community)"
-    r"=(\"[^\"]*\"|\S+)"
+# ------------------------------------------------------------------- redaction
+# Κάθε vendor γράφει τα μυστικά με δικό του τρόπο. Ό,τι δεν αναλύεται με
+# βεβαιότητα κρύβεται ολόκληρο — ποτέ «μισή» γραμμή με ορατό secret.
+def _mask(keyword: str, value: str) -> str:
+    return f"{keyword} <redacted>"
+
+
+# 1) key=value (RouterOS export, YAML-ish, generic CLIs), με quoted τιμές
+KV_SECRET = re.compile(
+    r"(?i)\b(password|passwd|passphrase|secret|pre-shared-key|preshared-key|"
+    r"private-key|authentication-password|community|key-string|snmp-community|"
+    r"wpa-pre-shared-key|wpa2-pre-shared-key|radius-secret|tacacs-key)\b"
+    r"(\s*=\s*)(\"[^\"]*\"|'[^']*'|\S+)"
+)
+
+# 2) keyword value [extra...] — Cisco IOS / NX-OS / Aruba
+SPACE_SECRET = [
+    re.compile(r"(?i)^(\s*snmp-server\s+community\s+)(\S+)(.*)$"),
+    re.compile(r"(?i)^(\s*(?:enable|username\s+\S+\s+privilege\s+\d+)\s+(?:secret|password)\s+(?:\d+\s+)?)(\S+)(.*)$"),
+    re.compile(r"(?i)^(\s*key-string\s+(?:\d+\s+)?)(\S+)(.*)$"),
+    re.compile(r"(?i)^(\s*key\s+(?:\d+\s+)?)(\S+)(.*)$"),
+    re.compile(r"(?i)^(\s*(?:password|secret)\s+(?:\d+\s+)?)(\"[^\"]*\"|\S+)(.*)$"),
+    re.compile(r"(?i)^(\s*crypto\s+isakmp\s+key\s+)(\S+)(.*)$"),
+    re.compile(r"(?i)^(\s*neighbor\s+\S+\s+password\s+(?:\d+\s+)?)(\S+)(.*)$"),
+    re.compile(r"(?i)^(\s*community\s+)(\S+)(.*)$"),
+    re.compile(r"(?i)^(\s*authentication-key\s+)(\S+)(.*)$"),
+    re.compile(r"(?i)^(\s*(?:tacacs-server|radius-server)\s+key\s+(?:\d+\s+)?)(\S+)(.*)$"),
+]
+
+SECRET_LINE = re.compile(
+    r"(?i)\b(password|passwd|passphrase|secret|pre-shared-key|preshared-key|private-key|"
+    r"key-string|community|authentication-key|authentication-password)\b"
 )
 
 
+def redact_line(line: str) -> str:
+    """Mask the secret value(s) of one configuration line."""
+    masked = KV_SECRET.sub(lambda m: f"{m.group(1)}{m.group(2)}<redacted>", line)
+    if masked != line:
+        return masked
+    for pattern in SPACE_SECRET:
+        match = pattern.match(masked)
+        if match:
+            lead, _value, tail = match.group(1), match.group(2), match.group(3)
+            return f"{lead}<redacted>{tail}"
+    if SECRET_LINE.search(masked):
+        # δεν αναλύεται με βεβαιότητα: κρύψε ολόκληρη τη γραμμή
+        indent = masked[: len(masked) - len(masked.lstrip())]
+        return f"{indent}<redacted line>"
+    return masked
+
+
 def redact(text: str) -> str:
-    """Mask secret VALUES only, so the rest of the line stays readable in a diff."""
-    out = []
-    for line in text.splitlines():
-        masked = SECRET_VALUE.sub(lambda m: f"{m.group(1)}=<redacted>", line)
-        if masked == line and SECRET_LINE.search(line):
-            # vendor style: "password cisco123" (space separated)
-            parts = line.split()
-            if len(parts) <= 2:
-                masked = f"{parts[0]} <redacted>"
-            else:
-                masked = " ".join(parts[:-1] + ["<redacted>"])
-        out.append(masked)
-    return "\n".join(out)
+    """Mask secret values in configuration text, keeping the rest readable."""
+    return "\n".join(redact_line(line) for line in (text or "").splitlines())
 
 
 def sha256_of(text: str) -> str:
@@ -275,12 +310,12 @@ def apply(conn, device_id: int, text: str, expected_sha256: str, runner=None,
     for command in commands:
         try:
             output = runner(command)
-            results.append({"command": command, "output": redact(str(output or ""))[:400]})
+            results.append({"command": redact(command), "output": redact(str(output or ""))[:400]})
         except Exception as exc:                     # noqa: BLE001 - reported, not hidden
             failed = {"command": command, "error": str(exc)}
             break
     return {
-        "applied": [r["command"] for r in results],
+        "applied": [r["command"] for r in results],   # already redacted
         "failed": failed,
         "partial": bool(failed and results),
         "output": results,

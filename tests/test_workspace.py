@@ -235,3 +235,41 @@ def test_r2_reconcile_port_kind_is_restorable(auth_client):
     assert {p["kind"] for p in exported["ports"]} <= {"rj45", "sfp", "fiber", "power", "other"}
     assert auth_client.post("/api/inventory/import", headers={},
                             json={**exported, "dry_run": True}).status_code == 200
+
+
+def test_r3_redaction_masks_vendor_specific_secrets():
+    from sshdeck import workspace
+
+    cases = {
+        "snmp-server community S3cretCommunity RO": "S3cretCommunity",
+        "key-string 7 MyOspfKey123": "MyOspfKey123",
+        '/interface wireguard peers add private-key="aBc+/123==" comment=x': "aBc+/123==",
+        'password "with spaces inside"': "with spaces inside",
+        "/user add name=admin password=TopSecret": "TopSecret",
+        "enable secret 5 $1$xyz$abc": "$1$xyz$abc",
+        "tacacs-server key 7 SecretTacacs": "SecretTacacs",
+        "neighbor 10.0.0.1 password 0 BgpPass": "BgpPass",
+        "crypto isakmp key IsakmpSecret address 0.0.0.0": "IsakmpSecret",
+    }
+    for line, secret in cases.items():
+        out = workspace.redact(line)
+        assert secret not in out, (line, out)
+        assert "<redacted" in out, (line, out)
+
+    # μη ευαίσθητες γραμμές μένουν αναγνώσιμες
+    plain = "/interface ethernet add name=ether1\n/ip address add address=10.0.0.1/24 interface=ether1"
+    assert workspace.redact(plain) == plain
+
+
+def test_r3_apply_never_returns_raw_secrets(auth_client):
+    from sshdeck import db, workspace
+
+    auth_client.headers.update({"x-requested-with": "sshdeck"})
+    host, rack, device = device_with_profile(auth_client, {})
+    info = auth_client.post(f"/api/inventory/devices/{device['id']}/config/paste",
+                            json={"text": "/system identity show", "vendor": "mikrotik"}).json()
+    with db.db() as conn:
+        result = workspace.apply(conn, device["id"],
+                                 '/user add name=admin password=TopSecret123',
+                                 info["sha256"], runner=lambda c: "ok", confirm=True)
+    assert "TopSecret123" not in str(result)
