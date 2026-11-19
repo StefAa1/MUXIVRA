@@ -143,7 +143,8 @@ def _device_key(conn, rack_id: int, device: dict) -> int | None:
     return cur.lastrowid
 
 
-KINDS = {"switch", "router", "patch-panel", "server", "pdu", "other"}
+from .kinds import (DEVICE_KIND_SET as KINDS, LEGACY_DEVICE_KINDS, LEGACY_PORT_KINDS,
+                    PORT_KIND_SET, normalize_device_kind, normalize_port_kind)
 
 
 def _num(value, field: str, row_id, default=None):
@@ -159,7 +160,7 @@ def _num(value, field: str, row_id, default=None):
     if number != number or number in (float("inf"), float("-inf")):
         raise ImportError_("bad_number", f'The "{field}" is not a valid number (#{row_id}).')
     return number
-PORT_KINDS = {"rj45", "sfp", "fiber", "power", "other"}
+PORT_KINDS = PORT_KIND_SET
 
 
 def _validate_rows(payload: dict) -> None:
@@ -188,7 +189,8 @@ def _validate_rows(payload: dict) -> None:
     for device in payload["devices"]:
         if device.get("rack_id") not in rack_ids:
             raise ImportError_("dangling_ref", f"Device #{device['id']} points to an unknown rack.")
-        if (device.get("kind") or "switch") not in KINDS:
+        raw_kind = (device.get("kind") or "switch").strip().lower()
+        if raw_kind not in KINDS and raw_kind not in LEGACY_DEVICE_KINDS:
             raise ImportError_("bad_device_kind", f"Unknown device kind: {device.get('kind')}")
         if _num(device.get("position"), "position", device["id"], 1) < 1 or _num(
             device.get("units"), "units", device["id"], 1
@@ -200,7 +202,8 @@ def _validate_rows(payload: dict) -> None:
     for port in payload["ports"]:
         if port.get("device_id") not in device_ids:
             raise ImportError_("dangling_ref", f"Port #{port['id']} points to an unknown device.")
-        if (port.get("kind") or "rj45") not in PORT_KINDS:
+        raw_port_kind = (port.get("kind") or "rj45").strip().lower()
+        if raw_port_kind not in PORT_KINDS and raw_port_kind not in LEGACY_PORT_KINDS:
             raise ImportError_("bad_port_kind", f"Unknown port kind: {port.get('kind')}")
     for link in payload["links"]:
         if link.get("port_a") not in port_ids or link.get("port_b") not in port_ids:

@@ -5,7 +5,7 @@ from contextlib import contextmanager
 
 from . import config
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -278,6 +278,13 @@ def migrate(conn: sqlite3.Connection) -> None:
         conn.execute("UPDATE hosts SET uuid = ? WHERE id = ?", (_uuid.uuid4().hex, row["id"]))
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_hosts_uuid ON hosts(uuid) WHERE uuid <> ''")
     _add_missing_columns(conn, "devices", DEVICE_COLUMNS)
+    # v9: normalize kinds that older builds wrote, keeping ids and links intact
+    from . import kinds as _kinds
+
+    for legacy, new in _kinds.LEGACY_PORT_KINDS.items():
+        conn.execute("UPDATE ports SET kind = ? WHERE kind = ?", (new, legacy))
+    for legacy, new in _kinds.LEGACY_DEVICE_KINDS.items():
+        conn.execute("UPDATE devices SET kind = ? WHERE kind = ?", (new, legacy))
     # v8: planned vs documented equipment, configuration history, observed state
     _add_missing_columns(conn, "devices", {"origin": "TEXT DEFAULT 'documented'"})
     conn.executescript(CONFIG_SCHEMA)

@@ -333,7 +333,7 @@ def reconcile(conn, device_id: int, apply_changes: bool = False) -> dict:
             actions.append({"kind": "port_missing", "port": name, "safe": True})
             if apply_changes:
                 conn.execute(
-                    "INSERT INTO ports(device_id, name, kind) VALUES (?, ?, 'ethernet')",
+                    "INSERT INTO ports(device_id, name, kind) VALUES (?, ?, 'rj45')",
                     (device_id, name[:40]),
                 )
     address = (data.get("addresses") or [{}])[0].get("address", "")

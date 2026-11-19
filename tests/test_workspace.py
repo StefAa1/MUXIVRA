@@ -189,3 +189,49 @@ def test_observation_survives_restart_and_distinguishes_unknown_from_absent(auth
     tree = auth_client.get("/api/inventory/tree").json()
     assert tree["links"] == 0
     assert auth_client.get("/api/inventory/links").json() == []
+
+
+def test_r2_backup_roundtrip_covers_every_supported_kind(auth_client):
+    """Ένα backup της εφαρμογής πρέπει να επαναφέρεται για ό,τι δέχεται το API."""
+    from sshdeck.kinds import DEVICE_KINDS, PORT_KINDS
+
+    auth_client.headers.update({"x-requested-with": "sshdeck"})
+    head = {}
+    site = auth_client.post("/api/inventory/sites", headers=head, json={"name": "S"}).json()
+    rack = auth_client.post("/api/inventory/racks", headers=head,
+                            json={"site_id": site["id"], "name": "R", "units": 48}).json()
+    made = {}
+    for index, kind in enumerate(DEVICE_KINDS):
+        device = auth_client.post("/api/inventory/devices", headers=head, json={
+            "rack_id": rack["id"], "name": f"d-{kind}", "kind": kind, "position": index + 1,
+        }).json()
+        made[kind] = device
+    for kind in PORT_KINDS:
+        auth_client.post("/api/inventory/ports", headers=head,
+                         json={"device_id": made["switch"]["id"], "name": f"p-{kind}", "kind": kind})
+
+    exported = auth_client.get("/api/inventory/export", headers=head).json()
+    kinds_in_export = {d["kind"] for d in exported["devices"]}
+    port_kinds = {p["kind"] for p in exported["ports"]}
+    assert kinds_in_export == set(DEVICE_KINDS)
+    assert port_kinds == set(PORT_KINDS)
+
+    dry = auth_client.post("/api/inventory/import", headers=head,
+                           json={**exported, "dry_run": True})
+    assert dry.status_code == 200, dry.text
+    applied = auth_client.post("/api/inventory/import", headers=head, json=exported)
+    assert applied.status_code == 200, applied.text
+
+
+def test_r2_reconcile_port_kind_is_restorable(auth_client):
+    """Το reconcile γράφει kind που το import δέχεται (rj45, όχι 'ethernet')."""
+    auth_client.headers.update({"x-requested-with": "sshdeck"})
+    host, rack, device = device_with_profile(auth_client, {})
+    auth_client.post(f"/api/inventory/devices/{device['id']}/config/paste",
+                     json={"text": "/interface ethernet add name=ether7", "vendor": "mikrotik"})
+    auth_client.post(f"/api/inventory/devices/{device['id']}/reconcile", json={"apply": True})
+    exported = auth_client.get("/api/inventory/export").json()
+    assert any(p["name"] == "ether7" for p in exported["ports"])
+    assert {p["kind"] for p in exported["ports"]} <= {"rj45", "sfp", "fiber", "power", "other"}
+    assert auth_client.post("/api/inventory/import", headers={},
+                            json={**exported, "dry_run": True}).status_code == 200
