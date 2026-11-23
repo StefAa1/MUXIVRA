@@ -668,7 +668,11 @@ function fitTerminal(tab) {
   try { tab.fit.fit(); } catch (_) { return; }
   const el = tab.term.element;
   if (!el) return;
-  const avail = tab.pane.clientHeight - 2;
+  // πραγματικός διαθέσιμος χώρος: από την κορυφή του terminal ως το κάτω άκρο
+  // του pane (το shell έχει padding, γι' αυτό δεν αρκεί το clientHeight)
+  const paneRect = tab.pane.getBoundingClientRect();
+  const elRect = el.getBoundingClientRect();
+  const avail = Math.floor(paneRect.bottom - elRect.top) - 2;
   const height = el.offsetHeight || 0;
   if (avail > 0 && height > avail) {
     const cell = height / Math.max(1, tab.term.rows);
