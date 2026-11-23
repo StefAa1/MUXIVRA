@@ -846,6 +846,78 @@ def config_paste(device_id: int, payload: ConfigObserveIn, request: Request):
     return {**info, "vendor_used": vendor}
 
 
+def _device_macs(conn, device_ids: list[int]) -> dict[str, int]:
+    """MAC → device_id, μόνο για τις συσκευές που επιτρέπει το scope."""
+    if not device_ids:
+        return {}
+    marks = ",".join("?" for _ in device_ids)
+    rows = conn.execute(
+        f"SELECT mac, device_id FROM device_mac WHERE device_id IN ({marks})", device_ids)
+    return {row["mac"]: row["device_id"] for row in rows}
+
+
+@router.get("/devices/{device_id}/lldp")
+def device_lldp(device_id: int, request: Request, live: int = 1):
+    """Ποιος είναι σε κάθε θύρα, σύμφωνα με το LLDP του ίδιου του switch.
+
+    Σύνδεση: μόνο με τον switch (SSH profile). Οι γείτονες δεν συνδέονται —
+    αυτοδηλώνονται. Ό,τι δεν ταιριάζει με το inventory γίνεται πρόταση.
+    """
+    from . import lldp
+
+    with _conn() as conn:
+        device = _device_or_404(conn, device_id, request)
+        vendor = _vendor_of(conn, device)
+        neighbors: list[dict] = []
+        raw = ""
+        if live:
+            host_id = device["host_id"]
+            if not host_id:
+                raise HTTPException(status_code=422, detail="device_without_profile")
+            from .api import load_target
+
+            target = load_target(conn, host_id)
+            if target.protocol != "ssh":
+                raise HTTPException(status_code=422, detail="lldp_requires_ssh")
+            try:
+                raw = lldp.run(target, vendor)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            except Exception as exc:                    # noqa: BLE001 - surfaced
+                raise HTTPException(status_code=502, detail=f"lldp_failed: {exc}") from exc
+            neighbors = lldp.parse(raw, vendor)
+
+        # scope: μόνο συσκευές του ενεργού πελάτη (racks → sites → customer)
+        customer_id = _cid(conn, request)
+        devices = [dict(row) for row in conn.execute(
+            """SELECT d.id, d.name, d.mgmt_ip, d.vendor, d.model, d.kind
+                 FROM devices d
+                 JOIN racks r ON r.id = d.rack_id
+                 JOIN sites s ON s.id = r.site_id
+                WHERE s.customer_id = ?""", (customer_id,))]
+        macs = _device_macs(conn, [d["id"] for d in devices])
+        result = lldp.match(neighbors, devices, macs)
+
+    # αποθήκευσε τις ανοιχτές προτάσεις για έγκριση/απόρριψη αργότερα
+    with _conn() as conn:
+        for row in result["neighbors"]:
+            if row["state"] != "proposed":
+                continue
+            conn.execute(
+                """INSERT INTO discovery_proposal
+                       (source_device_id, local_port, mac, sysname, mgmt_ip, model, protocol, state)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'open')
+                   ON CONFLICT(source_device_id, local_port, mac) DO UPDATE SET
+                       sysname = excluded.sysname, mgmt_ip = excluded.mgmt_ip,
+                       model = excluded.model, protocol = excluded.protocol""",
+                (device_id, row.get("port", ""), row.get("mac", ""), row.get("sysname", ""),
+                 row.get("mgmt_ip", ""), row.get("model", ""), row.get("protocol", "lldp")))
+        conn.commit()
+    result.update({"device_id": device_id, "vendor": vendor, "live": bool(live),
+                   "raw_length": len(raw)})
+    return result
+
+
 @router.get("/devices/{device_id}/mac-table")
 def device_mac_table(device_id: int, request: Request, live: int = 1):
     """Read-only: ποιος είναι σε κάθε θύρα, από το forwarding table του switch."""

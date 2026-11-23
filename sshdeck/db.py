@@ -5,7 +5,7 @@ from contextlib import contextmanager
 
 from . import config
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -278,6 +278,35 @@ def migrate(conn: sqlite3.Connection) -> None:
         conn.execute("UPDATE hosts SET uuid = ? WHERE id = ?", (_uuid.uuid4().hex, row["id"]))
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_hosts_uuid ON hosts(uuid) WHERE uuid <> ''")
     _add_missing_columns(conn, "devices", DEVICE_COLUMNS)
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS device_mac (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+            mac TEXT NOT NULL,
+            iface TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT 'manual',
+            confidence TEXT NOT NULL DEFAULT 'confirmed',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE (device_id, mac)
+        );
+        CREATE INDEX IF NOT EXISTS idx_device_mac_mac ON device_mac(mac);
+
+        CREATE TABLE IF NOT EXISTS discovery_proposal (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+            local_port TEXT NOT NULL DEFAULT '',
+            mac TEXT NOT NULL DEFAULT '',
+            sysname TEXT NOT NULL DEFAULT '',
+            mgmt_ip TEXT NOT NULL DEFAULT '',
+            model TEXT NOT NULL DEFAULT '',
+            protocol TEXT NOT NULL DEFAULT 'lldp',
+            state TEXT NOT NULL DEFAULT 'open',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE (source_device_id, local_port, mac)
+        );
+        """
+    )
     # v9: normalize kinds that older builds wrote, keeping ids and links intact
     from . import kinds as _kinds
 
