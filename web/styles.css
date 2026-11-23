@@ -733,3 +733,6 @@ select:focus option:checked { background: #2f7bff; color: #04101f; }
   color:#dbe4ee;font:13px/1.6 inherit;text-align:left;padding:6px 9px;border-radius:6px;cursor:pointer}
 .ctx-menu button:hover{background:#16202c}
 .ctx-menu .kbd{color:#66738a;font-size:11px;font-family:ui-monospace,monospace}
+
+.modal-pre{max-height:34vh;overflow:auto;background:#0a0f16;border:1px solid var(--line-soft);
+  border-radius:9px;padding:10px 12px;font-size:12px;white-space:pre-wrap;color:#b9c6d6;margin:10px 0 0}

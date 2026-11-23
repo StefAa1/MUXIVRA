@@ -70,6 +70,48 @@ def wait_ready(port: int, timeout: float = 25.0) -> bool:
     return False
 
 
+class DesktopBridge:
+    """Native window services for the trusted app page only.
+
+    The clipboard lives here because the Qt webview blocks the async Clipboard
+    API on a plain http origin; JS falls back to this bridge instead.
+    """
+
+    def clip_set(self, text):                      # noqa: D401 - JS bridge
+        text = "" if text is None else str(text)
+        try:
+            import pyperclip                              # type: ignore
+            pyperclip.copy(text)
+            return True
+        except Exception:
+            pass
+        if os.name == "nt":
+            try:
+                subprocess.run(["cmd", "/c", "clip"], input=text.encode("utf-16-le"),
+                               check=False, creationflags=0x08000000)
+                return True
+            except Exception:
+                return False
+        return False
+
+    def clip_get(self):                            # noqa: D401 - JS bridge
+        try:
+            import pyperclip                              # type: ignore
+            return pyperclip.paste() or ""
+        except Exception:
+            return ""
+
+
+_BRIDGE = None
+
+
+def _desktop_bridge():
+    global _BRIDGE
+    if _BRIDGE is None:
+        _BRIDGE = DesktopBridge()
+    return _BRIDGE
+
+
 def acquire_instance_lock():
     """One engine per data directory: a second double-click must not share SQLite."""
     from . import config
@@ -202,6 +244,7 @@ def run(
     _log(f"engine on 127.0.0.1:{port}; backend order {order}")
     url = ""
     try:
+        bridge = _desktop_bridge()
         for backend in order:
             url = f"http://127.0.0.1:{port}/?desktop_token={new_token()}"
             try:
@@ -213,6 +256,7 @@ def run(
                     min_size=(960, 620),
                     background_color="#080a0e",
                     confirm_close=False,
+                    js_api=bridge,
                 )
                 webview.start(gui=backend, debug=debug, private_mode=False)
                 _log(f"backend {backend} exited normally")

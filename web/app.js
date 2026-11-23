@@ -529,7 +529,20 @@ function inputNotReady(tab) {
 }
 
 // ---------------------------------------------------------------- clipboard
+function nativeClip() {
+  // pywebview bridge: το native clipboard του παραθύρου, χωρίς browser permissions
+  try {
+    const api = window.pywebview && window.pywebview.api;
+    if (api && typeof api.clip_set === 'function') return api;
+  } catch (_) { /* not in the native window */ }
+  return null;
+}
+
 async function clipWrite(text) {
+  try {
+    const native = nativeClip();
+    if (native) { await native.clip_set(text); return true; }
+  } catch (_) { /* fall through to the browser path */ }
   try {
     await navigator.clipboard.writeText(text);
     return true;
@@ -545,6 +558,13 @@ async function clipWrite(text) {
 }
 
 async function clipRead() {
+  try {
+    const native = nativeClip();
+    if (native) {
+      const text = await native.clip_get();
+      if (typeof text === 'string') return text;
+    }
+  } catch (_) { /* fall through */ }
   try { return await navigator.clipboard.readText(); } catch (_) { return null; }
 }
 
@@ -561,11 +581,15 @@ async function terminalPaste(tab) {
   if (tab.ws && tab.ws.readyState !== 1) { inputNotReady(tab); return; }
   const lines = text.split(/\r?\n/).filter((l) => l.trim() !== '');
   if (lines.length > 1) {
-    // πολυγραμμικό paste: δείξε τι θα εκτελεστεί πριν φύγει
-    const ok = window.confirm(`Send ${lines.length} lines to ${tab.host.label}?\n\n${text.slice(0, 600)}`);
+    // πολυγραμμικό paste: in-app preview — ποτέ native dialog μέσα στο Qt webview
+    const ok = await confirmInline(`Send ${lines.length} lines to ${tab.host.label}?`, text.slice(0, 600));
     if (!ok) return;
   }
-  tab.term.paste(text);          // bracketed paste μέσω xterm, μία φορά
+  try {
+    tab.term.paste(text);        // bracketed paste μέσω xterm, μία φορά
+  } catch (err) {
+    toast(`Paste failed: ${err && err.message ? err.message : err}`, 'err');
+  }
   tab.term.focus();
 }
 
@@ -587,6 +611,35 @@ function attachTerminalClipboard(tab) {
   });
 }
 
+/* in-app επιβεβαίωση: το window.confirm μπλοκάρει/κλείνει το Qt webview */
+function confirmInline(title, detail) {
+  return new Promise((resolve) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'modal-backdrop';
+    wrap.innerHTML = `<div class="modal" role="dialog" aria-modal="true">
+        <h3>${esc(title)}</h3>
+        <pre class="mono modal-pre">${esc(detail)}</pre>
+        <div class="modal-actions">
+          <button class="btn ghost sm" data-ans="0">Cancel</button>
+          <button class="btn primary sm" data-ans="1">Send</button>
+        </div>
+      </div>`;
+    document.body.appendChild(wrap);
+    const done = (value) => { wrap.remove(); resolve(value); };
+    wrap.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('[data-ans]');
+      if (btn) done(btn.dataset.ans === '1');
+      else if (ev.target === wrap) done(false);
+    });
+    wrap.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') done(true);
+      if (ev.key === 'Escape') done(false);
+    });
+    const primary = wrap.querySelector('[data-ans="1"]');
+    if (primary) primary.focus();
+  });
+}
+
 let termMenuEl = null;
 function showTermMenu(x, y, tab) {
   termMenuEl && termMenuEl.remove();
@@ -602,8 +655,8 @@ function showTermMenu(x, y, tab) {
   menu.addEventListener('click', (ev) => {
     const act = ev.target.closest('[data-act]');
     if (!act) return;
-    if (act.dataset.act === 'copy') terminalCopy(tab);
-    if (act.dataset.act === 'paste') terminalPaste(tab);
+    if (act.dataset.act === 'copy') { try { terminalCopy(tab); } catch (err) { toast(String(err), 'err'); } }
+    if (act.dataset.act === 'paste') terminalPaste(tab).catch((err) => toast(`Paste failed: ${err}`, 'err'));
     if (act.dataset.act === 'all') tab.term.selectAll();
     menu.remove(); termMenuEl = null;
   });

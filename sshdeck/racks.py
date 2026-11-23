@@ -846,6 +846,42 @@ def config_paste(device_id: int, payload: ConfigObserveIn, request: Request):
     return {**info, "vendor_used": vendor}
 
 
+@router.get("/devices/{device_id}/mac-table")
+def device_mac_table(device_id: int, request: Request, live: int = 1):
+    """Read-only: ποιος είναι σε κάθε θύρα, από το forwarding table του switch."""
+    from . import config, macwatch
+
+    with _conn() as conn:
+        device = _device_or_404(conn, device_id, request)
+        vendor = _vendor_of(conn, device)
+        ports = [row["name"] for row in
+                 conn.execute("SELECT name FROM ports WHERE device_id = ? ORDER BY id", (device_id,))]
+        known: dict[str, str] = {}
+        rows: list[dict] = []
+        raw = ""
+        if live:
+            host_id = device["host_id"]
+            if not host_id:
+                raise HTTPException(status_code=422, detail="device_without_profile")
+            from .api import load_target
+
+            target = load_target(conn, host_id)
+            if target.protocol != "ssh":
+                raise HTTPException(status_code=422, detail="mac_table_requires_ssh")
+            try:
+                raw = macwatch.run(target, vendor)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            except Exception as exc:                    # noqa: BLE001 - surfaced
+                raise HTTPException(status_code=502, detail=f"mac_table_failed: {exc}") from exc
+            rows = macwatch.parse(raw, vendor)
+        result = macwatch.analyze(rows, ports, oui=macwatch.load_oui(config.DATA_DIR / "oui.json"),
+                                  known_macs=known)
+    result.update({"device_id": device_id, "vendor": vendor, "live": bool(live),
+                   "raw_length": len(raw)})
+    return result
+
+
 @router.get("/devices/{device_id}/config/versions")
 def config_versions(device_id: int, request: Request):
     from . import workspace

@@ -55,13 +55,13 @@ VIAddVersionKey "LegalCopyright" "MUXIVRA"
     FileClose $0
   stop_by_title:
   StrCmp $1 "" 0 +3
-    ExecWait 'taskkill /FI "WINDOWTITLE eq MUXIVRA*" /F'
+    nsExec::ExecToLog 'taskkill /FI "WINDOWTITLE eq MUXIVRA*" /F'
     Goto stop_wait
   DetailPrint "  closing PID $1"
-  ExecWait 'taskkill /PID $1 /F'
-  ExecWait 'taskkill /FI "WINDOWTITLE eq MUXIVRA*" /F'
+  nsExec::ExecToLog 'taskkill /PID $1 /F'
+  nsExec::ExecToLog 'taskkill /FI "WINDOWTITLE eq MUXIVRA*" /F'
   stop_wait:
-  Sleep 1500
+  Sleep 1200
 !macroend
 
 Section "MUXIVRA" SecMain
