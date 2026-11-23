@@ -378,6 +378,37 @@ function dgBandBox(band) {
   return { x, y, w: Math.max(240, right - x), h: Math.max(160, bottom - y) };
 }
 
+function dgReflowColumns() {
+  // Το κουτί κάθε rack σχεδιαζόταν στη θέση της αρχικής διάταξης· αν ο χρήστης
+  // σύρει τις συσκευές, έμενα σαν κενό μεγάλο πλαίσιο. Τώρα αγκαλιάζει τις
+  // συσκευές εκεί που είναι, και εξαφανίζεται όταν δεν έχει καμία.
+  (DG.colEls || []).forEach(({ rect, label, column }) => {
+    const nodes = (column.nodes || []).filter((n) => DG.nodeById && DG.nodeById.has(n.id));
+    if (!nodes.length) {
+      rect.setAttribute('visibility', 'hidden');
+      label.setAttribute('visibility', 'hidden');
+      return;
+    }
+    rect.removeAttribute('visibility');
+    label.removeAttribute('visibility');
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    nodes.forEach((n) => {
+      minX = Math.min(minX, n.gx);
+      minY = Math.min(minY, n.gy);
+      maxX = Math.max(maxX, n.gx + DG.W);
+      maxY = Math.max(maxY, n.gy + DG.H);
+    });
+    const x = Math.round(minX - 10);
+    const y = Math.round(minY - 46);
+    rect.setAttribute('x', x);
+    rect.setAttribute('y', y);
+    rect.setAttribute('width', Math.round(Math.max(DG.W + 20, maxX - minX + 20)));
+    rect.setAttribute('height', Math.round(maxY - minY + 58));
+    label.setAttribute('x', x + 6);
+    label.setAttribute('y', y + 20);
+  });
+}
+
 function dgExpandBands() {
   if (!DG.bandsData.length) return;
   const all = DG.nodeById ? Array.from(DG.nodeById.values()) : DG.nodes;
@@ -1012,16 +1043,20 @@ function dgPaint() {
       'data-dg-band-resize': String(band.siteId),
     }));
   });
+  DG.colEls = [];
   DG.columns.forEach((column, index) => {
-    bandFragment.appendChild(dgSvg('rect', {
+    const rect = dgSvg('rect', {
       class: 'dg-col-hit', 'data-dg-col': String(index),
       x: dgRound(column.x - 10), y: DG.TOP - 78,
       width: DG.W + 20, height: dgRound((column.bottom || DG.TOP) - (DG.TOP - 78) + 12),
       rx: 10,
-    }));
-    bandFragment.appendChild(dgSvg('text', {
+    });
+    const label = dgSvg('text', {
       class: 'dg-col-label', x: dgRound(column.x), y: DG.TOP - 62,
-    }, column.parts > 1 ? `${column.rackName} ·${column.part}/${column.parts}` : column.rackName));
+    }, column.parts > 1 ? `${column.rackName} ·${column.part}/${column.parts}` : column.rackName);
+    bandFragment.appendChild(rect);
+    bandFragment.appendChild(label);
+    DG.colEls.push({ rect, label, column });
   });
   DG.layers.bands.appendChild(bandFragment);
 
@@ -1032,6 +1067,7 @@ function dgPaint() {
     nodeFragment.appendChild(el);
   });
   DG.layers.nodes.appendChild(nodeFragment);
+  dgReflowColumns();        // τα rack κουτιά ακολουθούν τις συσκευές τους
   dgExpandBands();          // κανένα node δεν μένει έξω από το πλαίσιο του site
 
   const edgeFragment = document.createDocumentFragment();
@@ -1414,6 +1450,7 @@ function dgPointerUp(event) {
     if (drag.moved) {
       dgPositions()[drag.id] = { x: drag.node.gx, y: drag.node.gy };
       dgWritePositions();
+      dgReflowColumns();
       dgExpandBands();        // το πλαίσιο του site απλώνει αμέσως
     } else {
       dgSelect(DG.selected === drag.id ? null : drag.id);
