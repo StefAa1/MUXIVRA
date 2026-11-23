@@ -383,3 +383,18 @@ def test_apply_outside_desktop_does_not_kill_the_service(auth_client, tmp_path, 
     res = auth_client.post("/api/update/apply", json={})
     assert res.status_code == 200
     assert res.json()["restarting"] is False
+
+
+def test_apply_script_gives_up_if_the_app_never_closes(tmp_path, monkeypatch):
+    """Ο helper δεν περιμένει για πάντα: μετά ~2' λέει τι να κάνεις."""
+    from sshdeck import update
+
+    import pathlib as _p
+
+    script = update.write_apply_script(
+        bundle=tmp_path / "old", new_root=tmp_path / "new", pid=1234,
+        staging_root=tmp_path, backup_name="bak", db_snapshot=None, db_path=None)
+    text = _p.Path(script).read_text(encoding="utf-8", errors="replace")
+    assert ":still_open" in text
+    assert "TRIES" in text
+    assert "run this file again" in text.lower()

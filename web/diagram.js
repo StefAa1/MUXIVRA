@@ -378,6 +378,33 @@ function dgBandBox(band) {
   return { x, y, w: Math.max(240, right - x), h: Math.max(160, bottom - y) };
 }
 
+function dgExpandBands() {
+  if (!DG.bandsData.length) return;
+  const all = DG.nodeById ? Array.from(DG.nodeById.values()) : DG.nodes;
+  DG.bandsData.forEach((band) => {
+    const box = band.box || dgBandBox(band);
+    let right = box.x + box.w;
+    let bottom = box.y + box.h;
+    let left = box.x;
+    let top = box.y;
+    all.forEach((node) => {
+      if (String(node.siteId) !== String(band.siteId)) return;
+      left = Math.min(left, node.gx - 28);
+      top = Math.min(top, node.gy - 60);
+      right = Math.max(right, node.gx + DG.W + 28);
+      bottom = Math.max(bottom, node.gy + DG.H + 28);
+    });
+    if (left < box.x || top < box.y) {
+      band.x = left;
+      band.y = top;
+    }
+    band.w = Math.max(240, right - (band.x));
+    band.h = Math.max(160, bottom - (band.y));
+    band.box = { x: band.x, y: band.y, w: band.w, h: band.h };
+    dgSyncBandGraphics(band);
+  });
+}
+
 function dgSyncBandGraphics(band) {
   const box = dgBandBox(band);
   band.box = box;
@@ -1005,6 +1032,7 @@ function dgPaint() {
     nodeFragment.appendChild(el);
   });
   DG.layers.nodes.appendChild(nodeFragment);
+  dgExpandBands();          // κανένα node δεν μένει έξω από το πλαίσιο του site
 
   const edgeFragment = document.createDocumentFragment();
   DG.edgeList.forEach((edge) => {
@@ -1374,6 +1402,7 @@ function dgPointerUp(event) {
         positions[entry.node.id] = { x: entry.node.gx, y: entry.node.gy };
       });
       dgWritePositions();
+      dgExpandBands();
       DG.fitted = true;
     }
     DG.groupDrag = null;
@@ -1385,6 +1414,7 @@ function dgPointerUp(event) {
     if (drag.moved) {
       dgPositions()[drag.id] = { x: drag.node.gx, y: drag.node.gy };
       dgWritePositions();
+      dgExpandBands();        // το πλαίσιο του site απλώνει αμέσως
     } else {
       dgSelect(DG.selected === drag.id ? null : drag.id);
     }
