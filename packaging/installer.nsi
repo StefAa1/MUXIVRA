@@ -43,30 +43,13 @@ VIAddVersionKey "LegalCopyright" "MUXIVRA"
 !insertmacro MUI_LANGUAGE "English"
 
 
-; ---------------------------------------------------------------- running app
-; Κλείνουμε ΜΟΝΟ τη δική μας διεργασία: πρώτα από το pid του instance.lock
-; (γράφεται χωρίς newline), αλλιώς από τον τίτλο παραθύρου. Ποτέ σφαιρικό kill.
-!macro StopOurApp
-  DetailPrint "Stopping a running MUXIVRA instance (ours only)..."
-  StrCpy $1 ""
-  IfFileExists "$LOCALAPPDATA\MUXIVRA\data\instance.lock" 0 stop_by_title
-    FileOpen $0 "$LOCALAPPDATA\MUXIVRA\data\instance.lock" r
-    FileRead $0 $1
-    FileClose $0
-  stop_by_title:
-  StrCmp $1 "" 0 +3
-    nsExec::ExecToLog 'taskkill /FI "WINDOWTITLE eq MUXIVRA*" /F'
-    Goto stop_wait
-  DetailPrint "  closing PID $1"
-  nsExec::ExecToLog 'taskkill /PID $1 /F'
-  nsExec::ExecToLog 'taskkill /FI "WINDOWTITLE eq MUXIVRA*" /F'
-  stop_wait:
-  Sleep 1200
-!macroend
-
 Section "MUXIVRA" SecMain
   SetOutPath "$INSTDIR"
-  !insertmacro StopOurApp
+  DetailPrint "Writing application files to $INSTDIR…"
+  ClearErrors
+  FileOpen $9 "$INSTDIR\install.log" w
+  IfErrors +2 0
+    FileWrite $9 "MUXIVRA ${VERSION} install -> $INSTDIR$\r$\n"
   ; Αν ένα αρχείο είναι ακόμη κλειδωμένο (AV/scan ή zombie process), το NSIS
   ; σταματούσε με «Error opening file for writing» και ο wizard έκλεινε.
   ; Με 'try' συνεχίζει, κρατά το παλιό αρχείο και το σημειώνει για reboot.
@@ -79,6 +62,9 @@ Section "MUXIVRA" SecMain
     MessageBox MB_ICONEXCLAMATION|MB_OK "Some files were in use and could not be replaced.\
       \n\nThe update is installed and will finish after a restart."
 
+  FileWrite $9 "files copied$\r$\n"
+  FileClose $9
+  DetailPrint "Registering shortcuts…"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   WriteRegStr HKCU "Software\MUXIVRA" "InstallDir" "$INSTDIR"
   WriteRegStr HKCU "Software\MUXIVRA" "Version" "${VERSION}"
@@ -88,9 +74,6 @@ Section "MUXIVRA" SecMain
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MUXIVRA" "UninstallString" "$INSTDIR\Uninstall.exe"
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MUXIVRA" "NoModify" 1
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MUXIVRA" "NoRepair" 1
-  ${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2
-  IntFmt $0 "0x%08X" $0
-  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MUXIVRA" "EstimatedSize" "$0"
 
   CreateDirectory "$SMPROGRAMS\MUXIVRA"
   CreateShortcut "$SMPROGRAMS\MUXIVRA\MUXIVRA.lnk" "$INSTDIR\MUXIVRA.exe" "" "$INSTDIR\MUXIVRA.exe" 0
@@ -99,7 +82,6 @@ Section "MUXIVRA" SecMain
 SectionEnd
 
 Section "Uninstall"
-  !insertmacro StopOurApp
   Delete "$DESKTOP\MUXIVRA.lnk"
   Delete "$SMPROGRAMS\MUXIVRA\MUXIVRA.lnk"
   Delete "$SMPROGRAMS\MUXIVRA\Uninstall.lnk"
