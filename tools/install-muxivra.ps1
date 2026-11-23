@@ -1,11 +1,12 @@
-# MUXIVRA — εγκατάσταση χωρίς installer (PowerShell)
+# MUXIVRA - install without the NSIS setup (PowerShell)
 #
-# Χρήση (PowerShell, όχι cmd):
+# Run (PowerShell, not cmd):
 #   powershell -ExecutionPolicy Bypass -File install-muxivra.ps1
 #
-# Τι κάνει: κατεβάζει το τελευταίο signed release, επαληθεύει το SHA-256 με το
-# release.json, το τοποθετεί στο %LOCALAPPDATA%\MUXIVRA και φτιάχνει shortcuts.
-# Δεν αγγίζει το data\ (πελάτες, vault, hosts) — αναβαθμίζει μόνο τα binaries.
+# What it does: downloads the latest signed release, verifies the SHA-256
+# against the signed release.json, extracts it into %LOCALAPPDATA%\MUXIVRA and
+# creates shortcuts. It never touches data\ (customers, vault, hosts).
+# ASCII only on purpose: PowerShell 5.1 reads BOM-less files as ANSI.
 
 param(
     [string]$Repo = "StefAa1/MUXIVRA",
@@ -15,40 +16,40 @@ param(
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-Write-Host "→ Αναζήτηση τελευταίας έκδοσης ($Repo)…"
+Write-Host "-> Looking up the latest release ($Repo)"
 $release = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest"
 $tag = $release.tag_name
 $zipAsset = $release.assets | Where-Object { $_.name -eq "MUXIVRA-portable-win64.zip" }
 $manAsset = $release.assets | Where-Object { $_.name -eq "release.json" }
-if (-not $zipAsset -or -not $manAsset) { throw "Το release $tag δεν έχει τα απαιτούμενα assets." }
+if (-not $zipAsset -or -not $manAsset) { throw "Release $tag is missing the required assets." }
 
 $tmp = Join-Path $env:TEMP ("muxivra-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $tmp | Out-Null
 $zip = Join-Path $tmp "MUXIVRA.zip"
 $man = Join-Path $tmp "release.json"
 
-Write-Host "→ Λήψη $tag…"
+Write-Host "-> Downloading $tag"
 Invoke-WebRequest $zipAsset.browser_download_url -OutFile $zip -UseBasicParsing
 Invoke-WebRequest $manAsset.browser_download_url -OutFile $man -UseBasicParsing
 
-Write-Host "→ Έλεγχος SHA-256…"
+Write-Host "-> Checking SHA-256"
 $expected = (Get-Content $man -Raw | ConvertFrom-Json).sha256
 $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
 if ($expected -ne $actual) {
-    throw "SHA-256 δεν ταιριάζει: expected $expected, got $actual. Δεν έγινε εγκατάσταση."
+    throw "SHA-256 mismatch: expected $expected, got $actual. Nothing was installed."
 }
-Write-Host "  OK $actual"
+Write-Host "   OK $actual"
 
-Write-Host "→ Αποσυμπίεση…"
+Write-Host "-> Extracting"
 Expand-Archive -Path $zip -DestinationPath $tmp -Force
 $src = Join-Path $tmp "MUXIVRA-portable-win64"
-if (-not (Test-Path (Join-Path $src "MUXIVRA.exe"))) { throw "Το ZIP δεν περιέχει MUXIVRA.exe" }
+if (-not (Test-Path (Join-Path $src "MUXIVRA.exe"))) { throw "The ZIP does not contain MUXIVRA.exe" }
 
 New-Item -ItemType Directory -Path $Dest -Force | Out-Null
-Write-Host "→ Αντιγραφή στο $Dest…"
+Write-Host "-> Copying to $Dest"
 Copy-Item (Join-Path $src "*") $Dest -Recurse -Force
 
-Write-Host "→ Συντομεύσεις…"
+Write-Host "-> Creating shortcuts"
 $shell = New-Object -ComObject WScript.Shell
 $targets = @(
     (Join-Path ([Environment]::GetFolderPath("Programs")) "MUXIVRA.lnk"),
@@ -64,5 +65,5 @@ foreach ($lnk in $targets) {
 
 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ""
-Write-Host "✔ Εγκαταστάθηκε το $tag στο $Dest"
-Write-Host "  Εκκίνηση: $Dest\MUXIVRA.exe  (τα δεδομένα μένουν στο $Dest\data)"
+Write-Host "Done: $tag installed in $Dest"
+Write-Host "Start it with: $Dest\MUXIVRA.exe   (your data stays in $Dest\data)"
