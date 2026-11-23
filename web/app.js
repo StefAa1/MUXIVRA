@@ -1055,13 +1055,16 @@ function credOptions(selected) {
 }
 
 function openHostModal(host) {
+  /* Το draft από «+ New credential» είναι truthy αλλά δεν έχει id· χωρίς αυτόν
+     τον έλεγχο το PUT πήγαινε σε /hosts/undefined → 422 host_id. */
+  const editing = !!(host && Number.isInteger(Number(host.id)) && Number(host.id) > 0);
   const h = host || {
     label: '', protocol: 'ssh', hostname: '', port: 22, username: 'root', credential_id: null,
     group_name: 'General', tags: [], color: '#2f7bff', notes: '',
     serial_port: '', baud: 115200, bytesize: 8, parity: 'N', stopbits: 1, flow: 'none',
   };
   const proto = h.protocol || 'ssh';
-  openModal(`<h3>${host ? 'Edit server' : 'New connection'}</h3>
+  openModal(`<h3>${editing ? 'Edit server' : 'New connection'}</h3>
     <p class="lead">SSH, Telnet or serial port — same terminal, same inventory.</p>
     <form id="host-form">
       <div class="proto-switch" id="proto-switch">
@@ -1109,7 +1112,7 @@ function openHostModal(host) {
       <p class="error-text" id="host-error"></p>
       <div class="modal-actions">
         <button type="button" class="btn ghost" data-close>Cancel</button>
-        <button type="submit" class="btn primary">${host ? 'Save' : 'Create'}</button>
+        <button type="submit" class="btn primary">${editing ? 'Save' : 'Create'}</button>
       </div>
     </form>`);
 
@@ -1202,15 +1205,16 @@ function openHostModal(host) {
       flow: data.flow || 'none',
     };
     try {
-      if (host) await api(`/hosts/${host.id}`, { method: 'PUT', json: payload });
+      if (editing) await api(`/hosts/${Number(host.id)}`, { method: 'PUT', json: payload });
       else await api('/hosts', { json: payload });
       closeModal();
       await loadHosts();
       renderSidebar();
       renderPage();
-      toast(host ? 'Connection updated' : 'Connection added');
+      toast(editing ? 'Connection updated' : 'Connection added');
     } catch (err) {
       const map = {
+        not_a_valid_integer: 'This connection has no saved id — close the dialog and add it again.',
         hostname_required: 'A hostname/IP is required.',
         serial_port_required: 'A serial port is required (e.g. COM3).',
         unsupported_protocol: 'Unsupported protocol.',
