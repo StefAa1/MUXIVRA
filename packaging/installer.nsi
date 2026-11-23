@@ -67,8 +67,17 @@ VIAddVersionKey "LegalCopyright" "MUXIVRA"
 Section "MUXIVRA" SecMain
   SetOutPath "$INSTDIR"
   !insertmacro StopOurApp
+  ; Αν ένα αρχείο είναι ακόμη κλειδωμένο (AV/scan ή zombie process), το NSIS
+  ; σταματούσε με «Error opening file for writing» και ο wizard έκλεινε.
+  ; Με 'try' συνεχίζει, κρατά το παλιό αρχείο και το σημειώνει για reboot.
+  SetOverwrite try
+  ClearErrors
   ; keep user data: the bundle's data\ folder is never shipped or overwritten
   File /r "${BUNDLE_DIR}\*.*"
+  IfErrors 0 +3
+    SetRebootFlag true
+    MessageBox MB_ICONEXCLAMATION|MB_OK "Some files were in use and could not be replaced.\
+      \n\nThe update is installed and will finish after a restart."
 
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   WriteRegStr HKCU "Software\MUXIVRA" "InstallDir" "$INSTDIR"

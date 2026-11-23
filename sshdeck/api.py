@@ -953,6 +953,32 @@ async def update_check(payload: UpdateCheckIn):
     return result
 
 
+class ClientLogIn(BaseModel):
+    message: str = ""
+    source: str = ""
+    line: int = 0
+    stack: str = ""
+
+
+@api.post("/client-log")
+def client_log(payload: ClientLogIn):
+    """JavaScript errors από το native παράθυρο — τοπικό αρχείο, ποτέ αποστολή."""
+    from . import config
+
+    try:
+        config.ensure_dirs()
+        path = config.DATA_DIR / "client-errors.log"
+        line = (f"{time.strftime('%Y-%m-%dT%H:%M:%S')} "
+                f"{payload.source}:{payload.line} {payload.message}\n")
+        if payload.stack:
+            line += f"  stack: {payload.stack[:800]}\n"
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(line)
+        return {"ok": True, "path": str(path)}
+    except OSError:
+        return {"ok": False}
+
+
 @api.post("/update/apply")
 def update_apply():
     """Launch apply-update.cmd and let it restart us: one click, no manual file."""

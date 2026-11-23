@@ -597,10 +597,11 @@ function attachTerminalClipboard(tab) {
   tab.term.attachCustomKeyEventHandler((ev) => {
     if (ev.type !== 'keydown') return true;
     const ctrlShift = ev.ctrlKey && ev.shiftKey;
-    if (ctrlShift && ev.code === 'KeyC') { if (tab.term.hasSelection()) terminalCopy(tab); return false; }
-    if ((ctrlShift && ev.code === 'KeyV') || (ev.shiftKey && ev.code === 'Insert')) {
-      terminalPaste(tab); return false;
-    }
+    // Ctrl+Shift+C: το xterm ήδη αντιγράφει την επιλογή· δεν το κόβουμε
+    if (ctrlShift && ev.code === 'KeyC') return true;
+    // Ctrl+V / Ctrl+Shift+V μένουν στο native paste του xterm (bracketed paste,
+    // χωρίς άδειες clipboard). Μόνο το Shift+Insert περνά από εμάς.
+    if (ev.shiftKey && ev.code === 'Insert') { terminalPaste(tab); return false; }
     if (ctrlShift && ev.code === 'KeyA') { tab.term.selectAll(); return false; }
     return true;                 // Ctrl+C παραμένει interrupt
   });
@@ -698,6 +699,27 @@ window.addEventListener('resize', () => {
 });
 
 /* ------------------------------------------------------------------ pages */
+/* Τα JS errors πάνε σε τοπικό αρχείο — αλλιώς «κράσαρε» σημαίνει «δεν ξέρω». */
+let clientLogBudget = 20;
+function reportClientError(message, source, line, stack) {
+  if (clientLogBudget <= 0) return;
+  clientLogBudget -= 1;
+  try {
+    fetch('/api/client-log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-requested-with': 'sshdeck' },
+      body: JSON.stringify({ message: String(message || '').slice(0, 400),
+        source: String(source || ''), line: Number(line) || 0,
+        stack: String(stack || '').slice(0, 800) }),
+    }).catch(() => {});
+  } catch (_) { /* logging must never break the UI */ }
+}
+window.addEventListener('error', (ev) => reportClientError(ev.message, ev.filename, ev.lineno, ev.error && ev.error.stack));
+window.addEventListener('unhandledrejection', (ev) => {
+  const reason = ev.reason || {};
+  reportClientError(reason.message || reason, 'promise', 0, reason.stack);
+});
+
 function renderPage() {
   renderHero();
   renderKeys();
