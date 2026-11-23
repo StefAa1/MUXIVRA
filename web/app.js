@@ -355,8 +355,7 @@ function activateTab(id) {
   requestAnimationFrame(() => {
     const tab = activeTab();
     if (!tab) return;
-    tab.fit.fit();
-    sendResize(tab);
+    fitTerminal(tab);
     scheduleFit(tab);
     tab.term.focus();
   });
@@ -365,8 +364,7 @@ function activateTab(id) {
 function refitActive() {
   const tab = activeTab();
   if (!tab) return;
-  tab.fit.fit();
-  sendResize(tab);
+  fitTerminal(tab);
 }
 
 /* xterm measures its character cell only after the first layout, so an early
@@ -375,13 +373,12 @@ function scheduleFit(tab) {
   [0, 120, 350, 900].forEach((delay) => {
     setTimeout(() => {
       if (!tab.term || !tab.pane.isConnected || !tab.pane.classList.contains('active')) return;
-      tab.fit.fit();
-      sendResize(tab);
+      fitTerminal(tab);
     }, delay);
   });
   if (document.fonts && document.fonts.ready) {
     document.fonts.ready.then(() => {
-      if (tab.term && tab.pane.classList.contains('active')) { tab.fit.fit(); sendResize(tab); }
+      if (tab.term && tab.pane.classList.contains('active')) fitTerminal(tab);
     });
   }
 }
@@ -444,10 +441,7 @@ function openTerminal(host) {
 
   const tab = { id, host, term, fit, pane, ws: null, state: 'connecting', fingerprint: '' };
   tab.observer = new ResizeObserver(() => {
-    if (tab.pane.classList.contains('active')) {
-      tab.fit.fit();
-      sendResize(tab);
-    }
+    if (tab.pane.classList.contains('active')) fitTerminal(tab);
   });
   tab.observer.observe(pane);
   S.tabs.push(tab);
@@ -460,8 +454,8 @@ function openTerminal(host) {
 function connectTab(tab) {
   tab.state = 'connecting';
   renderTabs();
+  fitTerminal(tab);
   tab.term.writeln(`\x1b[38;5;79m▚ sshdeck\x1b[0m  ${(tab.host.protocol || 'ssh').toUpperCase()} → \x1b[1m${tab.host.label}\x1b[0m (${hostTargetText(tab.host)})…`);
-  tab.fit.fit();
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const url = `${proto}://${location.host}/api/ws/terminal/${tab.host.id}?cols=${tab.term.cols}&rows=${tab.term.rows}`;
   const scoped = url + (url.includes('?') ? '&' : '?') + `customer=${encodeURIComponent(tab.customerId ?? S.customerId ?? '')}`;
@@ -666,6 +660,26 @@ function showTermMenu(x, y, tab) {
   }), 0);
 }
 
+/* Το FitAddon μετρά το parent με padding → ζητά μία γραμμή παραπάνω και η
+   τελευταία κόβεται. Μετά το fit ελέγχουμε το πραγματικό ύψος και αφαιρούμε
+   γραμμές μέχρι να χωράει ολόκληρο το grid. */
+function fitTerminal(tab) {
+  if (!tab || !tab.term || !tab.pane || !tab.fit) return;
+  try { tab.fit.fit(); } catch (_) { return; }
+  const el = tab.term.element;
+  if (!el) return;
+  const avail = tab.pane.clientHeight - 2;
+  const height = el.offsetHeight || 0;
+  if (avail > 0 && height > avail) {
+    const cell = height / Math.max(1, tab.term.rows);
+    const rows = Math.max(4, Math.floor(avail / cell));
+    if (rows < tab.term.rows) {
+      try { tab.term.resize(tab.term.cols, rows); } catch (_) { /* ignore */ }
+    }
+  }
+  sendResize(tab);
+}
+
 function sendResize(tab) {
   if (tab.ws && tab.ws.readyState === 1) {
     tab.ws.send(JSON.stringify({ type: 'resize', cols: tab.term.cols, rows: tab.term.rows }));
@@ -695,7 +709,7 @@ function closeTab(id) {
 
 window.addEventListener('resize', () => {
   const tab = activeTab();
-  if (tab) { tab.fit.fit(); sendResize(tab); }
+  if (tab) fitTerminal(tab);
 });
 
 /* ------------------------------------------------------------------ pages */

@@ -70,6 +70,32 @@ def wait_ready(port: int, timeout: float = 25.0) -> bool:
     return False
 
 
+def request_shutdown(delay: float = 1.2) -> None:
+    """Κλείσε το παράθυρο και ΤΕΡΜΑΤΙΣΕ αυτή τη διεργασία.
+
+    Το apply-update.cmd περιμένει να εξαφανιστεί το PID μας· χωρίς αυτό η
+    ενημέρωση «κατεβαίνει» αλλά ποτέ δεν εγκαθίσταται.
+    """
+    import threading
+
+    def _stop() -> None:
+        time.sleep(delay)
+        try:
+            import webview                       # type: ignore
+
+            for window in list(getattr(webview, "windows", []) or []):
+                try:
+                    window.destroy()
+                except Exception:                # noqa: BLE001 - best effort
+                    pass
+        except Exception:                        # noqa: BLE001 - no GUI here
+            pass
+        time.sleep(0.5)
+        os._exit(0)                              # δίνει χειραφέτηση στο cmd
+
+    threading.Thread(target=_stop, daemon=True, name="muxivra-shutdown").start()
+
+
 class DesktopBridge:
     """Native window services for the trusted app page only.
 
@@ -240,6 +266,7 @@ def run(
 
     # Qt ships its own Chromium and needs no .NET; it is the only backend that
     # works out of the box on a clean Windows install.
+    os.environ["MUXIVRA_DESKTOP_PID"] = str(os.getpid())   # το update κλείνει εμάς
     order = [gui] if gui else ["qt", "gtk", "edgechromium", "cef"]
     _log(f"engine on 127.0.0.1:{port}; backend order {order}")
     url = ""

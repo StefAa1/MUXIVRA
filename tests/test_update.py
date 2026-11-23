@@ -329,10 +329,57 @@ def test_apply_windows_branch_actually_launches(auth_client, tmp_path, monkeypat
 
     monkeypatch.setattr(api, "subprocess", types.SimpleNamespace(
         Popen=FakePopen, CREATE_NEW_PROCESS_GROUP=0), raising=False)
-    monkeypatch.setattr(api.os, "name", "nt")
+    monkeypatch.setattr(api, "_windows_host", lambda: True)
 
     auth_client.headers.update({"x-requested-with": "sshdeck"})
     res = auth_client.post("/api/update/apply", json={})
     assert res.status_code == 200, res.text
     assert res.json()["started"] is True
     assert str(script) in " ".join(called["args"])
+
+
+def test_apply_in_desktop_mode_requests_shutdown(auth_client, tmp_path, monkeypatch):
+    """Το update δεν μένει «κατεβασμένο»: μετά το helper ζητάμε τερματισμό."""
+    import types
+
+    from sshdeck import api, config, desktop
+
+    script = tmp_path / "apply-update.cmd"
+    script.write_text("@echo off\r\n", encoding="utf-8")
+    monkeypatch.setattr(config, "STAGING_DIR", tmp_path, raising=False)
+    monkeypatch.setattr(api, "subprocess", types.SimpleNamespace(
+        Popen=lambda *a, **k: None, CREATE_NEW_PROCESS_GROUP=0), raising=False)
+    monkeypatch.setattr(api, "_windows_host", lambda: True)
+    import os as _os
+
+    monkeypatch.setenv("MUXIVRA_DESKTOP_PID", str(_os.getpid()))
+
+    calls = {}
+    monkeypatch.setattr(desktop, "request_shutdown", lambda *a, **k: calls.setdefault("hit", True))
+
+    auth_client.headers.update({"x-requested-with": "sshdeck"})
+    res = auth_client.post("/api/update/apply", json={})
+    assert res.status_code == 200, res.text
+    assert res.json()["restarting"] is True
+    assert calls.get("hit") is True
+
+
+def test_apply_outside_desktop_does_not_kill_the_service(auth_client, tmp_path, monkeypatch):
+    import types
+
+    from sshdeck import api, config, desktop
+
+    script = tmp_path / "apply-update.cmd"
+    script.write_text("@echo off\r\n", encoding="utf-8")
+    monkeypatch.setattr(config, "STAGING_DIR", tmp_path, raising=False)
+    monkeypatch.setattr(api, "subprocess", types.SimpleNamespace(
+        Popen=lambda *a, **k: None, CREATE_NEW_PROCESS_GROUP=0), raising=False)
+    monkeypatch.setattr(api, "_windows_host", lambda: True)
+    monkeypatch.delenv("MUXIVRA_DESKTOP_PID", raising=False)
+    monkeypatch.setattr(desktop, "request_shutdown",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not exit")))
+
+    auth_client.headers.update({"x-requested-with": "sshdeck"})
+    res = auth_client.post("/api/update/apply", json={})
+    assert res.status_code == 200
+    assert res.json()["restarting"] is False

@@ -979,13 +979,17 @@ def client_log(payload: ClientLogIn):
         return {"ok": False}
 
 
+def _windows_host() -> bool:
+    return os.name == "nt"
+
+
 @api.post("/update/apply")
 def update_apply():
     """Launch apply-update.cmd and let it restart us: one click, no manual file."""
     script = config.STAGING_DIR / "apply-update.cmd"
     if not script.exists():
         raise HTTPException(status_code=409, detail="nothing_staged")
-    if os.name != "nt":
+    if not _windows_host():
         raise HTTPException(
             status_code=409,
             detail="apply_requires_windows: the staged updater is a Windows script. "
@@ -997,7 +1001,15 @@ def update_apply():
     except OSError as exc:
         raise HTTPException(status_code=502, detail=f"apply_failed: {exc}") from exc
     db.log_event(None, "update_apply_started", str(script))
-    return {"started": True, "script": str(script)}
+    # Ο helper περιμένει να κλείσει ΤΟ ΔΙΚΟ ΜΑΣ pid: κλείνουμε το παράθυρο και
+    # τερματίζουμε, αλλιώς το swap δεν ξεκινά ποτέ.
+    desktop_pid = os.environ.get("MUXIVRA_DESKTOP_PID")
+    if desktop_pid and int(desktop_pid) == os.getpid():
+        from . import desktop
+
+        desktop.request_shutdown()
+        return {"started": True, "script": str(script), "restarting": True}
+    return {"started": True, "script": str(script), "restarting": False}
 
 
 @api.post("/update/prepare")
