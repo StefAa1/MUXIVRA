@@ -19,3 +19,5 @@ typing_extensions==4.12.2
 # MSVC runtime DLLs (msvcp140 etc.) that Qt6 needs on a clean Windows install.
 msvc-runtime==14.51.36231
 # proxy-tools (pywebview dependency) is sdist-only; the build script vendors it.
+pysnmp==7.1.32
+pyasn1==0.6.5

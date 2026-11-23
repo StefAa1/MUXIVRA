@@ -856,6 +856,120 @@ def _device_macs(conn, device_ids: list[int]) -> dict[str, int]:
     return {row["mac"]: row["device_id"] for row in rows}
 
 
+class SnmpCommunityIn(BaseModel):
+    community: str = ""
+
+
+@router.post("/devices/{device_id}/snmp")
+def device_snmp_community(device_id: int, payload: SnmpCommunityIn, request: Request):
+    """Αποθήκευση/καθαρισμός read-only community — sealed, ποτέ πίσω στο UI."""
+    from . import security
+
+    with _conn() as conn:
+        _device_or_404(conn, device_id, request)
+        value = (payload.community or "").strip()
+        if not value:
+            conn.execute("DELETE FROM settings WHERE key = ?", (f"snmp_community:{device_id}",))
+            conn.commit()
+            return {"device_id": device_id, "has_community": False}
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (f"snmp_community:{device_id}", security.seal(value)))
+        conn.commit()
+    return {"device_id": device_id, "has_community": True}
+
+
+class DiscoverIn(BaseModel):
+    mode: str = "snmp"          # snmp | ssh | paste
+    text: str = ""              # για paste
+
+
+@router.post("/devices/{device_id}/discover")
+def device_discover(device_id: int, payload: DiscoverIn, request: Request):
+    """Διαβάζει LLDP + MAC table (SNMP ή SSH ή paste) και προτείνει συσκευές.
+
+    Καμία εγγραφή στη συσκευή. Ό,τι δεν ταιριάζει μένει πρόταση για έγκριση.
+    """
+    from . import lldp, macwatch, snmpwatch, workspace
+
+    mode = (payload.mode or "snmp").lower()
+    with _conn() as conn:
+        device = _device_or_404(conn, device_id, request)
+        vendor = _vendor_of(conn, device)
+        customer_id = _cid(conn, request)
+        lldp_rows: list[dict] = []
+        mac_rows: list[dict] = []
+        raw_len = 0
+
+        if mode == "paste":
+            text = payload.text or ""
+            lldp_rows = lldp.parse(text, vendor)
+            mac_rows = macwatch.parse(text, vendor)
+            raw_len = len(text)
+        elif mode == "ssh":
+            host_id = device["host_id"]
+            if not host_id:
+                raise HTTPException(status_code=422, detail="device_without_profile")
+            from .api import load_target
+
+            target = load_target(conn, host_id)
+            if target.protocol != "ssh":
+                raise HTTPException(status_code=422, detail="discover_requires_ssh")
+            try:
+                text = lldp.run(target, vendor)
+                raw_len = len(text)
+                lldp_rows = lldp.parse(text, vendor)
+            except Exception as exc:                # noqa: BLE001 - surfaced
+                raise HTTPException(status_code=502, detail=f"lldp_failed: {exc}") from exc
+        else:                                        # snmp
+            row = conn.execute("SELECT value FROM settings WHERE key = ?",
+                               (f"snmp_community:{device_id}",)).fetchone()
+            if not row:
+                raise HTTPException(status_code=422, detail="snmp_community_missing")
+            from . import security
+
+            community = security.open_sealed(row["value"])
+            address = (device["mgmt_ip"] or "").strip()
+            if not address:
+                raise HTTPException(status_code=422, detail="device_without_mgmt_ip")
+            try:
+                fetched = snmpwatch.fetch(address, community)
+            except snmpwatch.SnmpError as exc:
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
+            lldp_rows = fetched["lldp"]
+            mac_rows = fetched["macs"]
+
+        devices = [dict(r) for r in conn.execute(
+            """SELECT d.id, d.name, d.mgmt_ip, d.vendor, d.model, d.kind
+                 FROM devices d JOIN racks r ON r.id = d.rack_id
+                 JOIN sites s ON s.id = r.site_id WHERE s.customer_id = ?""", (customer_id,))]
+        macs = _device_macs(conn, [d["id"] for d in devices])
+        ports = [r["name"] for r in conn.execute(
+            "SELECT name FROM ports WHERE device_id = ? ORDER BY id", (device_id,))]
+
+        lldp_match = lldp.match(lldp_rows, devices, macs)
+        mac_analysis = macwatch.analyze(mac_rows, ports)
+
+        for row in lldp_match["neighbors"]:
+            if row["state"] != "proposed":
+                continue
+            conn.execute(
+                """INSERT INTO discovery_proposal
+                       (source_device_id, local_port, mac, sysname, mgmt_ip, model, protocol, state)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'open')
+                   ON CONFLICT(source_device_id, local_port, mac) DO UPDATE SET
+                       sysname = excluded.sysname, mgmt_ip = excluded.mgmt_ip,
+                       model = excluded.model, protocol = excluded.protocol""",
+                (device_id, row.get("port", ""), row.get("mac", ""), row.get("sysname", ""),
+                 row.get("mgmt_ip", ""), row.get("model", ""), row.get("protocol", "lldp")))
+        conn.commit()
+
+    return {"device_id": device_id, "vendor": vendor, "mode": mode,
+            "raw_length": raw_len, "lldp": lldp_match, "mac": mac_analysis,
+            "source": "snmp" if mode == "snmp" else mode}
+
+
 @router.get("/devices/{device_id}/lldp")
 def device_lldp(device_id: int, request: Request, live: int = 1):
     """Ποιος είναι σε κάθε θύρα, σύμφωνα με το LLDP του ίδιου του switch.
