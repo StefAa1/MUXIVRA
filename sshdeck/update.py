@@ -15,14 +15,20 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import stat
+import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+from collections.abc import Callable
+from contextlib import contextmanager
 from pathlib import Path
+
+from . import config, db
 
 API = "https://api.github.com/repos/{repo}/releases/latest"
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -37,6 +43,8 @@ ALLOWED_DOWNLOAD_HOSTS = {
 }
 MANIFEST_NAME = "release.json"
 SIGNATURE_NAME = "release.json.sig"
+UPDATE_STATE = "prepared-update.json"
+INSTALL_LOCK = "installing"
 
 
 class UpdateError(RuntimeError):
@@ -68,10 +76,10 @@ def is_newer(latest: str, current: str) -> bool:
 def _open(url: str, timeout: float, accept: str = "application/vnd.github+json",
           token: str | None = None):
     headers = {"accept": accept, "user-agent": "muxivra-updater"}
+    request = urllib.request.Request(url, headers=headers)
     if token:
         # read-only token for a private repository; never logged, never stored in a URL
-        headers["authorization"] = f"Bearer {token}"
-    request = urllib.request.Request(url, headers=headers)
+        request.add_unredirected_header("Authorization", f"Bearer {token}")
     return urllib.request.urlopen(request, timeout=timeout)
 
 
@@ -193,7 +201,8 @@ def verify_manifest(manifest_bytes: bytes, signature: bytes, pubkey: bytes | Non
     return manifest
 
 
-def fetch_manifest(release: dict, opener=None, timeout: float = 30.0) -> dict:
+def fetch_manifest(release: dict, opener=None, timeout: float = 30.0,
+                   token: str | None = None) -> dict:
     """Download release.json + its signature and verify them."""
     manifest_asset = release.get("manifest") or {}
     signature_asset = release.get("signature") or {}
@@ -204,9 +213,10 @@ def fetch_manifest(release: dict, opener=None, timeout: float = 30.0) -> dict:
         _assert_https(asset["url"])
         if int(asset.get("size") or 0) > 64 * 1024:
             raise UpdateError("too_large", "The manifest asset is too large.")
-    with opener(manifest_asset["url"], timeout, "application/octet-stream") as response:
+    options = {"token": token} if token else {}
+    with opener(manifest_asset["url"], timeout, "application/octet-stream", **options) as response:
         manifest_bytes = response.read(64 * 1024)
-    with opener(signature_asset["url"], timeout, "application/octet-stream") as response:
+    with opener(signature_asset["url"], timeout, "application/octet-stream", **options) as response:
         signature_b64 = response.read(4096).strip()
     try:
         signature = base64.b64decode(signature_b64, validate=True)
@@ -285,17 +295,15 @@ def _check_members(zf: zipfile.ZipFile) -> None:
 
 def stage(archive: Path, staging_root: Path) -> Path:
     """Extract into the staging area (outside the bundle) with safety checks."""
-    staging = staging_root / f"staged-{int(time.time())}"
-    if staging.exists():
-        shutil.rmtree(staging)
-    staging.mkdir(parents=True)
+    staging_root.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix="staged-", dir=staging_root))
     try:
         with zipfile.ZipFile(archive) as zf:
             _check_members(zf)
             for info in zf.infolist():
                 name = info.filename.replace("\\", "/")
                 target = staging / name
-                if not str(target.resolve()).startswith(str(staging.resolve())):
+                if not target.resolve().is_relative_to(staging.resolve()):
                     raise UpdateError("unsafe_path", f"Path outside staging: {name}")
                 if name.endswith("/"):
                     target.mkdir(parents=True, exist_ok=True)
@@ -303,7 +311,7 @@ def stage(archive: Path, staging_root: Path) -> Path:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(info) as source, open(target, "wb") as destination:
                     shutil.copyfileobj(source, destination)
-    except UpdateError:
+    except (OSError, UpdateError, zipfile.BadZipFile):
         shutil.rmtree(staging, ignore_errors=True)
         raise
     roots = [p for p in staging.iterdir() if p.is_dir()]
@@ -312,6 +320,97 @@ def stage(archive: Path, staging_root: Path) -> Path:
         shutil.rmtree(staging, ignore_errors=True)
         raise UpdateError("bad_archive", "The zip does not contain MUXIVRA.exe / MUXIVRA.cmd.")
     return root
+
+
+@contextmanager
+def _update_operation(staging_root: Path):
+    staging_root.mkdir(parents=True, exist_ok=True)
+    try:
+        with config.file_lock(staging_root / ".update.lock", wait=False):
+            yield
+    except BlockingIOError as exc:
+        raise UpdateError("update_busy", "An update operation is in progress.") from exc
+
+
+def _read_preparation(path: Path) -> dict:
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (ValueError, UnicodeError) as exc:
+        raise UpdateError("invalid_preparation", "Unreadable update preparation state.") from exc
+    if not isinstance(state, dict):
+        raise UpdateError("invalid_preparation", "Unreadable update preparation state.")
+    return state
+
+
+def _check_install_busy(staging_root: Path, state: dict) -> None:
+    if (staging_root / INSTALL_LOCK).exists() or (
+        state.get("applying") and state.get("pid") == os.getpid()
+    ):
+        raise UpdateError("update_busy", "An update is already being applied.")
+
+
+def prepare_release(release: dict, staging_root: Path, db_path: Path,
+                    token: str | None = None) -> dict:
+    staging_root = staging_root.resolve()
+    bundle = bundle_root().resolve()
+    if staging_root.is_relative_to(bundle):
+        raise UpdateError("unsafe_staging", "Update staging must be outside the running installation.")
+    state_path = staging_root / UPDATE_STATE
+    with _update_operation(staging_root):
+        _check_install_busy(staging_root, _read_preparation(state_path))
+        state_path.unlink(missing_ok=True)
+        prepare_id = secrets.token_hex(16)
+        job_dir = staging_root / f"release-{prepare_id}"
+        job_dir.mkdir()
+        pid = os.getpid()
+        try:
+            manifest = fetch_manifest(release, token=token)
+            archive = download_verified(release, manifest, job_dir, token=token)
+            staged = stage(archive, job_dir)
+            snapshot = db.snapshot(job_dir / "db-before-update.sqlite", source=db_path)
+            script = write_apply_script(bundle, staged, pid, job_dir,
+                                        db_path=db_path, state_path=state_path, prepare_id=prepare_id)
+            state = {"prepare_id": prepare_id, "pid": pid, "applying": False}
+            config.write_private_file(state_path, json.dumps(state).encode("utf-8"))
+        except BaseException as exc:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            if isinstance(exc, urllib.error.URLError):
+                raise UpdateError("download_failed", "Could not fetch the signed release.") from exc
+            if isinstance(exc, zipfile.BadZipFile):
+                raise UpdateError("bad_archive", "The signed release archive is unreadable.") from exc
+            raise
+    return {
+        "version": manifest["version"], "sha256": manifest["sha256"], "archive": str(archive),
+        "staged": str(staged), "script": str(script), "pid": pid, "snapshot": snapshot,
+        "prepare_id": prepare_id,
+    }
+
+
+def apply_prepared(staging_root: Path, prepare_id: str,
+                   launch: Callable[[Path], object]) -> Path:
+    if not re.fullmatch(r"[0-9a-f]{32}", prepare_id):
+        raise UpdateError("stale_preparation", "Prepare the release again.")
+    staging_root = staging_root.resolve()
+    state_path = staging_root / UPDATE_STATE
+    with _update_operation(staging_root):
+        state = _read_preparation(state_path)
+        _check_install_busy(staging_root, state)
+        if state.get("prepare_id") != prepare_id or state.get("pid") != os.getpid():
+            raise UpdateError("stale_preparation", "Prepare the release again.")
+        script = staging_root / f"release-{prepare_id}" / "apply-update.cmd"
+        if not script.is_file():
+            raise UpdateError("nothing_staged", "The prepared update is missing.")
+        state["applying"] = True
+        config.write_private_file(state_path, json.dumps(state).encode("utf-8"))
+        try:
+            launch(script)
+        except BaseException:
+            state["applying"] = False
+            config.write_private_file(state_path, json.dumps(state).encode("utf-8"))
+            raise
+    return script
 
 
 # ------------------------------------------------------------------- apply
@@ -332,8 +431,10 @@ def write_apply_script(
     pid: int,
     staging_root: Path,
     backup_name: str | None = None,
-    db_snapshot: Path | None = None,
     db_path: Path | None = None,
+    *,
+    state_path: Path | None = None,
+    prepare_id: str = "",
 ) -> Path:
     """Generate a .cmd that waits for THIS pid, swaps with backup/rollback/health check.
 
@@ -346,8 +447,9 @@ def write_apply_script(
     backup = staging_root / (backup_name or f"backup-{time.strftime('%Y%m%d-%H%M%S')}")
     script = staging_root / "apply-update.cmd"
     script.parent.mkdir(parents=True, exist_ok=True)
-    # the snapshot was taken by the app through the SQLite backup API (WAL-safe)
-    snapshot_src = _cmd_path(db_snapshot) if db_snapshot else "%DBFILE%"
+    update_root = state_path.parent if state_path else staging_root
+    backup_db = ('"%OLD%\\runtime\\python\\python.exe" '
+                 '-c "from sshdeck.db import snapshot; import sys; snapshot(sys.argv[2], source=sys.argv[1])"')
     lines = [
         "@echo off",
         "chcp 65001 >nul",
@@ -356,7 +458,16 @@ def write_apply_script(
         f'set "NEW={_cmd_path(new_root)}"',
         f'set "BACKUP={_cmd_path(backup)}"',
         f'set "HEALTHLOG={_cmd_path(staging_root)}\\health.log"',
+        f'set "INSTALL_LOCK={_cmd_path(update_root / INSTALL_LOCK)}"',
+        'set "LOCKED="',
         'set "DBFILE=' + (_cmd_path(db_path) if db_path else "%LOCALAPPDATA%\\MUXIVRA\\data\\sshdeck.db") + '"',
+        'set "SSHDECK_DATA=' + (_cmd_path(db_path.parent) if db_path else "%LOCALAPPDATA%\\MUXIVRA\\data") + '"',
+        'mkdir "%INSTALL_LOCK%" 2>nul',
+        "if errorlevel 1 (",
+        '  echo An update is active or its lock needs recovery: "%INSTALL_LOCK%".',
+        "  goto failed",
+        ")",
+        'set "LOCKED=1"',
         f"set PID={int(pid)}",
         "echo Waiting for MUXIVRA (pid %PID%) to close...",
         "echo (the app closes itself on newer builds; on older ones close the window)",
@@ -372,29 +483,31 @@ def write_apply_script(
         "echo.",
         "echo MUXIVRA did not close within 2 minutes - nothing was changed.",
         "echo Close the MUXIVRA window and run this file again.",
-        "pause",
-        "exit /b 1",
+        "goto failed",
         ":closed",
         'if not exist "%NEW%\\MUXIVRA.exe" (',
         "  echo The staged update is missing or incomplete - nothing was changed.",
-        "  pause",
-        "  exit /b 1",
+        "  goto failed",
         ")",
-        'if exist "%BACKUP%" rmdir /S /Q "%BACKUP%"',
-        "rem 0) the app is closed: take the freshest consistent copy of the database now",
-        'if exist "%DBFILE%" copy /Y "%DBFILE%" "%BACKUP%-db.sqlite" >nul',
-        f'if not exist "%BACKUP%-db.sqlite" if exist "{snapshot_src}" copy /Y "{snapshot_src}" "%BACKUP%-db.sqlite" >nul',
+        'if exist "%BACKUP%" (',
+        "  echo Backup already exists. Prepare this update again before retrying.",
+        "  goto failed",
+        ")",
+        "rem 0) close the app, then take a WAL-safe backup before changing the installation",
+        f'{backup_db} "%DBFILE%" "%BACKUP%-db.sqlite" >"%HEALTHLOG%" 2>&1',
+        "if errorlevel 1 (",
+        '  echo Database backup failed. Check "%HEALTHLOG%".',
+        "  goto failed",
+        ")",
         "rem 1) COPY (never move) the install aside; robocopy 0-7 means success",
         'robocopy "%OLD%" "%BACKUP%" /E /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS >nul',
         "if errorlevel 8 (",
         "  echo Backup failed - the current install was not touched.",
-        "  pause",
-        "  exit /b 1",
+        "  goto failed",
         ")",
         'if not exist "%BACKUP%\\MUXIVRA.exe" (',
         "  echo Backup incomplete - the current install was not touched.",
-        "  pause",
-        "  exit /b 1",
+        "  goto failed",
         ")",
         "rem 2) copy the staged build over the installation",
         'robocopy "%NEW%" "%OLD%" /E /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS >nul',
@@ -410,22 +523,37 @@ def write_apply_script(
         'robocopy "%BACKUP%" "%OLD%" /E /COPY:DAT /R:1 /W:1 /PURGE >nul',
         "if errorlevel 8 (",
         "  echo Restore of the previous binaries FAILED - backup kept at %BACKUP%.",
-        "  pause",
-        "  exit /b 1",
+        "  goto failed",
         ")",
-        'if exist "%BACKUP%-db.sqlite" copy /Y "%BACKUP%-db.sqlite" "%DBFILE%" >nul',
+        f'{backup_db} "%BACKUP%-db.sqlite" "%DBFILE%" >>"%HEALTHLOG%" 2>&1',
         "if errorlevel 1 (",
         "  echo Restore of the database FAILED - backup kept at %BACKUP%-db.sqlite.",
-        "  pause",
-        "  exit /b 1",
+        "  goto failed",
         ")",
         'start "" "%OLD%\\MUXIVRA.exe"',
+        "goto failed",
+        ":failed",
+        "call :release",
+        "pause",
+        "exit /b 1",
+        ":release",
+        "if not defined LOCKED exit /b 0",
+        *(
+            [
+                f'findstr /L /C:"{prepare_id}" "{_cmd_path(state_path)}" >nul 2>nul',
+                f'if not errorlevel 1 del "{_cmd_path(state_path)}"',
+            ]
+            if state_path and prepare_id else []
+        ),
+        'rmdir "%INSTALL_LOCK%"',
+        "exit /b 0",
         ":done",
+        "call :release",
         "timeout /t 3 >nul",
         "(goto) 2>nul & del \"%~f0\" & exit /b 0",
         "",
     ]
-    script.write_bytes("\r\n".join(lines).encode("utf-8"))
+    config.write_private_file(script, "\r\n".join(lines).encode("utf-8"))
     return script
 
 

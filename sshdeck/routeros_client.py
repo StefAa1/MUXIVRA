@@ -32,7 +32,7 @@ from typing import Iterable, Mapping
 __all__ = [
     "WINDOW_MODE",
     "ENV_VAR",
-    "RouterOS clientUnavailable",
+    "RouterOSClientUnavailable",
     "build_args",
     "describe",
     "find_routeros_client",
@@ -46,13 +46,11 @@ WINDOW_MODE = "external-window"
 #: and may live anywhere -- see docs/routeros-client.md).
 ENV_VAR = "MUXIVRA_ROUTEROS_CLIENT"
 
-#: Executable names MikroTik ships.  ``routeros_client64.exe`` is the 64-bit RouterOS client v3
-#: build, ``RouterOS client.exe`` the RouterOS client v4 archive payload; Windows matches names
-#: case-insensitively, so comparisons use ``str.lower()``.
-EXE_NAMES = ("routeros_client64.exe", "routeros_client.exe")
+# WinBox v3 uses winbox64.exe or winbox.exe. The v4 ZIP contains WinBox.exe.
+EXE_NAMES = ("winbox64.exe", "winbox.exe")
 
-HELP_URL = "https://help.mikrotik.com/docs/spaces/ROS/pages/328129/RouterOS client"
-DOWNLOAD_URL = "https://mikrotik.com/download/routeros-client"
+HELP_URL = "https://help.mikrotik.com/docs/spaces/ROS/pages/328129/WinBox"
+DOWNLOAD_URL = "https://mikrotik.com/download/winbox/"
 
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 #: An address that already carries a port: ``host:8291`` or ``[v6]:8291``.
@@ -67,7 +65,7 @@ _MESSAGES = {
 }
 
 
-class RouterOS clientUnavailable(RuntimeError):
+class RouterOSClientUnavailable(RuntimeError):
     """RouterOS client cannot be launched here.
 
     ``code`` is stable for callers (``client_not_found`` when no executable is
@@ -179,7 +177,7 @@ def _candidate_paths(env: Mapping[str, str]) -> Iterable[Path]:
     if local:
         base = Path(local, "MikroTik")
         try:
-            folders = sorted(base.glob("RouterOS client*"))
+            folders = sorted(base.glob("WinBox*"))
         except OSError:
             folders = []
         for folder in folders:
@@ -190,10 +188,9 @@ def _candidate_paths(env: Mapping[str, str]) -> Iterable[Path]:
 
     program_files = env.get("PROGRAMFILES")
     if program_files:
-        for name in EXE_NAMES:
-            candidate = Path(program_files, "MikroTik", "RouterOS client", name)
-            if candidate.is_file():
-                yield candidate
+        found = _exe_in(Path(program_files, "MikroTik", "WinBox"))
+        if found is not None:
+            yield found
 
     search_path = env.get("PATH")
     if search_path:
@@ -206,8 +203,8 @@ def _candidate_paths(env: Mapping[str, str]) -> Iterable[Path]:
 def find_routeros_client() -> Path | None:
     """Locate a routeros_client executable, or ``None``.
 
-    Order: ``MUXIVRA_ROUTEROS_CLIENT``, ``%LOCALAPPDATA%\\MikroTik\\RouterOS client*``,
-    ``%PROGRAMFILES%\\MikroTik\\RouterOS client\\routeros_client64.exe``, ``...\\routeros_client.exe``, then
+    Order: ``MUXIVRA_ROUTEROS_CLIENT``, ``%LOCALAPPDATA%\\MikroTik\\WinBox*``,
+    ``%PROGRAMFILES%\\MikroTik\\WinBox``, then
     ``PATH``.  Windows only -- on Linux and macOS this always returns ``None``
     (see the limits section of ``docs/routeros-client.md``).
     """
@@ -230,7 +227,7 @@ def _not_found_message(executable: Path | None) -> str:
     if executable is not None:
         return (
             f"RouterOS client executable {executable} does not exist. Set {ENV_VAR} to the "
-            f"full path of RouterOS client.exe ({DOWNLOAD_URL})."
+            f"full path of WinBox.exe ({DOWNLOAD_URL})."
         )
     if os.name != "nt":
         return (
@@ -240,7 +237,7 @@ def _not_found_message(executable: Path | None) -> str:
         )
     return (
         "RouterOS client executable not found. Install RouterOS client from "
-        f"{DOWNLOAD_URL} or set {ENV_VAR} to the full path of RouterOS client.exe."
+        f"{DOWNLOAD_URL} or set {ENV_VAR} to the full path of WinBox.exe."
     )
 
 
@@ -257,7 +254,7 @@ def launch(
     (used by the API when the user picked a path).
 
     Raises:
-        RouterOS clientUnavailable: nothing to launch (``client_not_found``) or the OS
+        RouterOSClientUnavailable: nothing to launch (``client_not_found``) or the OS
             refused to start it (``client_launch_failed``).
         ValueError: invalid address, username or port.
     """
@@ -268,7 +265,7 @@ def launch(
 
     exe = Path(os.fspath(executable)).expanduser() if executable is not None else find_routeros_client()
     if exe is None or not exe.is_file():
-        raise RouterOS clientUnavailable("client_not_found", _not_found_message(exe))
+        raise RouterOSClientUnavailable("client_not_found", _not_found_message(exe))
 
     argv = _argv(str(exe), target, user)
     try:
@@ -281,7 +278,7 @@ def launch(
             stderr=subprocess.DEVNULL,
         )
     except OSError as exc:
-        raise RouterOS clientUnavailable(
+        raise RouterOSClientUnavailable(
             "client_launch_failed", f"Could not start {exe}: {exc}"
         ) from exc
 

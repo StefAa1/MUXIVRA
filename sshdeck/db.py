@@ -5,7 +5,7 @@ from contextlib import contextmanager
 
 from . import config
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -262,7 +262,11 @@ CREATE TABLE IF NOT EXISTS device_observed (
 def migrate(conn: sqlite3.Connection) -> None:
     """Bring an older database up to the current schema without losing data."""
     _add_missing_columns(conn, "hosts", HOST_COLUMNS)
-    _add_missing_columns(conn, "sites", {"customer_id": "INTEGER REFERENCES customers(id)"})
+    _add_missing_columns(conn, "sites", {
+        "customer_id": "INTEGER REFERENCES customers(id)",
+        "planning_only": "INTEGER NOT NULL DEFAULT 0",
+    })
+    _add_missing_columns(conn, "racks", {"planning_only": "INTEGER NOT NULL DEFAULT 0"})
     _add_missing_columns(conn, "hosts", {"customer_id": "INTEGER REFERENCES customers(id)"})
     _add_missing_columns(conn, "credentials", {"customer_id": "INTEGER REFERENCES customers(id)"})
     from . import customers as _customers
@@ -329,6 +333,11 @@ def migrate(conn: sqlite3.Connection) -> None:
     # v8: planned vs documented equipment, configuration history, observed state
     _add_missing_columns(conn, "devices", {"origin": "TEXT DEFAULT 'documented'"})
     conn.executescript(CONFIG_SCHEMA)
+    migrated = conn.execute(
+        "INSERT OR IGNORE INTO settings(key, value) VALUES ('legacy_ssh_pins_migrated', '1')"
+    )
+    if migrated.rowcount:
+        config.migrate_known_hosts(_customers.ensure_unclassified(conn))
     conn.execute(
         "INSERT INTO settings(key, value) VALUES ('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -350,19 +359,25 @@ def _schema_on_disk() -> int:
         return 0
 
 
-def snapshot(destination) -> str:
+def snapshot(destination, *, source=None) -> str:
     """Consistent copy through the SQLite backup API (WAL-safe, unlike copy2)."""
     from pathlib import Path as _Path
 
     destination = _Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    source = connect()
-    target = sqlite3.connect(str(destination))
+    if source is None:
+        original = connect()
+    else:
+        uri = _Path(source).resolve().as_uri()
+        original = sqlite3.connect(uri + "?mode=ro", uri=True, timeout=15)
     try:
-        source.backup(target)
+        target = sqlite3.connect(str(destination), timeout=15)
+        try:
+            original.backup(target)
+        finally:
+            target.close()
     finally:
-        target.close()
-        source.close()
+        original.close()
     return str(destination)
 
 

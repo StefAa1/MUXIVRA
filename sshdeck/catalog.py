@@ -317,5 +317,4 @@ def create_ports(conn, device_id: int, model_key: str) -> int:
             (device_id, port["name"], port["kind"]),
         )
         created += 1
-    conn.commit()
     return created

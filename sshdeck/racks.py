@@ -11,15 +11,14 @@ import io
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 import json
 import sqlite3
 
-from . import customers, db
-from .api import guard
+from . import customers, db, routeros_client
+from .api import HostIn, guard, insert_host
 
 router = APIRouter(prefix="/api/inventory", dependencies=[Depends(guard)])
 
@@ -39,7 +38,8 @@ class RackIn(BaseModel):
 
 
 class DeviceIn(BaseModel):
-    rack_id: int
+    rack_id: int | None = None
+    site_id: int | None = None
     name: str = Field(min_length=1, max_length=80)
     kind: DeviceKind = "switch"
     units: int = Field(default=1, ge=1, le=48)
@@ -51,10 +51,12 @@ class DeviceIn(BaseModel):
     mgmt_ip: str = Field(default="", max_length=64)
     origin: Literal["documented", "planned"] = "documented"
     model_key: str = Field(default="", max_length=60)
+    connection: HostIn | None = None
 
 
 class DevicePatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=80)
+    rack_id: int | None = None
     origin: Literal["documented", "planned"] | None = None
     kind: DeviceKind | None = None
     units: int | None = Field(default=None, ge=1, le=48)
@@ -107,9 +109,27 @@ def tree(request: Request):
     with _conn() as conn:
         cid = _cid(conn, request)
         sites = [dict(r) for r in conn.execute(
-            "SELECT * FROM sites WHERE customer_id = ? ORDER BY name", (cid,))]
-        racks = [dict(r) for r in conn.execute("SELECT * FROM racks ORDER BY name")]
-        devices = [dict(r) for r in conn.execute("SELECT * FROM devices ORDER BY position DESC")]
+            "SELECT * FROM sites WHERE customer_id = ? AND NOT planning_only ORDER BY name", (cid,))]
+        racks = [dict(r) for r in conn.execute(
+            """SELECT r.* FROM racks r JOIN sites s ON s.id = r.site_id
+                WHERE s.customer_id = ? AND NOT r.planning_only ORDER BY r.name""", (cid,))]
+        devices = [dict(r) for r in conn.execute(
+            """SELECT d.* FROM devices d JOIN racks r ON r.id = d.rack_id
+                 JOIN sites s ON s.id = r.site_id
+                WHERE s.customer_id = ? AND NOT r.planning_only ORDER BY d.position DESC""", (cid,))]
+        unplaced = [dict(row) | {"rack_id": None} for row in conn.execute(
+            """SELECT d.*, CASE WHEN NOT s.planning_only THEN s.id END AS site_id,
+                         CASE WHEN NOT s.planning_only THEN s.name END AS site_name
+                 FROM devices d JOIN racks r ON r.id = d.rack_id JOIN sites s ON s.id = r.site_id
+                WHERE s.customer_id = ? AND r.planning_only ORDER BY d.name, d.id""", (cid,))]
+        profiles: dict[int, list[int]] = {}
+        for row in conn.execute(
+            """SELECT dp.device_id, dp.host_id FROM device_profiles dp
+                 JOIN devices d ON d.id = dp.device_id JOIN racks r ON r.id = d.rack_id
+                 JOIN sites s ON s.id = r.site_id JOIN hosts h ON h.id = dp.host_id
+                WHERE s.customer_id = ? AND h.customer_id = ? ORDER BY dp.host_id""", (cid, cid),
+        ):
+            profiles.setdefault(row["device_id"], []).append(row["host_id"])
         links = conn.execute(
             """SELECT COUNT(*) AS n FROM links l
                  JOIN ports p ON p.id = l.port_a
@@ -121,9 +141,11 @@ def tree(request: Request):
         ).fetchone()["n"]
     for rack in racks:
         rack["devices"] = [d for d in devices if d["rack_id"] == rack["id"]]
+    for device in devices + unplaced:
+        device["profile_ids"] = profiles.get(device["id"], [])
     for site in sites:
         site["racks"] = [r for r in racks if r["site_id"] == site["id"]]
-    return {"sites": sites, "links": links}
+    return {"sites": sites, "links": links, "unplaced": unplaced}
 
 
 @router.post("/sites")
@@ -185,7 +207,7 @@ def delete_site(site_id: int, request: Request):
 @router.post("/racks")
 def create_rack(payload: RackIn, request: Request):
     with _conn() as conn:
-        _one(conn, "SELECT id FROM sites WHERE id = ?", (payload.site_id,))
+        _one(conn, "SELECT id FROM sites WHERE id = ? AND NOT planning_only", (payload.site_id,))
         _ensure_same(conn, _cid(conn, request), ("site", payload.site_id))
         cur = conn.execute(
             "INSERT INTO racks (site_id, name, units) VALUES (?, ?, ?)",
@@ -215,29 +237,72 @@ def delete_rack(rack_id: int, request: Request):
 
 
 # ----------------------------------------------------------------- devices
+def _planning_rack(conn, customer_id: int, site_id: int | None) -> int:
+    """Store unplaced devices under the existing inventory ownership hierarchy."""
+    if site_id is None:
+        site = conn.execute(
+            "SELECT id FROM sites WHERE customer_id = ? AND planning_only", (customer_id,)
+        ).fetchone()
+        site_id = site["id"] if site else conn.execute(
+            "INSERT INTO sites (name, customer_id, planning_only) VALUES ('Planning', ?, 1)",
+            (customer_id,),
+        ).lastrowid
+    else:
+        _ensure_same(conn, customer_id, ("site", site_id))
+    rack = conn.execute("SELECT id FROM racks WHERE site_id = ? AND planning_only", (site_id,)).fetchone()
+    if rack:
+        return rack["id"]
+    return conn.execute(
+        "INSERT INTO racks (site_id, name, units, planning_only) VALUES (?, 'Unplaced', 60, 1)",
+        (site_id,),
+    ).lastrowid
+
+
+def _check_device_position(conn, rack, position: int, units: int, device_id: int = 0) -> None:
+    if rack["planning_only"]:
+        return
+    if position + units - 1 > rack["units"]:
+        raise HTTPException(status_code=422, detail="device_outside_rack")
+    clash = conn.execute(
+        """SELECT name FROM devices WHERE rack_id = ? AND id <> ?
+               AND position < ? AND (position + units) > ?""",
+        (rack["id"], device_id, position + units, position),
+    ).fetchone()
+    if clash:
+        raise HTTPException(status_code=409, detail=f"position_taken:{clash['name']}")
+
+
 @router.post("/devices")
 def create_device(payload: DeviceIn, request: Request):
     with _conn() as conn:
-        rack = _one(conn, "SELECT units FROM racks WHERE id = ?", (payload.rack_id,))
-        _ensure_same(conn, _cid(conn, request), ("rack", payload.rack_id))
-        if payload.position + payload.units - 1 > rack["units"]:
-            raise HTTPException(status_code=422, detail="device_outside_rack")
-        clash = conn.execute(
-            """SELECT name FROM devices WHERE rack_id = ? AND position < ? AND (position + units) > ?""",
-            (payload.rack_id, payload.position + payload.units, payload.position),
-        ).fetchone()
-        if clash:
-            raise HTTPException(status_code=409, detail=f"position_taken:{clash['name']}")
-        if payload.host_id is not None:
-            _one(conn, "SELECT id FROM hosts WHERE id = ?", (payload.host_id,))
-            _ensure_same(conn, _cid(conn, request), ("host", payload.host_id))
+        conn.execute("BEGIN IMMEDIATE")
+        cid = _cid(conn, request)
+        rack_id = payload.rack_id
+        if rack_id is None:
+            if payload.origin != "planned":
+                raise HTTPException(status_code=422, detail="rack_required")
+            rack_id = _planning_rack(conn, cid, payload.site_id)
+        rack = _one(conn, "SELECT id, units, planning_only FROM racks WHERE id = ?", (rack_id,))
+        _ensure_same(conn, cid, ("rack", rack_id))
+        if rack["planning_only"] and payload.origin != "planned":
+            raise HTTPException(status_code=422, detail="rack_required")
+        _check_device_position(conn, rack, payload.position, payload.units)
+        host = None
+        host_id = payload.host_id
+        if payload.connection is not None:
+            if host_id is not None:
+                raise HTTPException(status_code=422, detail="choose_one_connection")
+            host = insert_host(conn, cid, payload.connection)
+            host_id = host["id"]
+        elif host_id is not None:
+            _ensure_same(conn, cid, ("host", host_id))
         cur = conn.execute(
             """INSERT INTO devices (rack_id, name, kind, units, position, note, host_id, vendor, model,
                                   mgmt_ip, origin)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                payload.rack_id, payload.name.strip(), payload.kind, payload.units, payload.position,
-                payload.note, payload.host_id, payload.vendor.strip(), payload.model.strip(),
+                rack_id, payload.name.strip(), payload.kind, payload.units, payload.position,
+                payload.note, host_id, payload.vendor.strip(), payload.model.strip(),
                 payload.mgmt_ip.strip(), payload.origin,
             ),
         )
@@ -253,9 +318,9 @@ def create_device(payload: DeviceIn, request: Request):
                 "UPDATE devices SET vendor = ?, model = ?, origin = ? WHERE id = ?",
                 (model.vendor, model.name, payload.origin, device_id),
             )
-            conn.commit()
             _catalog.create_ports(conn, device_id, payload.model_key)
-        return dict(conn.execute("SELECT * FROM devices WHERE id = ?", (device_id,)).fetchone())
+        device = dict(_one(conn, "SELECT * FROM devices WHERE id = ?", (device_id,)))
+        return device | {"rack_id": None if rack["planning_only"] else rack_id, "host": host}
 
 
 @router.delete("/devices/{device_id}")
@@ -328,6 +393,13 @@ def bulk_ports(payload: dict, request: Request):
 
 
 # ------------------------------------------------------------------- links
+def _check_cable_port(conn, port_id: int) -> None:
+    rack = _one(conn, """SELECT r.planning_only FROM ports p JOIN devices d ON d.id = p.device_id
+                         JOIN racks r ON r.id = d.rack_id WHERE p.id = ?""", (port_id,))
+    if rack["planning_only"]:
+        raise HTTPException(status_code=422, detail="device_unplaced")
+
+
 @router.get("/links")
 def list_links(request: Request):
     with _conn() as conn:
@@ -366,9 +438,9 @@ def create_link(payload: LinkIn, request: Request):
             raise HTTPException(status_code=422 if exc.code == "cross_customer" else 404,
                                 detail=f"{exc.code}: {exc.message}")
         for port_id in (payload.port_a, payload.port_b):
-            port = _one(conn, "SELECT id FROM ports WHERE id = ?", (port_id,))
+            _check_cable_port(conn, port_id)
             busy = conn.execute(
-                "SELECT id FROM links WHERE port_a = ? OR port_b = ?", (port["id"], port["id"])
+                "SELECT id FROM links WHERE port_a = ? OR port_b = ?", (port_id, port_id)
             ).fetchone()
             if busy:
                 raise HTTPException(status_code=409, detail=f"port_already_linked:{port_id}")
@@ -518,56 +590,45 @@ def page_links(request: Request, q: str = "", limit: int = 100, offset: int = 0)
 
 
 # ------------------------------------------------------- device → connection
-def _routeros_client_module():
-    try:
-        from . import routeros_client
-
-        return routeros_client
-    except Exception:  # module not installed yet / unsupported platform
-        return None
-
-
 @router.get("/devices/{device_id}/connections")
 def device_connections(device_id: int, request: Request):
     """The device's registered SSH/Telnet/COM profiles plus RouterOS client availability."""
     with _conn() as conn:
         device = _one(conn, "SELECT * FROM devices WHERE id = ?", (device_id,))
-        _ensure_same(conn, _cid(conn, request), ("device", device_id))
+        cid = _cid(conn, request)
+        _ensure_same(conn, cid, ("device", device_id))
         # explicit relations only: a shared private IP must never imply a profile
         rows = conn.execute(
             """SELECT h.id, h.label, h.hostname, h.port, h.protocol, h.username
                  FROM hosts h
-                WHERE h.id = ? OR h.id IN (SELECT host_id FROM device_profiles WHERE device_id = ?)
+                WHERE h.customer_id = ? AND (h.id = ? OR h.id IN (
+                    SELECT host_id FROM device_profiles WHERE device_id = ?))
                 ORDER BY (h.id = ?) DESC, h.label""",
-            (device["host_id"] or -1, device_id, device["host_id"] or -1),
+            (cid, device["host_id"] or -1, device_id, device["host_id"] or -1),
         ).fetchall()
-    module = _routeros_client_module()
     return {
         "device": dict(device),
         "hosts": [dict(r) for r in rows],
-        "routeros_client": module.describe() if module else {"available": False, "reason": "module_missing"},
+        "routeros_client": routeros_client.describe(),
     }
 
 
 @router.post("/devices/{device_id}/routeros-client")
 def launch_routeros_client(device_id: int, request: Request, payload: dict | None = None):
-    """Open the official RouterOS client client in its own window for this device."""
+    """Open MikroTik WinBox in its own window for this device."""
     payload = payload or {}
     with _conn() as conn:
         device = _one(conn, "SELECT * FROM devices WHERE id = ?", (device_id,))
         _ensure_same(conn, _cid(conn, request), ("device", device_id))
-    module = _routeros_client_module()
-    if module is None:
-        raise HTTPException(status_code=409, detail="routeros_client:module_missing")
     address = str(payload.get("address") or device["mgmt_ip"] or "").strip()
     if not address:
         raise HTTPException(status_code=422, detail="routeros_client:address_required")
     try:
-        result = module.launch(address, username=payload.get("username"))
-    except Exception as exc:  # RouterOS clientUnavailable and friends
-        code = getattr(exc, "code", "routeros_client_unavailable")
-        message = getattr(exc, "message", str(exc))
-        raise HTTPException(status_code=409, detail=f"{code}: {message}")
+        result = routeros_client.launch(address, username=payload.get("username"))
+    except routeros_client.RouterOSClientUnavailable as exc:
+        raise HTTPException(status_code=409, detail=f"{exc.code}: {exc.message}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     db.log_event(None, "routeros_client_launched", f"{device['name']} {address}")
     return {"ok": True, **result}
 
@@ -685,34 +746,32 @@ def remove_device_profile(device_id: int, host_id: int, request: Request):
 @router.patch("/devices/{device_id}")
 def update_device(device_id: int, payload: DevicePatch, request: Request):
     with _conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         device = _one(conn, "SELECT * FROM devices WHERE id = ?", (device_id,))
-        _ensure_same(conn, _cid(conn, request), ("device", device_id))
-        rack = _one(conn, "SELECT units FROM racks WHERE id = ?", (device["rack_id"],))
+        cid = _cid(conn, request)
+        _ensure_same(conn, cid, ("device", device_id))
         given = payload.model_dump(exclude_unset=True)
         merged = {**dict(device), **given}   # an explicit null (host_id) clears the field
-        top = merged["position"] + merged["units"] - 1
-        if top > rack["units"]:
-            raise HTTPException(status_code=422, detail="device_outside_rack")
-        clash = conn.execute(
-            """SELECT name FROM devices
-                WHERE rack_id = ? AND id <> ? AND position < ? AND (position + units) > ?""",
-            (device["rack_id"], device_id, top + 1, merged["position"]),
-        ).fetchone()
-        if clash:
-            raise HTTPException(status_code=409, detail=f"position_taken:{clash['name']}")
+        if merged["rack_id"] is None:
+            raise HTTPException(status_code=422, detail="rack_required")
+        _ensure_same(conn, cid, ("rack", merged["rack_id"]))
+        rack = _one(conn, "SELECT id, units, planning_only FROM racks WHERE id = ?", (merged["rack_id"],))
+        if rack["planning_only"] and (merged["origin"] != "planned" or rack["id"] != device["rack_id"]):
+            raise HTTPException(status_code=422, detail="rack_required")
+        _check_device_position(conn, rack, merged["position"], merged["units"], device_id)
         if merged.get("host_id") is not None:
-            _one(conn, "SELECT id FROM hosts WHERE id = ?", (merged["host_id"],))
-            _ensure_same(conn, _cid(conn, request), ("host", merged["host_id"]))
+            _ensure_same(conn, cid, ("host", merged["host_id"]))
         conn.execute(
-            """UPDATE devices SET name = ?, kind = ?, units = ?, position = ?, note = ?,
+            """UPDATE devices SET rack_id = ?, name = ?, kind = ?, units = ?, position = ?, note = ?,
                       host_id = ?, vendor = ?, model = ?, mgmt_ip = ?, origin = ?
                 WHERE id = ?""",
-            (merged["name"], merged["kind"], merged["units"], merged["position"], merged["note"],
+            (rack["id"], merged["name"], merged["kind"], merged["units"], merged["position"], merged["note"],
              merged.get("host_id"), merged.get("vendor") or "", merged.get("model") or "",
              merged.get("mgmt_ip") or "", merged.get("origin") or "documented", device_id),
         )
-        conn.commit()
-        return dict(conn.execute("SELECT * FROM devices WHERE id = ?", (device_id,)).fetchone())
+        return dict(_one(conn, "SELECT * FROM devices WHERE id = ?", (device_id,))) | {
+            "rack_id": None if rack["planning_only"] else rack["id"],
+        }
 
 
 @router.get("/devices/{device_id}/dependents")
@@ -744,8 +803,9 @@ def update_link(link_id: int, payload: dict, request: Request):
         port_b = int(payload.get("port_b", link["port_b"]))
         if port_a == port_b:
             raise HTTPException(status_code=422, detail="same_port")
+        _ensure_same(conn, cid, ("port", port_a), ("port", port_b))
         for port_id in (port_a, port_b):
-            _one(conn, "SELECT id FROM ports WHERE id = ?", (port_id,))
+            _check_cable_port(conn, port_id)
         try:
             conn.execute("UPDATE links SET port_a = ?, port_b = ?, cable = ?, length_m = ? WHERE id = ?",
                          (port_a, port_b, cable, length, link_id))

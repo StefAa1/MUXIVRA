@@ -4,16 +4,17 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>MUXIVRA — SSH workspace</title>
-<link rel="icon" href="/static/favicon.ico?v=0.6.8" sizes="any" />
-  <link rel="apple-touch-icon" href="/static/logo-192.png?v=0.6.8" />
+<link rel="icon" href="/static/favicon.ico?v=0.6.9" sizes="any" />
+  <link rel="apple-touch-icon" href="/static/logo-192.png?v=0.6.9" />
 <link rel="stylesheet" href="/static/vendor/xterm.css?v=0.1.0" />
-<link rel="stylesheet" href="/static/styles.css?v=0.6.8" />
-  <link rel="stylesheet" href="/static/wizard.css?v=0.6.8" />
-  <link rel="stylesheet" href="/static/config.css?v=0.6.8" />
-  <link rel="stylesheet" href="/static/inventory.css?v=0.6.8" />
-  <link rel="stylesheet" href="/static/diagram.css?v=0.6.8" />
+<link rel="stylesheet" href="/static/styles.css?v=0.6.9" />
+  <link rel="stylesheet" href="/static/wizard.css?v=0.6.9" />
+  <link rel="stylesheet" href="/static/config.css?v=0.6.9" />
+  <link rel="stylesheet" href="/static/inventory.css?v=0.6.9" />
+  <link rel="stylesheet" href="/static/diagram.css?v=0.6.9" />
 </head>
 <body>
+<p class="startup" id="startup" role="status">Opening workspace…</p>
 <!-- ============================ AUTH ============================ -->
 <section id="auth" class="auth hidden">
   <div class="auth-grid" aria-hidden="true"></div>
@@ -39,7 +40,7 @@
 <!-- ============================= APP ============================= -->
 <div id="app" class="app hidden">
   <nav class="rail">
-    <div class="rail-logo" title="MUXIVRA"><img src="/static/logo-64.png?v=0.6.8" alt="MUXIVRA" width="34" height="34" /></div>
+    <div class="rail-logo" title="MUXIVRA"><img src="/static/logo-64.png?v=0.6.9" alt="MUXIVRA" width="34" height="34" /></div>
     <button class="rail-btn active" data-view="hosts" title="Servers"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01"/></svg><em>Hosts</em></button>
     <button class="rail-btn" data-view="keys" title="Keys"><svg viewBox="0 0 24 24"><circle cx="8" cy="12" r="4"/><path d="M12 12h9M17 12v4M20 12v3"/></svg><em>Keys</em></button>
     <button class="rail-btn" data-view="snippets" title="Snippets"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg><em>Snips</em></button>
@@ -100,6 +101,7 @@
       <button class="tab-add" id="tab-add" title="New session">+</button>
       <div class="tabs-fill"></div>
       <div class="tab-tools">
+        <button class="btn ghost xs hidden" id="btn-terminal-retry" type="button">Reconnect</button>
         <button class="icon-btn" id="btn-files-inline" title="SFTP"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4v12M8 16l-3-3M8 16l3-3M16 20V8M16 8l-3 3M16 8l3 3"/></svg></button>
         <button class="btn ghost xs" id="btn-split" aria-pressed="false" title="Show the diagram next to the terminal">Diagram side-by-side</button>
         <button class="icon-btn" id="btn-snippets-inline" title="Snippets"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg></button>
@@ -123,6 +125,7 @@
           </div>
           <div class="stats" id="hero-stats"></div>
         </div>
+        <div id="workspace-devices"></div>
         <div class="recent" id="hero-recent"></div>
       </section>
 
@@ -181,11 +184,11 @@
 
 <script src="/static/vendor/xterm.js?v=0.1.0"></script>
 <script src="/static/vendor/addon-fit.js?v=0.1.0"></script>
-<script src="/static/app.js?v=0.6.8"></script>
-<script src="/static/wizard.js?v=0.6.8"></script>
-<script src="/static/config.js?v=0.6.8"></script>
-<script src="/static/inventory.js?v=0.6.8"></script>
-<script src="/static/diagram.js?v=0.6.8"></script>
-<script src="/static/shell.js?v=0.6.8"></script>
+<script src="/static/app.js?v=0.6.9"></script>
+<script src="/static/wizard.js?v=0.6.9"></script>
+<script src="/static/config.js?v=0.6.9"></script>
+<script src="/static/inventory.js?v=0.6.9"></script>
+<script src="/static/diagram.js?v=0.6.9"></script>
+<script src="/static/shell.js?v=0.6.9"></script>
 </body>
 </html>

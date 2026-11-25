@@ -304,64 +304,93 @@ def test_official_source_needs_no_configuration(auth_client, monkeypatch):
 
 
 def test_apply_is_honest_off_windows(auth_client):
-    from sshdeck import config
-
     auth_client.headers.update({"x-requested-with": "sshdeck"})
-    res = auth_client.post("/api/update/apply", json={})
+    res = auth_client.post("/api/update/apply", json={"prepare_id": "a" * 32})
     assert res.status_code == 409
     assert res.json()["detail"] in {"nothing_staged"} or "apply_requires_windows" in res.json()["detail"]
 
 
+def _stage_release(tmp_path, prepare_id="b" * 32, pid=None):
+    """Φτιάχνει ό,τι περιμένει το apply_prepared: state αρχείο + staged script."""
+    import json, os
+    from sshdeck import config
+
+    pid = os.getpid() if pid is None else pid
+    job = tmp_path / f"release-{prepare_id}"
+    job.mkdir(parents=True, exist_ok=True)
+    script = job / "apply-update.cmd"
+    script.write_text("@echo off\r\n", encoding="utf-8")
+    state = {"prepare_id": prepare_id, "pid": pid, "applying": False}
+    (tmp_path / "prepared-update.json").write_text(json.dumps(state), encoding="utf-8")
+    return script, prepare_id
+
+
 def test_apply_windows_branch_actually_launches(auth_client, tmp_path, monkeypatch):
-    """Ο κλάδος Windows δεν επιστρέφει NameError: φτιάχνει process με το script."""
+    """Το apply δέχεται μόνο φρέσκια προετοιμασία και ξεκινά το helper."""
     import types
 
     from sshdeck import api, config
 
-    script = tmp_path / "apply-update.cmd"
-    script.write_text("@echo off\r\n", encoding="utf-8")
+    script, prepare_id = _stage_release(tmp_path)
     monkeypatch.setattr(config, "STAGING_DIR", tmp_path, raising=False)
-    called = {}
+    launched = {}
 
     class FakePopen:
         def __init__(self, args, **kwargs):
-            called["args"] = args
+            launched["args"] = args
 
     monkeypatch.setattr(api, "subprocess", types.SimpleNamespace(
         Popen=FakePopen, CREATE_NEW_PROCESS_GROUP=0), raising=False)
     monkeypatch.setattr(api, "_windows_host", lambda: True)
 
     auth_client.headers.update({"x-requested-with": "sshdeck"})
-    res = auth_client.post("/api/update/apply", json={})
+    res = auth_client.post("/api/update/apply", json={"prepare_id": prepare_id})
     assert res.status_code == 200, res.text
     assert res.json()["started"] is True
-    assert str(script) in " ".join(called["args"])
+    assert str(script) in " ".join(launched["args"])
+
+
+def test_stale_preparation_is_rejected(auth_client, tmp_path, monkeypatch):
+    """prepare_id που δεν ταιριάζει (ή άλλο pid) → 409, χωρίς launch."""
+    import types
+
+    from sshdeck import api, config
+
+    _, prepare_id = _stage_release(tmp_path, pid=999999)
+    monkeypatch.setattr(config, "STAGING_DIR", tmp_path, raising=False)
+    monkeypatch.setattr(api, "subprocess", types.SimpleNamespace(
+        Popen=lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not launch")),
+        CREATE_NEW_PROCESS_GROUP=0), raising=False)
+    monkeypatch.setattr(api, "_windows_host", lambda: True)
+
+    auth_client.headers.update({"x-requested-with": "sshdeck"})
+    res = auth_client.post("/api/update/apply", json={"prepare_id": prepare_id})
+    assert res.status_code == 409
+    assert "stale_preparation" in res.json()["detail"]
 
 
 def test_apply_in_desktop_mode_requests_shutdown(auth_client, tmp_path, monkeypatch):
     """Το update δεν μένει «κατεβασμένο»: μετά το helper ζητάμε τερματισμό."""
+    import os as _os
     import types
 
     from sshdeck import api, config, desktop
 
-    script = tmp_path / "apply-update.cmd"
-    script.write_text("@echo off\r\n", encoding="utf-8")
+    _, prepare_id = _stage_release(tmp_path)
     monkeypatch.setattr(config, "STAGING_DIR", tmp_path, raising=False)
     monkeypatch.setattr(api, "subprocess", types.SimpleNamespace(
         Popen=lambda *a, **k: None, CREATE_NEW_PROCESS_GROUP=0), raising=False)
     monkeypatch.setattr(api, "_windows_host", lambda: True)
-    import os as _os
-
     monkeypatch.setenv("MUXIVRA_DESKTOP_PID", str(_os.getpid()))
 
-    calls = {}
-    monkeypatch.setattr(desktop, "request_shutdown", lambda *a, **k: calls.setdefault("hit", True))
+    called = {}
+    monkeypatch.setattr(desktop, "request_shutdown", lambda *a, **k: called.setdefault("hit", True))
 
     auth_client.headers.update({"x-requested-with": "sshdeck"})
-    res = auth_client.post("/api/update/apply", json={})
+    res = auth_client.post("/api/update/apply", json={"prepare_id": prepare_id})
     assert res.status_code == 200, res.text
     assert res.json()["restarting"] is True
-    assert calls.get("hit") is True
+    assert called.get("hit") is True
 
 
 def test_apply_outside_desktop_does_not_kill_the_service(auth_client, tmp_path, monkeypatch):
@@ -369,8 +398,7 @@ def test_apply_outside_desktop_does_not_kill_the_service(auth_client, tmp_path, 
 
     from sshdeck import api, config, desktop
 
-    script = tmp_path / "apply-update.cmd"
-    script.write_text("@echo off\r\n", encoding="utf-8")
+    _, prepare_id = _stage_release(tmp_path)
     monkeypatch.setattr(config, "STAGING_DIR", tmp_path, raising=False)
     monkeypatch.setattr(api, "subprocess", types.SimpleNamespace(
         Popen=lambda *a, **k: None, CREATE_NEW_PROCESS_GROUP=0), raising=False)
@@ -380,7 +408,7 @@ def test_apply_outside_desktop_does_not_kill_the_service(auth_client, tmp_path, 
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not exit")))
 
     auth_client.headers.update({"x-requested-with": "sshdeck"})
-    res = auth_client.post("/api/update/apply", json={})
+    res = auth_client.post("/api/update/apply", json={"prepare_id": prepare_id})
     assert res.status_code == 200
     assert res.json()["restarting"] is False
 
@@ -392,8 +420,8 @@ def test_apply_script_gives_up_if_the_app_never_closes(tmp_path, monkeypatch):
     import pathlib as _p
 
     script = update.write_apply_script(
-        bundle=tmp_path / "old", new_root=tmp_path / "new", pid=1234,
-        staging_root=tmp_path, backup_name="bak", db_snapshot=None, db_path=None)
+        tmp_path / "old", tmp_path / "new", 1234, tmp_path,
+        db_path=None, state_path=tmp_path / "state.json", prepare_id="c" * 32)
     text = _p.Path(script).read_text(encoding="utf-8", errors="replace")
     assert ":still_open" in text
     assert "TRIES" in text

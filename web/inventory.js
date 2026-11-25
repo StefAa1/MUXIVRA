@@ -65,24 +65,44 @@ function ndDebounce(key, fn, wait) {
 function ndKindIcon(kind) { return ND_KIND_LABEL[kind] || kind || '—'; }
 
 /* ------------------------------------------------------------------- data */
+async function readInventory(customerId) {
+  const scope = { customerId };
+  const [tree, links] = await Promise.all([api('/inventory/tree', scope), api('/inventory/links', scope)]);
+  return { tree, links };
+}
+
+function resetInventoryView() {
+  ND.rackId = null;
+  ND.layout = null;
+  ND.quick = null;
+  ND.audit = null;
+  ND.deviceId = null;
+  ND.links = { q: '', offset: 0, limit: 50, total: 0, rows: [], loaded: false, loading: false, error: '' };
+  ND.portSearch = { q: '', rows: [], total: 0, seq: ND.portSearch.seq + 1, loading: false, error: '' };
+  ND.portForm.open = false;
+  ND.edit = null;
+}
+
 async function loadInventory() {
-  S.nd = S.nd || {};
+  const customerId = S.customerId;
+  let inventory;
   try {
-    S.nd.tree = await api('/inventory/tree');
+    inventory = await readInventory(customerId);
   } catch (_) {
-    S.nd.tree = { sites: [], links: 0 };
+    return;
   }
-  try {
-    S.nd.links = await api('/inventory/links');
-  } catch (_) {
-    S.nd.links = [];
-  }
+  if (customerId !== S.customerId) return;
+  S.nd = inventory;
   ND.links.loaded = false;
   ND.links.error = '';
-  if (ND.rackId) {
+  const rackId = ND.rackId;
+  if (rackId) {
     try {
-      ND.layout = await api(`/inventory/rack/${ND.rackId}`);
+      const layout = await api(`/inventory/rack/${rackId}`, { customerId });
+      if (customerId !== S.customerId || rackId !== ND.rackId) return;
+      ND.layout = layout;
     } catch (_) {
+      if (customerId !== S.customerId || rackId !== ND.rackId) return;
       ND.layout = null;
       ND.rackId = null;
       ND.deviceId = null;
@@ -92,23 +112,30 @@ async function loadInventory() {
   }
   if (ND.tab === 'table') await ndLoadLinks({ silent: true });
   if (ND.tab === 'audit' && ND.audit) {
-    try { ND.audit = await api('/inventory/audit'); } catch (_) { /* κρατάμε το παλιό */ }
+    try {
+      const audit = await api('/inventory/audit', { customerId });
+      if (customerId === S.customerId) ND.audit = audit;
+    } catch (_) { /* keep the last result */ }
   }
 }
 
 function ndRacks() {
-  return ((S.nd && S.nd.tree && S.nd.tree.sites) || []).flatMap((site) =>
+  return workspaceSites().flatMap((site) =>
     (site.racks || []).map((r) => ({ ...r, siteName: site.name })));
 }
 
 async function ndSelectRack(rackId) {
+  const customerId = S.customerId;
   ND.rackId = rackId;
   ND.quick = null;
   ND.portSearch = { q: '', rows: [], total: 0, seq: ND.portSearch.seq, loading: false, error: '' };
   ND.portForm.open = false;
   try {
-    ND.layout = await api(`/inventory/rack/${rackId}`);
+    const layout = await api(`/inventory/rack/${rackId}`, { customerId });
+    if (ND.rackId !== rackId || S.customerId !== customerId) return;
+    ND.layout = layout;
   } catch (err) {
+    if (ND.rackId !== rackId || S.customerId !== customerId) return;
     ND.layout = null;
     toast(ndErrorText(err, 'The rack failed to load'), 'err');
   }
@@ -370,6 +397,7 @@ function ndRenderTable() {
 
 async function ndLoadLinks(opts = {}) {
   const st = ND.links;
+  const customerId = S.customerId;
   if (st.loading) return;
   st.loading = true;
   st.error = '';
@@ -378,7 +406,8 @@ async function ndLoadLinks(opts = {}) {
   try {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       fetchedOffset = st.offset;
-      const page = await api(`/inventory/links/page?q=${encodeURIComponent(queryUsed.trim())}&limit=${st.limit}&offset=${fetchedOffset}`);
+      const page = await api(`/inventory/links/page?q=${encodeURIComponent(queryUsed.trim())}&limit=${st.limit}&offset=${fetchedOffset}`, { customerId });
+      if (st !== ND.links) return;
       st.rows = page.links || [];
       st.total = Number(page.total || 0);
       st.limit = Number(page.limit || st.limit) || 50;
@@ -389,6 +418,7 @@ async function ndLoadLinks(opts = {}) {
       break;
     }
   } catch (err) {
+    if (st !== ND.links) return;
     st.error = ndErrorText(err, 'The link list failed to load.');
     st.rows = [];
     st.total = 0;
@@ -607,6 +637,8 @@ function ndUnlink(linkId) {
 
 /* ---------------------------------------------------------- device editor */
 async function ndOpenDeviceModal(deviceId) {
+  const customerId = S.customerId;
+  const rackId = ND.rackId;
   const device = ndDevice(deviceId);
   if (!device) {
     toast('The device is not in the current rack', 'err');
@@ -614,9 +646,10 @@ async function ndOpenDeviceModal(deviceId) {
   }
   let hosts = Array.isArray(S.hosts) ? S.hosts : [];
   try {
-    const fresh = await api('/hosts');
+    const fresh = await api('/hosts', { customerId });
     if (Array.isArray(fresh)) hosts = fresh;
   } catch (_) { /* δουλεύουμε με ό,τι έχει ήδη φορτώσει το app.js */ }
+  if (S.customerId !== customerId || S.view !== 'racks' || ND.rackId !== rackId) return;
 
   const hostOptions = hosts.map((h) => {
     const target = h.hostname ? `${h.label} · ${h.hostname}` : h.label;
@@ -1043,7 +1076,7 @@ async function ndAudit() {
 function renderRacks() {
   const nd = S.nd || {};
   const tree = (nd && nd.tree) || { sites: [] };
-  const sites = Array.isArray(tree.sites) ? tree.sites : [];
+  const sites = workspaceSites();
   const racks = ndRacks();
   const rack = racks.find((r) => r.id === ND.rackId) || null;
   const tab = ND.tab || 'layout';

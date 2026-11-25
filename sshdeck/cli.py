@@ -174,29 +174,19 @@ def cmd_healthcheck(args) -> int:
         _startup_config()
         db.init()
         with db.db() as conn:
-            credentials = conn.execute("SELECT COUNT(*) AS n FROM credentials").fetchone()["n"]
             hosts = conn.execute("SELECT COUNT(*) AS n FROM hosts").fetchone()["n"]
             conn.execute("SELECT COUNT(*) FROM racks").fetchone()
 
-        key_files = [config.VAULT_KEY_PATH, config.VAULT_KEY_PATH.with_name(config.VAULT_KEY_PATH.name + ".dpapi")]
-        key_present = any(p.exists() and p.stat().st_size for p in key_files)
-        if credentials and not key_present:
-            print("healthcheck: vault key missing while credentials exist")
-            return 5
-        if credentials:
-            with db.db() as conn:
-                row = conn.execute(
-                    "SELECT secret_enc FROM credentials WHERE secret_enc <> '' LIMIT 1"
-                ).fetchone()
-            if row and row["secret_enc"]:
-                security.open_sealed(row["secret_enc"])   # raises when the key is wrong
-        probe = security.seal("healthcheck-probe")
-        if security.open_sealed(probe) != "healthcheck-probe":
-            print("healthcheck: vault round-trip failed")
-            return 3
+        security.verify_vault()
         if not (config.WEB_DIR / "index.html").exists():
             print("healthcheck: web assets missing")
             return 2
+    except security.VaultError as exc:
+        if str(exc) == "vault_key_missing":
+            print("healthcheck: vault key missing while encrypted records exist")
+            return 5
+        print(f"healthcheck: {exc}")
+        return 3
     except Exception as exc:
         print(f"healthcheck failed: {type(exc).__name__}: {exc}")
         return 1
