@@ -11,8 +11,7 @@
    columns, with pointer drag, wheel zoom, background pan and fit-to-view.
    Node positions live in localStorage under `muxivra.diagram.positions`.
 
-   Entry point: renderDiagram(force) — called by the shell and by the hooks at
-   the bottom of this file when the #page-diagram section becomes visible.
+   Entry point: renderDiagram(force), called when the shell shows the diagram.
 */
 'use strict';
 
@@ -125,36 +124,20 @@ function dgSvg(tag, attrs, text) {
 
 /* -------------------------------------------------------------- data access */
 function dgSites() {
-  const app = dgApp();
-  return (app && app.nd && app.nd.tree && Array.isArray(app.nd.tree.sites)) ? app.nd.tree.sites : [];
+  return workspaceSites();
 }
 
 function dgDevices() {
-  const out = [];
-  dgSites().forEach((site) => {
-    (site.racks || []).forEach((rack) => {
-      (rack.devices || []).forEach((dev) => {
-        const kind = DG_KINDS.indexOf(dev.kind) >= 0 ? dev.kind : 'other';
-        out.push({
-          id: Number(dev.id),
-          name: dev.name || `device ${dev.id}`,
-          kind,
-          units: Number(dev.units) || 1,
-          position: Number(dev.position) || 1,
-          vendor: dev.vendor || '',
-          model: dev.model || '',
-          mgmt_ip: dev.mgmt_ip || '',
-          origin: (dev.origin === 'planned') ? 'planned' : 'documented',
-          observed: !!dev.observed_at,
-          siteId: site.id,
-          siteName: site.name || 'No site',
-          rackId: rack.id,
-          rackName: rack.name || 'Rack',
-        });
-      });
-    });
-  });
-  return out;
+  return workspaceDevices().map((device) => ({
+    ...device,
+    id: Number(device.id),
+    name: device.name || `device ${device.id}`,
+    kind: DG_KINDS.includes(device.kind) ? device.kind : 'other',
+    units: Number(device.units) || 1,
+    position: device.rackId ? Number(device.position) || 1 : 0,
+    origin: device.origin === 'planned' ? 'planned' : 'documented',
+    observed: !!device.observed_at,
+  }));
 }
 
 function dgRacks() {
@@ -208,30 +191,28 @@ function dgWritePositions() {
   }
 }
 
-async function dgReload(force) {
+async function dgReload(force, customerId = S.customerId) {
   // A refresh must re-read the tree as well: devices/racks can be added while
   // the diagram is open. loadInventory() refetches S.nd.tree and S.nd.links.
-  if ((force || !dgSites().length) && typeof loadInventory === 'function') {
+  if (force || !S.nd) {
     try { await loadInventory(); } catch (_) { /* handled below via empty tree */ }
   }
+  if (customerId !== S.customerId) return;
   const app = dgApp();
-  const tree = (app && app.nd && app.nd.tree) ? app.nd.tree : { sites: [] };
-  if (!force && DG.links.length && DG.treeRef === tree) return;
-  DG.treeRef = tree;
-  DG.rackCache = new Map();
+  const tree = app.nd?.tree || null;
+  if (!force && DG.treeRef === tree && DG.linksLoaded) return;
+  const scope = { customerId };
 
   let links = [];
   let lastError = null;
-  try {
-    DG.planned = await api('/inventory/planned-links');
-  } catch (_) {
-    DG.planned = [];        // design links are optional; cables still render
-  }
+  const planned = await api('/inventory/planned-links', scope).catch(() => []);
+  if (customerId !== S.customerId) return;
   let loaded = false;
   try {
     let offset = 0;
     for (let page = 0; page < 40; page += 1) {
-      const res = await api(`/inventory/links/page?limit=500&offset=${offset}`);
+      const res = await api(`/inventory/links/page?limit=500&offset=${offset}`, scope);
+      if (customerId !== S.customerId) return;
       const batch = (res && Array.isArray(res.links)) ? res.links : [];
       links = links.concat(batch);
       loaded = true;
@@ -243,6 +224,7 @@ async function dgReload(force) {
     lastError = err;
     loaded = false;
   }
+  if (customerId !== S.customerId) return;
 
   if (!loaded) {
     const fallback = (app && app.nd && Array.isArray(app.nd.links)) ? app.nd.links : [];
@@ -254,6 +236,10 @@ async function dgReload(force) {
     links = fallback;
   }
 
+  DG.treeRef = tree;
+  DG.linksLoaded = true;
+  DG.rackCache = new Map();
+  DG.planned = planned;
   DG.links = links.filter((link) => link
     && Number.isFinite(Number(link.device_a_id))
     && Number.isFinite(Number(link.device_b_id)));
@@ -772,9 +758,9 @@ function dgNodeEl(node) {
   group.dataset.dgNode = String(node.id);
 
   const shape = dgShapeDef(node.kind);
+  const location = node.rackId ? `${node.siteName} / ${node.rackName} · U${node.position}` : node.siteName;
   group.appendChild(dgSvg('title', null,
-    `${node.name} · ${node.kind}${node.mgmt_ip ? ` · ${node.mgmt_ip}` : ''}`
-    + ` · ${node.siteName} / ${node.rackName} · U${node.position}`));
+    `${node.name} · ${node.kind}${node.mgmt_ip ? ` · ${node.mgmt_ip}` : ''} · ${location}`));
   group.appendChild(dgSvg('path', { class: 'dg-halo', d: shape.d }));
   group.appendChild(dgSvg('path', { class: 'dg-shape', d: shape.d }));
   if (shape.decor.length) {
@@ -1485,7 +1471,7 @@ function dgRenderPanel() {
     ['Type', DG_KIND_LABEL[node.kind] || node.kind],
     ['Site', node.siteName],
     ['Rack', node.rackName],
-    ['Position', `U${node.position}${node.units > 1 ? `–U${node.position + node.units - 1}` : ''} · ${node.units}U`],
+    ['Position', node.rackId ? `U${node.position}${node.units > 1 ? `–U${node.position + node.units - 1}` : ''} · ${node.units}U` : 'Unplaced'],
     ['Vendor', node.vendor || '—'],
     ['Model', node.model || '—'],
     ['Mgmt IP', node.mgmt_ip || '—'],
@@ -1495,7 +1481,7 @@ function dgRenderPanel() {
   panel.innerHTML = `<header class="dg-panel-head">
       <div>
         <h3>${dgEsc(node.name)}</h3>
-        <p>${dgEsc(node.siteName)} · ${dgEsc(node.rackName)}</p>
+        <p>${dgEsc(node.rackId ? `${node.siteName} · ${node.rackName}` : node.siteName)}</p>
       </div>
       <button class="icon-btn" data-dg-act="close-panel" title="Close">✕</button>
     </header>
@@ -1504,14 +1490,16 @@ function dgRenderPanel() {
         ${rows.map(([label, value]) => `<dt>${label}</dt><dd>${dgEsc(value)}</dd>`).join('')}
         <dt>Host</dt><dd id="dg-host-label" class="mono muted">—</dd>
       </dl>
-      <h4>Ports <span id="dg-port-summary" class="muted"></span></h4>
-      <div class="dg-ports" id="dg-port-list"><p class="hint">Loading ports…</p></div>
-      <button class="btn primary sm wide" data-dg-act="open-rack">Open rack</button>
+      ${node.rackId ? `<h4>Ports <span id="dg-port-summary" class="muted"></span></h4>
+        <div class="dg-ports" id="dg-port-list"><p class="hint">Loading ports…</p></div>
+        <button class="btn primary sm wide" data-dg-act="open-rack">Open rack</button>` : ''}
     </div>`;
   panel.classList.remove('hidden');
 
+  if (!node.rackId) return;
+  const customerId = S.customerId;
   dgLoadRack(node.rackId).then((rack) => {
-    if (DG.selected !== node.id) return;
+    if (DG.selected !== node.id || S.customerId !== customerId) return;
     dgFillPanel(rack, node);
   });
 }
@@ -1551,16 +1539,9 @@ function dgLoadRack(rackId) {
   return DG.rackCache.get(rackId);
 }
 
-function dgLeavePage() {
-  // app.js only reveals pages; hide ours so it never covers the racks view.
-  const page = document.querySelector('#page-diagram');
-  if (page) page.classList.add('hidden');
-}
-
 async function dgOpenRack(deviceId) {
   const node = deviceId != null ? DG.nodeById.get(Number(deviceId)) : null;
-  if (!node) return;
-  dgLeavePage();
+  if (!node?.rackId) return;
   if (typeof ND !== 'undefined' && ND) {
     ND.rackId = node.rackId;
     ND.deviceId = node.id;
@@ -1579,7 +1560,6 @@ async function dgOpenRack(deviceId) {
 }
 
 function dgGotoRacks() {
-  dgLeavePage();
   if (typeof setView === 'function') setView('racks');
 }
 
@@ -1850,17 +1830,33 @@ async function renderDiagram(force) {
   if (!el) return;
   DG.el = el;
   if (!DG.built || !el.querySelector('.dg-shell')) dgShell(el);
-  if (DG.busy) return DG.busy;
+  const customerId = S.customerId;
+  if (DG.displayCustomer !== customerId) {
+    DG.displayCustomer = customerId;
+    DG.fitted = false;
+    DG.selected = null;
+    DG.linkPicked = null;
+    DG.filters.site = 'all';
+    DG.filters.rack = 'all';
+    DG.pos = null;
+    DG.paintedSig = null;
+    DG.nodeById = new Map();
+    for (const layer of Object.values(DG.layers)) layer.replaceChildren();
+    dgRenderPanel();
+  }
+  if (DG.busy) return DG.loadingCustomer === customerId ? DG.busy : DG.busy.then(() => renderDiagram(force));
+  DG.loadingCustomer = customerId;
 
   DG.busy = (async () => {
     try {
-      await dgReload(force === true || force === 'reload');
+      await dgReload(force === true || force === 'reload', customerId);
+      if (customerId !== S.customerId) return;
       dgSyncFilters();
       dgBuild();
       if (force || DG.paintedSig !== dgSig() || !DG.edgeEls) dgPaint();
       if (!DG.fitted) dgFit();
     } catch (err) {
-      dgError(err);
+      if (customerId === S.customerId) dgError(err);
     } finally {
       DG.busy = null;
     }
@@ -1868,36 +1864,4 @@ async function renderDiagram(force) {
   return DG.busy;
 }
 
-/* --------------------------------------------------------------- shell hook
-   The rail button only toggles visibility; render on demand when the section
-   becomes visible (click on the rail button, class change, or a direct call). */
-(function dgHook() {
-  const onRailClick = (event) => {
-    const button = event.target.closest ? event.target.closest('.rail-btn[data-view]') : null;
-    if (!button) return;
-    const view = button.dataset.view;
-    const page = document.querySelector('#page-diagram');
-    if (!page) return;
-    if (view === 'diagram') {
-      requestAnimationFrame(() => { renderDiagram(); });
-      return;
-    }
-    // This module owns #page-diagram visibility; keep it from covering other views.
-    page.classList.add('hidden');
-  };
-
-  document.addEventListener('click', onRailClick, true);
-
-  const watch = () => {
-    const page = document.querySelector('#page-diagram');
-    if (!page) return;
-    new MutationObserver(() => {
-      if (!page.classList.contains('hidden')) renderDiagram();
-    }).observe(page, { attributes: true, attributeFilter: ['class'] });
-  };
-
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', watch);
-  else watch();
-
-  window.addEventListener('resize', () => { if (DG.fitted) dgApplyView(); });
-})();
+window.addEventListener('resize', () => { if (DG.fitted) dgApplyView(); });

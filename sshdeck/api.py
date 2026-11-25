@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from queue import Empty, Full, Queue
 
 from fastapi import (
     APIRouter,
@@ -166,6 +167,10 @@ class UpdateReleaseIn(BaseModel):
     signature: dict | None = None
 
 
+class UpdateApplyIn(BaseModel):
+    prepare_id: str = Field(min_length=1, max_length=96)
+
+
 class PathIn(BaseModel):
     path: str
 
@@ -225,7 +230,7 @@ def row_to_host(row, credential_name: str | None = None) -> dict:
         "last_connected_at": row["last_connected_at"],
         "updated_at": row["updated_at"],
         "fingerprint": (
-            sshconn.known_fingerprint(row["hostname"], row["port"])
+            sshconn.known_fingerprint(row["hostname"], row["port"], row["customer_id"])
             if (row["protocol"] or "ssh") == "ssh"
             else None
         ),
@@ -246,15 +251,16 @@ def credential_name_for(conn, credential_id) -> str | None:
     return row["name"] if row else None
 
 
-def load_target(conn, host_id: int) -> Target:
+def load_target(conn, host_id: int, *, include_credentials: bool = True) -> Target:
     row = fetch_host(conn, host_id)
     cred = None
     if row["credential_id"]:
         cred = conn.execute("SELECT * FROM credentials WHERE id = ?", (row["credential_id"],)).fetchone()
     kind = cred["kind"] if cred else "none"
-    secret = security.open_sealed(cred["secret_enc"]) if cred else ""
+    secret = security.open_sealed(cred["secret_enc"]) if cred and include_credentials else ""
     passphrase = (
-        security.open_sealed(cred["passphrase_enc"]) if cred and cred["passphrase_enc"] else ""
+        security.open_sealed(cred["passphrase_enc"])
+        if cred and cred["passphrase_enc"] and include_credentials else ""
     )
     username = row["username"] or (cred["username"] if cred else "")
     return Target(
@@ -297,11 +303,12 @@ def require_customer(request: Request | None, *pairs) -> int:
         return cid
 
 
-def target_or_404(host_id: int, request: Request | None = None) -> Target:
+def target_or_404(host_id: int, request: Request | None = None, *,
+                  include_credentials: bool = True) -> Target:
     if request is not None:
         require_customer(request, ("host", host_id))
     with db.db() as conn:
-        return load_target(conn, host_id)
+        return load_target(conn, host_id, include_credentials=include_credentials)
 
 
 def sftp_target(host_id: int, request: Request | None = None) -> Target:
@@ -379,14 +386,17 @@ def login(payload: LoginIn, request: Request, response: Response):
     with db.db() as conn:
         if not security.user_exists(conn):
             raise HTTPException(status_code=409, detail="not_initialized")
-        if not security.check_login(conn, payload.password):
+        valid_password = security.check_login(conn, payload.password)
+        if not valid_password:
             record_login_failure(client_ip)
             db.log_event(None, "login_failed", client_ip, conn=conn)
-            raise HTTPException(status_code=401, detail="bad_password")
-        security.purge_expired(conn)
-        token = security.create_session(conn, request.headers.get("user-agent", ""))
-        db.log_event(None, "login_ok", "", conn=conn)
-        reset_login_failures(client_ip)
+        else:
+            security.purge_expired(conn)
+            token = security.create_session(conn, request.headers.get("user-agent", ""))
+            db.log_event(None, "login_ok", "", conn=conn)
+            reset_login_failures(client_ip)
+    if not valid_password:
+        raise HTTPException(status_code=401, detail="bad_password")
     set_session_cookie(response, request, token)
     return {"ok": True}
 
@@ -479,8 +489,6 @@ def vault_unlock():
     """Re-open the vault (DPAPI/0600 key access) and prove it works."""
     try:
         security.unlock()
-        proof = security.seal("unlock-probe")
-        security.open_sealed(proof)
     except security.VaultError as exc:
         raise HTTPException(status_code=409, detail=f"vault:{exc}")
     return {"ok": True, "locked": False, **security.vault_state()}
@@ -630,42 +638,31 @@ def list_hosts(request: Request):
 
 @api.post("/hosts", status_code=201)
 def create_host(payload: HostIn, request: Request):
-    now = db.now()
     with db.db() as conn:
-        cid = customers.request_customer(conn, request)
-        if payload.credential_id:
-            # a host may only reference a credential of its own customer
-            require_credential(cid, conn, payload.credential_id)
-        cur = conn.execute(
-            "INSERT INTO hosts(label, protocol, hostname, port, username, credential_id, group_name, tags, "
-            "color, notes, serial_port, baud, bytesize, parity, stopbits, flow, uuid, customer_id,"
-            " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                payload.label.strip(),
-                payload.protocol,
-                payload.hostname.strip(),
-                payload.port,
-                payload.username.strip(),
-                payload.credential_id,
-                payload.group_name,
-                ",".join(t.strip() for t in payload.tags.split(",") if t.strip()),
-                payload.color,
-                payload.notes,
-                payload.serial_port.strip(),
-                payload.baud,
-                payload.bytesize,
-                payload.parity,
-                payload.stopbits,
-                payload.flow,
-                uuid.uuid4().hex,
-                customers.request_customer(conn, request),
-                now,
-                now,
-            ),
-        )
-        db.log_event(cur.lastrowid, "host_created", payload.label.strip(), conn=conn)
-        row = fetch_host(conn, cur.lastrowid)
-        return row_to_host(row, credential_name_for(conn, row["credential_id"]))
+        return insert_host(conn, customers.request_customer(conn, request), payload)
+
+
+def insert_host(conn, customer_id: int, payload: HostIn) -> dict:
+    """Create a profile within the caller's transaction."""
+    now = db.now()
+    if payload.credential_id:
+        require_credential(customer_id, conn, payload.credential_id)
+    cur = conn.execute(
+        "INSERT INTO hosts(label, protocol, hostname, port, username, credential_id, group_name, tags, "
+        "color, notes, serial_port, baud, bytesize, parity, stopbits, flow, uuid, customer_id,"
+        " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            payload.label.strip(), payload.protocol, payload.hostname.strip(), payload.port,
+            payload.username.strip(), payload.credential_id, payload.group_name,
+            ",".join(t.strip() for t in payload.tags.split(",") if t.strip()),
+            payload.color, payload.notes, payload.serial_port.strip(), payload.baud,
+            payload.bytesize, payload.parity, payload.stopbits, payload.flow,
+            uuid.uuid4().hex, customer_id, now, now,
+        ),
+    )
+    db.log_event(cur.lastrowid, "host_created", payload.label.strip(), conn=conn)
+    row = fetch_host(conn, cur.lastrowid)
+    return row_to_host(row, credential_name_for(conn, row["credential_id"]))
 
 
 @api.get("/hosts/{host_id}")
@@ -678,7 +675,7 @@ def get_host(host_id: int, request: Request):
         ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="not_found")
-        return _host_out(row)
+        return row_to_host(row, row["credential_name"])
 
 
 @api.put("/hosts/{host_id}")
@@ -730,13 +727,13 @@ def delete_host(host_id: int, request: Request):
 @api.post("/hosts/{host_id}/trust")
 def trust_host_key(host_id: int, payload: dict, request: Request):
     """Approve the exact fingerprint the user was shown, inside this customer's store."""
-    require_customer(request, ("host", host_id))
-    target = target_or_404(host_id)
+    target = target_or_404(host_id, request, include_credentials=False)
     fingerprint = str(payload.get("fingerprint") or "").strip()
     if not fingerprint:
         raise HTTPException(status_code=422, detail="fingerprint_required")
     try:
-        stored = sshconn.trust_pending_key(host_id, fingerprint, target.customer_id)
+        stored = sshconn.trust_pending_key(host_id, fingerprint, target.customer_id,
+                                          hostname=target.hostname, port=target.port)
     except SshError as exc:
         raise HTTPException(status_code=409, detail=f"{exc.code}: {exc.message}")
     with db.db() as conn:
@@ -746,9 +743,8 @@ def trust_host_key(host_id: int, payload: dict, request: Request):
 
 @api.delete("/hosts/{host_id}/trust")
 def forget_host_key(host_id: int, request: Request):
-    require_customer(request, ("host", host_id))
     """Drop trust for this host:port only — other ports of the same host keep theirs."""
-    target = target_or_404(host_id)
+    target = target_or_404(host_id, request, include_credentials=False)
     removed = sshconn.forget_host_key(target.hostname, int(target.port or 22), target.customer_id)
     with db.db() as conn:
         db.log_event(host_id, "host_key_forgotten", f"{target.hostname}:{target.port}", conn=conn)
@@ -757,7 +753,7 @@ def forget_host_key(host_id: int, request: Request):
 
 @api.get("/hosts/{host_id}/trust")
 def host_trust_state(host_id: int, request: Request):
-    target = target_or_404(host_id, request)
+    target = target_or_404(host_id, request, include_credentials=False)
     return {
         "hostname": target.hostname,
         "port": int(target.port or 22),
@@ -789,7 +785,7 @@ def open_host_web(host_id: int, payload: dict | None = None, request: Request = 
 
 @api.post("/hosts/{host_id}/ping")
 async def ping_host(host_id: int, request: Request):
-    target = target_or_404(host_id, request)
+    target = target_or_404(host_id, request, include_credentials=False)
     if target.protocol == "serial":
         known = {p["device"] for p in transports.serial_ports()}
         exists = target.serial_port in known or os.path.exists(target.serial_port)
@@ -797,7 +793,8 @@ async def ping_host(host_id: int, request: Request):
     try:
         info = await asyncio.to_thread(transports.tcp_probe, target.hostname, target.port)
         if target.protocol == "ssh":
-            info["fingerprint"] = sshconn.known_fingerprint(target.hostname, target.port)
+            info["fingerprint"] = sshconn.known_fingerprint(target.hostname, target.port,
+                                                           target.customer_id)
         return {"reachable": True, "protocol": target.protocol, **info}
     except OSError as exc:
         return {"reachable": False, "protocol": target.protocol, "error": str(exc)}
@@ -984,27 +981,29 @@ def _windows_host() -> bool:
 
 
 @api.post("/update/apply")
-def update_apply():
-    """Launch apply-update.cmd and let it restart us: one click, no manual file."""
-    script = config.STAGING_DIR / "apply-update.cmd"
-    if not script.exists():
-        raise HTTPException(status_code=409, detail="nothing_staged")
+def update_apply(payload: UpdateApplyIn):
+    """Launch the prepared Windows helper for this session."""
     if not _windows_host():
         raise HTTPException(
             status_code=409,
             detail="apply_requires_windows: the staged updater is a Windows script. "
                    "Run it on the Windows install that produced it.",
         )
-    try:
+    def launch(script):
         subprocess.Popen(["cmd", "/c", "start", "", str(script)], close_fds=True,
                          creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+
+    try:
+        script = update.apply_prepared(config.STAGING_DIR, payload.prepare_id, launch)
+    except update.UpdateError as exc:
+        raise HTTPException(status_code=409, detail=f"{exc.code}: {exc.message}") from exc
     except OSError as exc:
         raise HTTPException(status_code=502, detail=f"apply_failed: {exc}") from exc
     db.log_event(None, "update_apply_started", str(script))
     # Ο helper περιμένει να κλείσει ΤΟ ΔΙΚΟ ΜΑΣ pid: κλείνουμε το παράθυρο και
     # τερματίζουμε, αλλιώς το swap δεν ξεκινά ποτέ.
     desktop_pid = os.environ.get("MUXIVRA_DESKTOP_PID")
-    if desktop_pid and int(desktop_pid) == os.getpid():
+    if desktop_pid == str(os.getpid()):
         from . import desktop
 
         desktop.request_shutdown()
@@ -1020,39 +1019,16 @@ async def update_prepare(payload: UpdateReleaseIn):
     try:
         with db.db() as conn:
             token = _update_token(conn)
-        manifest = await asyncio.to_thread(update.fetch_manifest, release)
-        archive = await asyncio.to_thread(
-            update.download_verified, release, manifest, config.STAGING_DIR, None, 300.0, token
-        )
-        root = await asyncio.to_thread(update.stage, archive, config.STAGING_DIR)
-        # consistent snapshot through the SQLite backup API, kept with the staged
-        # build so a rollback can restore the database that matches the old binaries
-        snapshot = config.STAGING_DIR / "db-before-update.sqlite"
-        if config.DB_PATH.exists():
-            await asyncio.to_thread(db.snapshot, snapshot)
-        script = await asyncio.to_thread(
-            update.write_apply_script,
-            update.bundle_root(),
-            root,
-            os.getpid(),
-            config.STAGING_DIR,
-            None,
-            snapshot if config.DB_PATH.exists() else None,
-            config.DB_PATH,
+        prepared = await asyncio.to_thread(
+            update.prepare_release, release, config.STAGING_DIR, config.DB_PATH, token,
         )
     except update.UpdateError as exc:
         with db.db() as conn:
             db.log_event(conn=conn, host_id=None, kind="update_rejected", detail=f"{exc.code}")
         raise HTTPException(status_code=502, detail=f"{exc.code}: {exc.message}")
     with db.db() as conn:
-        db.log_event(None, "update_prepared", f"{manifest['version']} {manifest['sha256'][:12]}", conn=conn)
-    return {
-        "version": manifest["version"],
-        "archive": str(archive),
-        "staged": str(root),
-        "script": str(script),
-        "pid": os.getpid(),
-    }
+        db.log_event(None, "update_prepared", f"{prepared['version']} {prepared['sha256'][:12]}", conn=conn)
+    return {key: value for key, value in prepared.items() if key != "sha256"}
 
 
 # --------------------------------------------------------------------- SFTP
@@ -1277,28 +1253,27 @@ async def terminal_endpoint(ws: WebSocket, host_id: int, cols: int = 120, rows: 
     if not _ws_authorized(ws):
         await ws.close(code=4401)
         return
-    # a socket carries its own immutable scope: the tab keeps its customer even
-    # if the operator switches the selector afterwards
-    scope = customer or ws.query_params.get("customer") or ws.headers.get("x-customer-id")
-    if scope:
-        if not str(scope).isdigit():
-            await ws.close(code=4404)
-            return
-        try:
-            with db.db() as conn:
-                customers.assert_same_customer(conn, int(scope), ("host", host_id))
-        except customers.CustomerError:
-            await ws.close(code=4404)   # not this customer's host
-            return
+    # A tab's scope is established once, independent of the active customer picker.
     try:
-        target = target_or_404(host_id)
-    except HTTPException:
+        with db.db() as conn:
+            cid = customers.request_customer(conn, ws, explicit=int(customer) if customer else None)
+            customers.assert_same_customer(conn, cid, ("host", host_id))
+            target = load_target(conn, host_id)
+    except (HTTPException, customers.CustomerError, ValueError):
         await ws.close(code=4404)
+        return
+    except security.VaultError as exc:
+        await ws.accept()
+        await ws.send_json({"type": "error", "code": "vault", "message": str(exc)})
+        await ws.close(code=4000)
         return
 
     await ws.accept()
     loop = asyncio.get_running_loop()
-    queue: asyncio.Queue = asyncio.Queue()
+    output: Queue = Queue(maxsize=128)
+    output_ready = asyncio.Event()
+    overflow = threading.Event()
+    closing = threading.Event()
 
     try:
         session = await asyncio.to_thread(transports.open_session, target, cols, rows)
@@ -1322,34 +1297,28 @@ async def terminal_endpoint(ws: WebSocket, host_id: int, cols: int = 120, rows: 
         await ws.close(code=4000)
         return
 
-    session.on_data = lambda chunk: loop.call_soon_threadsafe(queue.put_nowait, ("data", chunk))
-    session.on_close = lambda: loop.call_soon_threadsafe(queue.put_nowait, ("close", None))
-    session.start()
+    def publish(kind, chunk=None) -> None:
+        if closing.is_set() or overflow.is_set():
+            return
+        try:
+            output.put_nowait((kind, chunk))
+        except Full:
+            overflow.set()
+        loop.call_soon_threadsafe(output_ready.set)
 
-    with db.db() as conn:
-        conn.execute("UPDATE hosts SET last_connected_at = ? WHERE id = ?", (db.now(), host_id))
-        db.log_event(host_id, "session_open", target.describe(), conn=conn)
+    session.on_data = lambda chunk: publish("data", chunk)
+    session.on_close = lambda: publish("close")
 
-    await ws.send_json(
-        {
-            "type": "ready",
-            "host": target.label,
-            "protocol": target.protocol,
-            "target": target.describe(),
-            "fingerprint": (
-                sshconn.known_fingerprint(target.hostname, target.port)
-                if target.protocol == "ssh"
-                else None
-            ),
-            "cols": cols,
-            "rows": rows,
-            "started_at": time.time(),
-        }
-    )
-
-    async def pump() -> None:
+    async def pump() -> int | None:
         while True:
-            kind, chunk = await queue.get()
+            await output_ready.wait()
+            if overflow.is_set():
+                return 1013
+            try:
+                kind, chunk = output.get_nowait()
+            except Empty:
+                output_ready.clear()
+                continue
             if kind == "close":
                 await ws.send_json({"type": "closed"})
                 return
@@ -1357,29 +1326,56 @@ async def terminal_endpoint(ws: WebSocket, host_id: int, cols: int = 120, rows: 
                 {"type": "data", "b64": base64.b64encode(chunk).decode("ascii")}
             )
 
-    async def listen() -> None:
+    async def listen() -> int | None:
         while True:
             message = await ws.receive_json()
+            if not await asyncio.to_thread(_ws_authorized, ws):
+                return 4401
             mtype = message.get("type")
             if mtype == "input":
-                session.write(message.get("data", ""))
+                await asyncio.to_thread(session.write, message.get("data", ""))
             elif mtype == "resize":
-                session.resize(int(message.get("cols", cols)), int(message.get("rows", rows)))
+                await asyncio.to_thread(
+                    session.resize, int(message.get("cols", cols)), int(message.get("rows", rows)),
+                )
             elif mtype == "ping":
                 await ws.send_json({"type": "pong"})
 
-    tasks = [asyncio.create_task(pump()), asyncio.create_task(listen())]
+    async def watch_session() -> int:
+        while await asyncio.to_thread(_ws_authorized, ws):
+            await asyncio.sleep(2)
+        return 4401
+
+    tasks = []
     try:
+        if not await asyncio.to_thread(_ws_authorized, ws):
+            await ws.close(code=4401)
+            return
+        await ws.send_json({
+            "type": "ready", "host": target.label, "protocol": target.protocol, "target": target.describe(),
+            "fingerprint": (sshconn.known_fingerprint(target.hostname, target.port, target.customer_id)
+                            if target.protocol == "ssh" else None),
+            "cols": cols, "rows": rows, "started_at": time.time(),
+        })
+        with db.db() as conn:
+            conn.execute("UPDATE hosts SET last_connected_at = ? WHERE id = ?", (db.now(), host_id))
+            db.log_event(host_id, "session_open", target.describe(), conn=conn)
+        session.start()
+        tasks = [asyncio.create_task(pump()), asyncio.create_task(listen()), asyncio.create_task(watch_session())]
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for task in done:
-            exc = task.exception()
-            if exc and not isinstance(exc, WebSocketDisconnect):
-                pass
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        results = await asyncio.gather(*done, return_exceptions=True)
+        code = next((result for result in results if result in (4401, 1013)), None)
+        if code is not None:
+            await ws.close(code=code)
     except WebSocketDisconnect:
         pass
     finally:
+        closing.set()
         for task in tasks:
             task.cancel()
-        session.close()
+        await asyncio.to_thread(session.close)
         with db.db() as conn:
             db.log_event(host_id, "session_close", f"{target.username}@{target.hostname}", conn=conn)

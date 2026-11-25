@@ -22,20 +22,20 @@ def export_payload(conn: sqlite3.Connection, customer_id: int | None = None) -> 
         params = (int(customer_id),)
 
     sites = [dict(r) for r in conn.execute(
-        "SELECT s.id, s.name, s.note FROM sites s" + scope + " ORDER BY s.id", params
+        "SELECT s.id, s.name, s.note, s.planning_only FROM sites s" + scope + " ORDER BY s.id", params
     )]
     site_ids = [s["id"] for s in sites]
     placeholders = ",".join("?" * len(site_ids)) or "NULL"
 
     racks = [dict(r) for r in conn.execute(
-        f"SELECT id, site_id, name, units FROM racks WHERE site_id IN ({placeholders}) ORDER BY id",
+        f"SELECT id, site_id, name, units, planning_only FROM racks WHERE site_id IN ({placeholders}) ORDER BY id",
         site_ids,
     )]
     rack_ids = [r["id"] for r in racks]
     rack_ph = ",".join("?" * len(rack_ids)) or "NULL"
 
     devices = [dict(r) for r in conn.execute(
-        "SELECT id, rack_id, name, kind, units, position, note, host_id, vendor, model, mgmt_ip"
+        "SELECT id, rack_id, name, kind, units, position, note, host_id, vendor, model, mgmt_ip, origin"
         f" FROM devices WHERE rack_id IN ({rack_ph}) ORDER BY id",
         rack_ids,
     )]
@@ -176,11 +176,18 @@ def _validate_rows(payload: dict) -> None:
             raise ImportError_("bad_format", f'Every entry in "{collection}" needs an integer id.')
         if len(set(ids)) != len(ids):
             raise ImportError_("duplicate_id", f'Duplicate ids in "{collection}".')
+    for row in payload["sites"] + payload["racks"]:
+        if row.get("planning_only", 0) not in (0, 1):
+            raise ImportError_("bad_format", "Invalid planning container.")
     rack_ids = {row["id"] for row in payload["racks"]}
+    planning_racks = {row["id"] for row in payload["racks"] if row.get("planning_only")}
+    planning_sites = {row["id"] for row in payload["sites"] if row.get("planning_only")}
     # geometry is validated against the MERGED state: an existing rack may be
     # smaller than the payload claims, and it may already be occupied
     rack_units: dict = {}
     for rack in payload["racks"]:
+        if rack.get("site_id") in planning_sites and rack["id"] not in planning_racks:
+            raise ImportError_("bad_format", "A physical rack needs a documented site.")
         units = int(_num(rack.get("units"), "units", rack["id"], 42))
         if not 1 <= units <= 60:
             raise ImportError_("bad_geometry", f"Rack #{rack['id']} has an invalid height.")
@@ -189,6 +196,11 @@ def _validate_rows(payload: dict) -> None:
     for device in payload["devices"]:
         if device.get("rack_id") not in rack_ids:
             raise ImportError_("dangling_ref", f"Device #{device['id']} points to an unknown rack.")
+        origin = device.get("origin", "documented")
+        if origin not in ("documented", "planned") or (
+            device["rack_id"] in planning_racks and origin != "planned"
+        ):
+            raise ImportError_("bad_format", f"Invalid origin for device #{device['id']}.")
         raw_kind = (device.get("kind") or "switch").strip().lower()
         if raw_kind not in KINDS and raw_kind not in LEGACY_DEVICE_KINDS:
             raise ImportError_("bad_device_kind", f"Unknown device kind: {device.get('kind')}")
@@ -199,6 +211,8 @@ def _validate_rows(payload: dict) -> None:
 
     port_ids = {row["id"] for row in payload["ports"]}
     device_ids = {row["id"] for row in payload["devices"]}
+    unplaced_devices = {row["id"] for row in payload["devices"] if row["rack_id"] in planning_racks}
+    unplaced_ports = {row["id"] for row in payload["ports"] if row.get("device_id") in unplaced_devices}
     for port in payload["ports"]:
         if port.get("device_id") not in device_ids:
             raise ImportError_("dangling_ref", f"Port #{port['id']} points to an unknown device.")
@@ -208,6 +222,8 @@ def _validate_rows(payload: dict) -> None:
     for link in payload["links"]:
         if link.get("port_a") not in port_ids or link.get("port_b") not in port_ids:
             raise ImportError_("dangling_ref", f"Link #{link['id']} points to an unknown port.")
+        if link["port_a"] in unplaced_ports or link["port_b"] in unplaced_ports:
+            raise ImportError_("device_unplaced", f"Link #{link['id']} refers to an unplaced device.")
         if link.get("port_a") == link.get("port_b"):
             raise ImportError_("self_link", f"Link #{link['id']} connects a port to itself.")
         try:
@@ -242,11 +258,12 @@ def import_payload(conn: sqlite3.Connection, payload: dict, dry_run: bool = Fals
 
     for site in payload["sites"]:
         name = str(site.get("name") or "").strip()
+        planning = int(site.get("planning_only", 0))
         if not name:
             raise ImportError_("bad_format", "The site needs a name.")
         row = conn.execute(
-            "SELECT id FROM sites WHERE name = ? AND (customer_id IS ? OR ? IS NULL)",
-            (name, customer_id, customer_id),
+            "SELECT id FROM sites WHERE name = ? AND planning_only = ? AND (customer_id IS ? OR ? IS NULL)",
+            (name, planning, customer_id, customer_id),
         ).fetchone()
         if row:
             site_map[site["id"]] = row["id"]
@@ -254,8 +271,8 @@ def import_payload(conn: sqlite3.Connection, payload: dict, dry_run: bool = Fals
             report["conflicts"].append({"kind": "site", "name": name, "action": "kept-existing"})
         else:
             cur = conn.execute(
-                "INSERT INTO sites (name, note, customer_id) VALUES (?, ?, ?)",
-                (name, site.get("note") or "", customer_id),
+                "INSERT INTO sites (name, note, customer_id, planning_only) VALUES (?, ?, ?, ?)",
+                (name, site.get("note") or "", customer_id, planning),
             )
             site_map[site["id"]] = cur.lastrowid
             report["created"]["sites"] += 1
@@ -263,8 +280,10 @@ def import_payload(conn: sqlite3.Connection, payload: dict, dry_run: bool = Fals
     for rack in payload["racks"]:
         new_site = site_map[rack["site_id"]]
         name = str(rack.get("name") or "R1")
+        planning = int(rack.get("planning_only", 0))
         row = conn.execute(
-            "SELECT id FROM racks WHERE site_id = ? AND name = ?", (new_site, name)
+            "SELECT id FROM racks WHERE site_id = ? AND name = ? AND planning_only = ?",
+            (new_site, name, planning),
         ).fetchone()
         if row:
             rack_map[rack["id"]] = row["id"]
@@ -272,8 +291,8 @@ def import_payload(conn: sqlite3.Connection, payload: dict, dry_run: bool = Fals
             report["conflicts"].append({"kind": "rack", "name": name, "action": "kept-existing"})
         else:
             cur = conn.execute(
-                "INSERT INTO racks (site_id, name, units) VALUES (?, ?, ?)",
-                (new_site, name, int(rack.get("units") or 42)),
+                "INSERT INTO racks (site_id, name, units, planning_only) VALUES (?, ?, ?, ?)",
+                (new_site, name, int(rack.get("units") or 42), planning),
             )
             rack_map[rack["id"]] = cur.lastrowid
             report["created"]["racks"] += 1
@@ -304,27 +323,28 @@ def import_payload(conn: sqlite3.Connection, payload: dict, dry_run: bool = Fals
             report["conflicts"].append({"kind": "device", "name": name, "action": "kept-existing"})
         else:
             # merged-state geometry: real rack height + already placed devices
-            rack_row = conn.execute("SELECT units FROM racks WHERE id = ?", (new_rack,)).fetchone()
+            rack_row = conn.execute("SELECT units, planning_only FROM racks WHERE id = ?", (new_rack,)).fetchone()
             actual_units = int(rack_row["units"])
             top = int(device.get("position") or 1) + int(device.get("units") or 1) - 1
-            if top > actual_units:
+            if not rack_row["planning_only"] and top > actual_units:
                 raise ImportError_(
                     "device_outside_rack",
                     f'Device "{name}" extends beyond the rack ({actual_units}U).',
                 )
-            for start_u, end_u, owner in _occupied(new_rack):
+            for start_u, end_u, owner in (() if rack_row["planning_only"] else _occupied(new_rack)):
                 if int(device.get("position") or 1) <= end_u and start_u <= top:
                     raise ImportError_(
                         "position_taken", f'Position of "{name}" is already taken by "{owner}".'
                     )
             cur = conn.execute(
-                """INSERT INTO devices (rack_id, name, kind, units, position, note, host_id, vendor, model, mgmt_ip)
-                   VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)""",
+                """INSERT INTO devices (rack_id, name, kind, units, position, note, host_id, vendor, model, mgmt_ip, origin)
+                   VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)""",
                 (
                     new_rack, name, normalize_device_kind(device.get("kind") or "switch"),
                     int(device.get("units") or 1),
                     int(device.get("position") or 1), device.get("note") or "",
                     device.get("vendor") or "", device.get("model") or "", device.get("mgmt_ip") or "",
+                    device.get("origin", "documented"),
                 ),
             )
             device_map[device["id"]] = cur.lastrowid

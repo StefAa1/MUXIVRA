@@ -15,8 +15,10 @@ import urllib.error
 import urllib.request
 
 TOKEN_TTL_SECONDS = 180
+DESKTOP_BACKGROUND = "#080a0e"
 _PENDING: dict[str, float] = {}
 _LOCK = threading.Lock()
+_SHUTDOWN = threading.Event()
 
 
 # ------------------------------------------------------------------ tokens
@@ -51,8 +53,11 @@ def start_server(port: int, log_level: str = "warning"):
 
     from .main import app
 
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level=log_level))
+    server = uvicorn.Server(uvicorn.Config(
+        app, host="127.0.0.1", port=port, log_level=log_level, timeout_graceful_shutdown=8,
+    ))
     thread = threading.Thread(target=server.run, name="sshdeck-engine", daemon=True)
+    server.engine_thread = thread
     thread.start()
     return server
 
@@ -71,15 +76,10 @@ def wait_ready(port: int, timeout: float = 25.0) -> bool:
 
 
 def request_shutdown(delay: float = 1.2) -> None:
-    """Κλείσε το παράθυρο και ΤΕΡΜΑΤΙΣΕ αυτή τη διεργασία.
-
-    Το apply-update.cmd περιμένει να εξαφανιστεί το PID μας· χωρίς αυτό η
-    ενημέρωση «κατεβαίνει» αλλά ποτέ δεν εγκαθίσταται.
-    """
-    import threading
-
+    """Close the window so the engine can finish before the updater swaps it."""
     def _stop() -> None:
         time.sleep(delay)
+        _SHUTDOWN.set()
         try:
             import webview                       # type: ignore
 
@@ -90,8 +90,6 @@ def request_shutdown(delay: float = 1.2) -> None:
                     pass
         except Exception:                        # noqa: BLE001 - no GUI here
             pass
-        time.sleep(0.5)
-        os._exit(0)                              # δίνει χειραφέτηση στο cmd
 
     threading.Thread(target=_stop, daemon=True, name="muxivra-shutdown").start()
 
@@ -237,6 +235,15 @@ def _open_edge_app(url: str, width: int = 1400, height: int = 860) -> bool:
     return False
 
 
+def _set_qt_background(window) -> None:
+    """Match Qt's document canvas to the app during loading and repaints."""
+    page = window.native.webview.page()
+    if hasattr(page, "setBackgroundColor"):
+        from qtpy.QtGui import QColor
+
+        page.setBackgroundColor(QColor(DESKTOP_BACKGROUND))
+
+
 def run(
     port: int | None = None,
     width: int = 1320,
@@ -257,6 +264,7 @@ def run(
         return 0
 
     port = port or free_port()
+    _SHUTDOWN.clear()
     server = start_server(port)
     if not wait_ready(port):
         server.should_exit = True
@@ -275,16 +283,23 @@ def run(
         for backend in order:
             url = f"http://127.0.0.1:{port}/?desktop_token={new_token()}"
             try:
-                webview.create_window(
+                if backend == "qt" and os.name == "nt":
+                    # Qt's D3D compositor can lose its context during a repaint.
+                    flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
+                    if "--disable-gpu" not in flags.split():
+                        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = f"{flags} --disable-gpu".strip()
+                window = webview.create_window(
                     "MUXIVRA",
                     url,
                     width=width,
                     height=height,
                     min_size=(960, 620),
-                    background_color="#080a0e",
+                    background_color=DESKTOP_BACKGROUND,
                     confirm_close=False,
                     js_api=bridge,
                 )
+                if backend == "qt":
+                    window.events.before_show += _set_qt_background
                 webview.start(gui=backend, debug=debug, private_mode=False)
                 _log(f"backend {backend} exited normally")
                 return 0
@@ -299,8 +314,10 @@ def run(
         if not _open_edge_app(url, width, height):
             _log("no webview backend and no Edge — opening the system browser")
             webbrowser.open(url)
-        while True:
-            time.sleep(1)
+        _SHUTDOWN.wait()
+        return 0
     finally:
         server.should_exit = True
-        time.sleep(0.3)
+        thread = getattr(server, "engine_thread", None)
+        if thread is not None:
+            thread.join(timeout=10)

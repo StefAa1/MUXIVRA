@@ -3,9 +3,11 @@ import io
 import os
 import socket
 import stat
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import paramiko
 
@@ -89,8 +91,9 @@ class _PendingKeyPolicy(paramiko.MissingHostKeyPolicy):
         raise HostKeyUnknown(hostname, self.fingerprint, key.get_name(), self.host_id)
 
 
-# unknown keys awaiting explicit approval: (host_id, fingerprint) -> (expiry, hostname, key)
-_PENDING_KEYS: dict[tuple[int | None, str], tuple[float, str, object]] = {}
+# Unknown keys awaiting explicit approval, scoped to the current connection profile.
+_PENDING_KEYS: dict[tuple[int | None, int | None, str], tuple[float, str, paramiko.PKey]] = {}
+_PENDING_LOCK = threading.Lock()
 PENDING_TTL_SECONDS = 300
 
 
@@ -110,11 +113,12 @@ class TofuPolicy(paramiko.MissingHostKeyPolicy):
 def store_host_key(hostname: str, key, host_id: int | None = None,
                    customer_id: int | None = None) -> str:
     """Persist one host key (0600) and log it. Returns the fingerprint."""
-    path = _ensure_known_hosts(customer_id)
-    keys = paramiko.HostKeys(path)
-    keys.add(hostname, key.get_name(), key)
-    keys.save(path)
-    os.chmod(path, 0o600)
+    path = config.known_hosts_file(customer_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with config.file_lock(path.with_suffix(".lock")):
+        keys = paramiko.HostKeys(path if path.exists() else None)
+        keys.add(hostname, key.get_name(), key)
+        _save_host_keys(path, keys)
     fingerprint = security.fingerprint_of(key.asbytes())
     from . import db
 
@@ -122,79 +126,91 @@ def store_host_key(hostname: str, key, host_id: int | None = None,
     return fingerprint
 
 
-def remember_pending_key(host_id: int | None, hostname: str, key) -> str:
+def _save_host_keys(path: Path, keys: paramiko.HostKeys) -> None:
+    fd, filename = tempfile.mkstemp(dir=path.parent)
+    os.close(fd)
+    temporary = Path(filename)
+    try:
+        keys.save(temporary)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _host_key_name(hostname: str, port: int) -> str:
+    return hostname if port == 22 else f"[{hostname}]:{port}"
+
+
+def remember_pending_key(host_id: int | None, hostname: str, key,
+                         customer_id: int | None = None) -> str:
     fingerprint = security.fingerprint_of(key.asbytes())
-    _PENDING_KEYS[(host_id, fingerprint)] = (time.time() + PENDING_TTL_SECONDS, hostname, key)
+    now = time.monotonic()
+    with _PENDING_LOCK:
+        for identity, (expires, _, _) in list(_PENDING_KEYS.items()):
+            if expires < now:
+                del _PENDING_KEYS[identity]
+        _PENDING_KEYS[(customer_id, host_id, fingerprint)] = (now + PENDING_TTL_SECONDS, hostname, key)
     return fingerprint
 
 
 def trust_pending_key(host_id: int | None, fingerprint: str,
-                      customer_id: int | None = None) -> str:
+                      customer_id: int | None = None, *, hostname: str | None = None,
+                      port: int = 22) -> str:
     """Approve a key the user just saw, matching the exact fingerprint."""
-    entry = _PENDING_KEYS.get((host_id, fingerprint))
+    identity = (customer_id, host_id, fingerprint)
+    with _PENDING_LOCK:
+        entry = _PENDING_KEYS.pop(identity, None)
     if not entry:
         raise SshError("no_pending_key", "That fingerprint is not pending — retry the connection.")
-    expiry, hostname, key = entry
-    if expiry < time.time():
-        _PENDING_KEYS.pop((host_id, fingerprint), None)
+    expiry, pending_host, key = entry
+    if expiry < time.monotonic():
         raise SshError("pending_key_expired", "The confirmation expired — try again.")
-    stored = store_host_key(hostname, key, host_id, customer_id)
-    _PENDING_KEYS.pop((host_id, fingerprint), None)
-    return stored
+    if hostname is not None and pending_host != _host_key_name(hostname, port):
+        raise SshError("pending_key_changed", "The connection profile changed — try again.")
+    try:
+        return store_host_key(pending_host, key, host_id, customer_id)
+    except (OSError, SshError):
+        with _PENDING_LOCK:
+            _PENDING_KEYS.setdefault(identity, entry)
+        raise
 
 
 def forget_host_key(hostname: str, port: int = 22, customer_id: int | None = None) -> bool:
     """Remove trust for exactly this host:port (other ports stay untouched)."""
-    path = _ensure_known_hosts(customer_id)
-    keys = paramiko.HostKeys(path)
-    entries = [hostname] if port == 22 else [f"[{hostname}]:{port}"]
-    removed = False
-    for entry in entries:
-        if keys.lookup(entry):
-            del keys[entry]
-            removed = True
-    if removed:
-        keys.save(path)
-        os.chmod(path, 0o600)
-    return removed
+    return bool(forget_host_keys(hostname, port, customer_id))
 
 
 def known_fingerprint(hostname: str, port: int = 22,
                       customer_id: int | None = None) -> str | None:
-    path = _ensure_known_hosts(customer_id)
-    keys = paramiko.HostKeys(path)
-    candidates = [hostname] if port == 22 else []
-    candidates.append(f"[{hostname}]:{port}")
-    for name in candidates:
-        entry = keys.lookup(name)
+    path = config.known_hosts_file(customer_id)
+    if path.exists():
+        with config.file_lock(path.with_suffix(".lock")):
+            entry = paramiko.HostKeys(path).lookup(_host_key_name(hostname, port))
         if entry:
-            # paramiko >= 3.2 returns a mapping of key-type -> PKey
-            for key in entry.values():
-                return security.fingerprint_of(key.asbytes())
+            return security.fingerprint_of(next(iter(entry.values())).asbytes())
     return None
 
 
-def forget_host_keys(hostname: str, port: int = 22) -> int:
-    """Drop every known_hosts line that matches host:port. Returns lines removed."""
-    path = _ensure_known_hosts()
-    names = {hostname, f"[{hostname}]:{port}"}
-    kept, removed = [], 0
-    with open(path, "r", encoding="utf-8") as fh:
-        for line in fh:
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#"):
-                kept.append(line)
+def forget_host_keys(hostname: str, port: int = 22, customer_id: int | None = None) -> int:
+    """Remove all key types for the selected host:port and return their count."""
+    path = config.known_hosts_file(customer_id)
+    if not path.exists():
+        return 0
+    with config.file_lock(path.with_suffix(".lock")):
+        keys = paramiko.HostKeys(path)
+        name = _host_key_name(hostname, port)
+        if not keys.lookup(name):
+            return 0
+        retained = paramiko.HostKeys()
+        removed = 0
+        for alias, entries in keys.items():
+            if alias == name or (alias.startswith("|1|") and paramiko.HostKeys.hash_host(name, alias) == alias):
+                removed += len(entries)
                 continue
-            labels = set(stripped.split()[0].split(","))
-            if labels & names:
-                removed += 1
-                continue
-            kept.append(line)
-    if removed:
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.writelines(kept)
-        os.chmod(path, 0o600)
-    return removed
+            for key_type, key in entries.items():
+                retained.add(alias, key_type, key)
+        _save_host_keys(path, retained)
+        return removed
 
 
 # ------------------------------------------------------------------ connect
@@ -217,7 +233,10 @@ def _pkey(target: Target) -> paramiko.PKey:
 def connect(target: Target, timeout: int | None = None, trust_unknown: bool = False) -> paramiko.SSHClient:
     """Open an SSH client. Unknown host keys are refused unless trust_unknown."""
     client = paramiko.SSHClient()
-    client.load_system_host_keys(_ensure_known_hosts(target.customer_id))
+    path = config.known_hosts_file(target.customer_id)
+    if path.exists():
+        with config.file_lock(path.with_suffix(".lock")):
+            client.load_system_host_keys(path)
     if trust_unknown:
         policy = TofuPolicy(target.host_id, target.customer_id)
     else:
@@ -255,7 +274,7 @@ def connect(target: Target, timeout: int | None = None, trust_unknown: bool = Fa
         raise SshError("timeout", f"Timeout connecting to {target.hostname}:{target.port}") from exc
     except HostKeyUnknown as exc:
         client.close()
-        remember_pending_key(target.host_id, exc.hostname, policy.key)
+        remember_pending_key(target.host_id, exc.hostname, policy.key, target.customer_id)
         raise
     except paramiko.SSHException as exc:
         client.close()
@@ -386,5 +405,5 @@ def sftp_probe(target: Target) -> dict:
     return {
         "reachable": True,
         "latency_ms": int((time.time() - started) * 1000),
-        "fingerprint": known_fingerprint(target.hostname, int(target.port or 22)),
+        "fingerprint": known_fingerprint(target.hostname, int(target.port or 22), target.customer_id),
     }

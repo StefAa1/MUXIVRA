@@ -186,11 +186,12 @@ def summary(conn: sqlite3.Connection, customer_id: int) -> dict:
 
     return {
         "customer_id": customer_id,
-        "sites": count("SELECT COUNT(*) AS n FROM sites WHERE customer_id = ?"),
+        "sites": count("SELECT COUNT(*) AS n FROM sites WHERE customer_id = ? AND NOT planning_only"),
         "hosts": count("SELECT COUNT(*) AS n FROM hosts WHERE customer_id = ?"),
         "credentials": count("SELECT COUNT(*) AS n FROM credentials WHERE customer_id = ?"),
         "racks": count(
-            "SELECT COUNT(*) AS n FROM racks r JOIN sites s ON s.id = r.site_id WHERE s.customer_id = ?"
+            "SELECT COUNT(*) AS n FROM racks r JOIN sites s ON s.id = r.site_id"
+            " WHERE s.customer_id = ? AND NOT r.planning_only"
         ),
         "devices": count(
             "SELECT COUNT(*) AS n FROM devices d JOIN racks r ON r.id = d.rack_id"

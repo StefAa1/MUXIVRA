@@ -3,16 +3,22 @@
 
 const S = {
   status: null,
+  workspaceReady: false,
+  sessionEpoch: 0,
+  customerId: null,
+  customerLoad: 0,
+  siteId: 'all',
   hosts: [],
   creds: [],
   snippets: [],
   events: [],
   tabs: [],
+  nextTab: 0,
   activeTabId: null,
   view: 'hosts',
   collapsed: new Set(),
   search: '',
-  sftp: { hostId: null, path: '.' },
+  sftp: null,
   paletteIndex: 0,
   paletteItems: [],
 };
@@ -60,9 +66,10 @@ function toast(message, kind) {
   setTimeout(() => el.remove(), 4000);
 }
 
-async function api(path, opts = {}) {
+async function api(path, { customerId = S.customerId, ...opts } = {}) {
+  const sessionEpoch = S.sessionEpoch;
   const headers = { 'x-requested-with': 'sshdeck', ...(opts.headers || {}) };
-  if (S.customerId) headers['x-customer-id'] = String(S.customerId);
+  if (customerId) headers['x-customer-id'] = String(customerId);
   const init = { credentials: 'same-origin', ...opts, headers };
   if (opts.json !== undefined) {
     headers['content-type'] = 'application/json';
@@ -71,11 +78,7 @@ async function api(path, opts = {}) {
     delete init.json;
   }
   const res = await fetch('/api' + path, init);
-  if (res.status === 401) {
-    if (S.status) S.status.authenticated = false;
-    showAuth(false);
-    throw new Error('unauthorized');
-  }
+  if (res.status === 401 && S.status?.authenticated && sessionEpoch === S.sessionEpoch) leaveWorkspace();
   if (!res.ok) {
     let detail = res.statusText;
     try { const data = await res.json(); detail = data.detail || detail; } catch (_) { /* ignore */ }
@@ -97,6 +100,7 @@ async function api(path, opts = {}) {
 
 /* ------------------------------------------------------------------ auth */
 function showAuth(setupMode) {
+  $('#startup').classList.add('hidden');
   $('#app').classList.add('hidden');
   const auth = $('#auth');
   auth.classList.remove('hidden');
@@ -117,6 +121,8 @@ async function handleAuthSubmit(event) {
   const setup = !$('#auth-confirm-wrap').classList.contains('hidden');
   const password = $('#auth-password').value;
   const message = $('#auth-message');
+  const submit = $('#auth-submit');
+  submit.disabled = true;
   message.textContent = '';
   try {
     if (setup) {
@@ -131,29 +137,41 @@ async function handleAuthSubmit(event) {
     $('#auth-password2').value = '';
     await enterApp();
   } catch (err) {
-    message.textContent = err.message === 'bad_password' ? 'Wrong password.' : err.message;
+    message.textContent = err.detail === 'bad_password' ? 'Wrong password.' : err.message;
+  } finally {
+    submit.disabled = false;
   }
 }
 
 /* --------------------------------------------------------------- app boot */
 async function enterApp() {
-  $('#auth').classList.add('hidden');
-  $('#app').classList.remove('hidden');
   const status = await api('/status');
   S.status = status;
+  if (!status.authenticated) { showAuth(!status.initialized); return; }
   $('#sb-user').textContent = status.username || 'admin';
   await loadCustomers();
   await Promise.all([loadHosts(), loadCreds(), loadSnippets(), loadEvents(), loadUpdateState()]);
   if (typeof loadInventory === 'function') await loadInventory();
+  if (!S.status.authenticated) return;
+  S.workspaceReady = true;
+  $('#auth').classList.add('hidden');
+  $('#startup').classList.add('hidden');
+  $('#app').classList.remove('hidden');
   setView('hosts');
   renderSidebar();
   renderPage();
 }
 
-async function loadHosts() { S.hosts = await api('/hosts'); }
-async function loadCreds() { S.creds = await api('/credentials'); }
-async function loadSnippets() { S.snippets = await api('/snippets'); }
-async function loadEvents() { S.events = await api('/events'); }
+async function loadList(key, path) {
+  const customerId = S.customerId;
+  const sessionEpoch = S.sessionEpoch;
+  const data = await api(path, { customerId });
+  if (S.customerId === customerId && S.sessionEpoch === sessionEpoch) S[key] = data;
+}
+function loadHosts() { return loadList('hosts', '/hosts'); }
+function loadCreds() { return loadList('creds', '/credentials'); }
+function loadSnippets() { return loadList('snippets', '/snippets'); }
+function loadEvents() { return loadList('events', '/events'); }
 async function loadCustomers() {
   S.customers = await api('/customers');
   if (!S.customerId && S.customers.length) S.customerId = S.customers[0].id;
@@ -162,13 +180,7 @@ async function loadCustomers() {
     select.innerHTML = S.customers
       .map((c) => `<option value="${c.id}"${c.id === S.customerId ? ' selected' : ''}>${esc(c.name)}</option>`)
       .join('');
-    select.onchange = async () => {
-      S.customerId = Number(select.value);
-      await Promise.all([loadHosts(), loadCreds(), loadSnippets(), loadInventory()]);
-      renderSidebar();
-      renderPage();
-      toast(`Active customer: ${S.customers.find((c) => c.id === S.customerId)?.name || ''}`);
-    };
+    select.onchange = () => selectCustomer(Number(select.value));
   }
   const dot = $('#ctx-dot');
   const active = (S.customers || []).find((c) => c.id === S.customerId);
@@ -176,6 +188,47 @@ async function loadCustomers() {
   renderCustomerPill();
   const add = $('#customer-add');
   if (add) add.onclick = openCustomerModal;
+}
+
+async function selectCustomer(customerId) {
+  const sequence = ++S.customerLoad;
+  const pill = $('#customer-pill');
+  if (customerId === S.customerId) {
+    renderCustomerPill();
+    pill.removeAttribute('aria-busy');
+    return;
+  }
+  pill.setAttribute('aria-busy', 'true');
+  const scope = { customerId };
+  try {
+    const [hosts, creds, snippets, inventory] = await Promise.all([
+      api('/hosts', scope), api('/credentials', scope), api('/snippets', scope), readInventory(customerId),
+    ]);
+    if (sequence !== S.customerLoad) return;
+    closeDrawer();
+    closeModal();
+    closePalette();
+    if (S.view === 'wizard') window.MuxWizard?.close();
+    S.customerId = customerId;
+    S.hosts = hosts;
+    S.creds = creds;
+    S.snippets = snippets;
+    S.nd = inventory;
+    S.siteId = 'all';
+    S.activeTabId = null;
+    resetInventoryView();
+    if (S.view === 'config' || S.view === 'wizard') S.view = 'hosts';
+    renderSidebar();
+    setView(S.view);
+    toast(`Customer: ${S.customers.find((c) => c.id === customerId)?.name || ''}`);
+  } catch (error) {
+    if (sequence === S.customerLoad) toast(`Customer could not be opened. ${error.message}`, 'err');
+  } finally {
+    if (sequence === S.customerLoad) {
+      renderCustomerPill();
+      pill.removeAttribute('aria-busy');
+    }
+  }
 }
 
 function json_opts_empty() {
@@ -189,6 +242,8 @@ function renderCustomerPill() {
   const select = $('#customer-select');
   const list = S.customers || [];
   const active = list.find((c) => c.id === S.customerId) || list[0] || null;
+  const dot = $('#ctx-dot');
+  if (dot) dot.style.background = active?.color || '#2f7bff';
   if (name) name.textContent = active ? active.name : '—';
   if (select && active) select.value = String(active.id);
   if (!menu) return;
@@ -211,27 +266,13 @@ function renderCustomerPill() {
       menu.classList.add('hidden');
       pill.setAttribute('aria-expanded', 'false');
     });
-    menu.addEventListener('click', async (event) => {
+    menu.addEventListener('click', (event) => {
       const item = event.target.closest('[data-customer-id]');
       const create = event.target.closest('[data-customer-new]');
       menu.classList.add('hidden');
       pill.setAttribute('aria-expanded', 'false');
       if (create) { openCustomerModal(); return; }
-      if (!item) return;
-      S.customerId = Number(item.dataset.customerId);
-      await Promise.all([loadHosts(), loadCreds(), loadSnippets(), loadInventory()]);
-      renderCustomerPill();
-      renderSidebar();
-      renderPage();
-      const chosen = (S.customers || []).find((c) => c.id === S.customerId);
-      toast(`Customer: ${chosen ? chosen.name : ''}`);
-    });
-  }
-  if (select && !select.dataset.wiredPill) {
-    select.dataset.wiredPill = '1';
-    select.addEventListener('change', () => {
-      S.customerId = Number(select.value);
-      renderCustomerPill();
+      if (item) selectCustomer(Number(item.dataset.customerId));
     });
   }
 }
@@ -251,13 +292,9 @@ function openCustomerModal() {
     const data = Object.fromEntries(new FormData($('#customer-form')).entries());
     try {
       const created = await api('/customers', { json: data });
-      S.customerId = created.id;
       await loadCustomers();
-      await Promise.all([loadHosts(), loadCreds(), loadInventory()]);
       closeModal();
-      renderSidebar();
-      renderPage();
-      toast(`Customer "${created.name}" added`);
+      await selectCustomer(created.id);
     } catch (err) {
       $('#customer-error').textContent = err.message === 'duplicate_name'
         ? 'A customer with that name already exists.' : err.message;
@@ -270,17 +307,58 @@ async function loadUpdateState() {
 }
 
 /* ---------------------------------------------------------------- sidebar */
+function workspaceSites() {
+  const sites = S.nd?.tree?.sites || [];
+  return S.siteId === 'all' ? sites : sites.filter((site) => String(site.id) === S.siteId);
+}
+
+function workspaceDevices() {
+  const placed = workspaceSites().flatMap((site) => (site.racks || []).flatMap((rack) =>
+    (rack.devices || []).map((device) => ({ ...device, siteId: site.id, siteName: site.name, rackId: rack.id, rackName: rack.name }))));
+  const unplaced = (S.nd?.tree?.unplaced || []).filter((device) => S.siteId === 'all' || String(device.site_id) === S.siteId);
+  return placed.concat(unplaced.map((device) => ({
+    ...device, siteId: device.site_id ?? 'unplaced', siteName: device.site_name || 'Unplaced', rackId: null, rackName: 'Unplaced',
+  })));
+}
+
+function matchesSearch(values) {
+  return values.join(' ').toLowerCase().includes(S.search.trim().toLowerCase());
+}
+
+function filteredDevices() {
+  return workspaceDevices().filter((device) => matchesSearch([device.name, device.mgmt_ip, device.vendor, device.model, device.siteName]));
+}
+
 function filteredHosts() {
-  const q = S.search.trim().toLowerCase();
-  if (!q) return S.hosts;
-  return S.hosts.filter((h) =>
-    [h.label, h.hostname, h.username, h.group_name, (h.tags || []).join(' ')]
-      .join(' ').toLowerCase().includes(q));
+  const linked = new Map(workspaceDevices().flatMap((device) =>
+    [device.host_id, ...(device.profile_ids || [])].filter(Boolean).map((id) => [Number(id), device])));
+  return S.hosts.filter((host) => {
+    const device = linked.get(host.id);
+    if (S.siteId !== 'all' && !device) return false;
+    return matchesSearch([host.label, host.hostname, host.username, host.group_name, (host.tags || []).join(' '),
+      device?.name, device?.mgmt_ip, device?.vendor, device?.model, device?.siteName]);
+  });
+}
+
+function updateSearch(query, showDevices = false) {
+  S.search = query;
+  $('#search').value = query;
+  $('#device-search').value = query;
+  if (showDevices) {
+    S.activeTabId = null;
+    closeDrawer();
+    setView('hosts');
+  } else if (S.view === 'hosts') {
+    renderDeviceResults();
+  }
+  renderSidebar();
 }
 
 function renderSidebar() {
   const list = $('#host-list');
   const hosts = filteredHosts();
+  const devices = filteredDevices().length;
+  $('#device-count').textContent = `${devices} ${devices === 1 ? 'device' : 'devices'}`;
   if (!hosts.length) {
     list.innerHTML = `<div class="empty" style="margin:10px 4px;padding:22px 14px">
       <b>${S.hosts.length ? 'No results' : 'No servers yet'}</b>
@@ -343,6 +421,9 @@ function setView(view) {
 }
 
 function activateTab(id) {
+  const tab = S.tabs.find((item) => item.id === id);
+  if (!tab) return;
+  if (S.sftp && (S.sftp.hostId !== tab.host.id || S.sftp.customerId !== tab.customerId)) closeDrawer();
   S.activeTabId = id;
   S.view = 'hosts';                    // a terminal always belongs to the hosts view
   $$('.rail-btn[data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === 'hosts'));
@@ -352,6 +433,7 @@ function activateTab(id) {
   showPage('hosts');                  // shared transition: view-* classes, pages, terminals
   renderTabs();
   renderSidebar();
+  if (tab.pendingHostKey) termPromptHostKey(tab, tab.pendingHostKey);
   requestAnimationFrame(() => {
     const tab = activeTab();
     if (!tab) return;
@@ -388,12 +470,14 @@ function renderTabs() {
   list.innerHTML = S.tabs.map((tab) => {
     const state = tab.state || 'connecting';
     const dotClass = state === 'open' ? 'ok' : state === 'closed' ? 'bad' : '';
-    const stateText = state === 'open' ? 'Ready' : state === 'closed' ? 'Disconnected' : 'Connecting';
-    return `<div class="tab${tab.id === S.activeTabId ? ' active' : ''}" data-tab="${tab.id}" title="${stateText}">
-      <span class="dot ${dotClass}"></span><span>${esc(tab.host.label)}</span>
+    const stateText = state === 'open' ? 'Ready' : state === 'closed' ? 'Disconnected' : state === 'trust' ? 'Trust required' : 'Connecting';
+    const label = [tab.customerName, tab.siteName, tab.host.label].filter(Boolean).join(' / ');
+    return `<div class="tab${tab.id === S.activeTabId ? ' active' : ''}" data-tab="${tab.id}" title="${esc(`${label} · ${stateText}`)}">
+      <span class="dot ${dotClass}"></span><span>${esc(label)}</span>
       <span class="tab-state ${dotClass}" aria-label="${stateText}">${stateText}</span>
       <span class="x" data-tab-close="${tab.id}">✕</span></div>`;
   }).join('');
+  $('#btn-terminal-retry').classList.toggle('hidden', activeTab()?.state !== 'closed');
   updateStatusbar();
 }
 
@@ -411,9 +495,14 @@ function updateStatusbar() {
 }
 
 function openTerminal(host) {
-  const existing = S.tabs.find((t) => t.host.id === host.id);
-  if (existing) { setView('hosts'); activateTab(existing.id); return; }
-  const id = 'tab-' + Date.now();
+  const customerId = S.customerId;
+  const existing = S.tabs.find((t) => t.host.id === host.id && t.customerId === customerId);
+  if (existing) {
+    activateTab(existing.id);
+    if (existing.state === 'closed') connectTab(existing);
+    return;
+  }
+  const id = `tab-${++S.nextTab}`;
   const pane = document.createElement('div');
   pane.className = 'term-pane';
   const shell = document.createElement('div');
@@ -439,30 +528,47 @@ function openTerminal(host) {
   term.loadAddon(fit);
   term.open(shell);
 
-  const tab = { id, host, term, fit, pane, ws: null, state: 'connecting', fingerprint: '' };
+  const customerName = S.customers?.find((customer) => customer.id === customerId)?.name;
+  const siteName = workspaceDevices().find((device) => device.host_id === host.id || device.profile_ids?.includes(host.id))?.siteName;
+  const tab = { id, host, term, fit, pane, customerId, customerName, siteName, ws: null, state: 'connecting', fingerprint: '' };
   tab.observer = new ResizeObserver(() => {
     if (tab.pane.classList.contains('active')) fitTerminal(tab);
   });
   tab.observer.observe(pane);
+  tab.onData = term.onData((data) => {
+    if (tab.state === 'open' && tab.ws?.readyState === WebSocket.OPEN) {
+      tab.ws.send(JSON.stringify({ type: 'input', data }));
+    } else {
+      inputNotReady(tab);
+    }
+  });
+  tab.onResize = term.onResize(() => sendResize(tab));
+  attachTerminalClipboard(tab);
   S.tabs.push(tab);
-  setView('hosts');
   activateTab(id);
-  renderSidebar();
   connectTab(tab);
 }
 
 function connectTab(tab) {
+  const previous = tab.ws;
+  tab.ws = null;
+  previous?.close();
   tab.state = 'connecting';
+  tab.pendingHostKey = null;
+  tab.fingerprint = '';
+  tab.target = '';
+  inputNotReadyShown.delete(tab);
   renderTabs();
   fitTerminal(tab);
-  tab.term.writeln(`\x1b[38;5;79m▚ sshdeck\x1b[0m  ${(tab.host.protocol || 'ssh').toUpperCase()} → \x1b[1m${tab.host.label}\x1b[0m (${hostTargetText(tab.host)})…`);
+  tab.term.writeln(`\x1b[38;5;79m▚ MUXIVRA\x1b[0m  ${(tab.host.protocol || 'ssh').toUpperCase()} → \x1b[1m${tab.host.label}\x1b[0m (${hostTargetText(tab.host)})…`);
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const url = `${proto}://${location.host}/api/ws/terminal/${tab.host.id}?cols=${tab.term.cols}&rows=${tab.term.rows}`;
-  const scoped = url + (url.includes('?') ? '&' : '?') + `customer=${encodeURIComponent(tab.customerId ?? S.customerId ?? '')}`;
+  const scoped = url + `&customer=${encodeURIComponent(tab.customerId ?? '')}`;
   const ws = new WebSocket(scoped);
   tab.ws = ws;
 
   ws.onmessage = (event) => {
+    if (tab.ws !== ws) return;
     let msg;
     try { msg = JSON.parse(event.data); } catch (_) { return; }
     if (msg.type === 'data') {
@@ -481,7 +587,10 @@ function connectTab(tab) {
       updateStatusbar();
     } else if (msg.type === 'error') {
       if (msg.code === 'host_key_unknown') {
-        termPromptHostKey(tab, msg);
+        tab.pendingHostKey = msg;
+        tab.state = 'trust';
+        renderTabs();
+        if (S.view === 'hosts' && activeTab() === tab) termPromptHostKey(tab, msg);
         return;
       }
       tab.state = 'closed';
@@ -495,21 +604,12 @@ function connectTab(tab) {
     }
   };
   ws.onclose = () => {
-    if (tab.state !== 'closed') {
+    if (tab.ws === ws && tab.state !== 'closed' && tab.state !== 'trust') {
       tab.state = 'closed';
       tab.term.writeln('\r\n\x1b[38;5;244m— connection closed —\x1b[0m');
       renderTabs();
     }
   };
-  ws.onerror = () => {};
-
-  tab.onData = tab.term.onData((data) => {
-    if (ws.readyState === 1) { ws.send(JSON.stringify({ type: 'input', data })); return; }
-    // δεν καταπίνουμε χαρακτήρες: λέμε στον χρήστη γιατί δεν έφυγαν
-    inputNotReady(tab);
-  });
-  tab.onResize = tab.term.onResize(() => sendResize(tab));
-  attachTerminalClipboard(tab);
 }
 
 let inputNotReadyShown = new WeakSet();
@@ -639,7 +739,7 @@ let termMenuEl = null;
 function showTermMenu(x, y, tab) {
   termMenuEl && termMenuEl.remove();
   const menu = document.createElement('div');
-  menu.className = 'ctx-menu';
+  menu.className = 'terminal-menu';
   menu.innerHTML = `
     <button data-act="copy">Copy selection<span class="kbd">Ctrl+Shift+C</span></button>
     <button data-act="paste">Paste<span class="kbd">Ctrl+Shift+V</span></button>
@@ -691,16 +791,23 @@ function sendResize(tab) {
   updateStatusbar();
 }
 
+function disposeTab(tab) {
+  const socket = tab.ws;
+  tab.ws = null;
+  try { tab.onData && tab.onData.dispose(); } catch (_) {}
+  try { tab.onResize && tab.onResize.dispose(); } catch (_) {}
+  try { tab.observer && tab.observer.disconnect(); } catch (_) {}
+  try { socket?.close(); } catch (_) {}
+  try { tab.term.dispose(); } catch (_) {}
+  tab.pane.remove();
+}
+
 function closeTab(id) {
   const index = S.tabs.findIndex((t) => t.id === id);
   if (index < 0) return;
   const tab = S.tabs[index];
-  try { tab.onData && tab.onData.dispose(); } catch (_) {}
-  try { tab.onResize && tab.onResize.dispose(); } catch (_) {}
-  try { tab.observer && tab.observer.disconnect(); } catch (_) {}
-  try { tab.ws && tab.ws.close(); } catch (_) {}
-  try { tab.term.dispose(); } catch (_) {}
-  tab.pane.remove();
+  if (S.sftp?.hostId === tab.host.id && S.sftp.customerId === tab.customerId) closeDrawer();
+  disposeTab(tab);
   S.tabs.splice(index, 1);
   if (S.activeTabId === id) {
     const next = S.tabs[Math.min(index, S.tabs.length - 1)];
@@ -709,6 +816,40 @@ function closeTab(id) {
   }
   renderTabs();
   renderSidebar();
+}
+
+function leaveWorkspace() {
+  if (S.status) S.status.authenticated = false;
+  S.sessionEpoch += 1;
+  S.customerLoad += 1;
+  S.workspaceReady = false;
+  showAuth(false);
+  closeDrawer();
+  closePalette();
+  closeModal();
+  S.tabs.forEach(disposeTab);
+  S.tabs = [];
+  S.activeTabId = null;
+  S.customerId = null;
+  S.siteId = 'all';
+  S.customers = [];
+  S.hosts = [];
+  S.creds = [];
+  S.snippets = [];
+  S.events = [];
+  S.nd = null;
+  S.updateRelease = null;
+  S.updateBusy = false;
+  S.updateMessage = '';
+  resetInventoryView();
+  renderTabs();
+}
+
+async function signOut() {
+  try {
+    await api('/logout', { json: {} });
+    leaveWorkspace();
+  } catch (err) { toast(err.message, 'err'); }
 }
 
 window.addEventListener('resize', () => {
@@ -739,24 +880,27 @@ window.addEventListener('unhandledrejection', (ev) => {
 });
 
 function renderPage() {
-  renderHero();
-  renderKeys();
-  renderSnippets();
-  renderActivity();
-  if (typeof renderRacks === 'function') renderRacks();
-  if (S.view === 'racks') { decorateDeviceConnections(); decorateInventoryBackup(); }
-  if (S.view === 'diagram' && typeof renderDiagram === 'function') { renderDiagram(); setTimeout(watchDiagramPanel, 60); }
-  renderSettings();
+  if (S.view === 'hosts') renderHero();
+  if (S.view === 'keys') renderKeys();
+  if (S.view === 'snippets') renderSnippets();
+  if (S.view === 'activity') renderActivity();
+  if (S.view === 'racks') {
+    renderRacks();
+    decorateDeviceConnections();
+    decorateInventoryBackup();
+  }
+  if (S.view === 'settings') renderSettings();
+  if (typeof shFillSites === 'function') shFillSites();
   showPage(S.view);
 }
 
-/* One canonical rule: exactly one page is visible, and the terminal area only
-   belongs to the hosts view. Everything else leads to overlapping pages. */
 function showPage(view) {
   const target = 'page-' + view;
   const tabOpen = view === 'hosts' && !!(S.activeTabId && S.tabs.some((t) => t.id === S.activeTabId));
+  const split = typeof shSyncSplit === 'function' && shSyncSplit(view);
   document.querySelectorAll('.page').forEach((page) => {
-    page.classList.toggle('hidden', page.id !== target || tabOpen);
+    const visible = page.id === 'page-diagram' && split || page.id === target && !tabOpen;
+    page.classList.toggle('hidden', !visible);
   });
   const app = $('#app');
   if (app) {
@@ -767,9 +911,9 @@ function showPage(view) {
   // terminals belong to the hosts view only; the stage keeps the pages
   const terminals = $('#terminals');
   if (terminals) terminals.classList.toggle('hidden', !tabOpen);
-  document.querySelectorAll('.page').forEach((page) => {
-    page.style.zIndex = page.id === target ? '5' : '1';
-  });
+  if (S.workspaceReady && (view === 'diagram' || split) && typeof renderDiagram === 'function') {
+    renderDiagram().then(watchDiagramPanel);
+  }
 }
 
 function renderHero() {
@@ -787,6 +931,27 @@ function renderHero() {
         <time>${fmtWhen(e.created_at)}</time><span>${esc(e.kind)}</span>
         <b>${esc(e.host_label || e.detail || '')}</b></div>`).join('')
     : '';
+  renderDeviceResults();
+}
+
+function renderDeviceResults() {
+  const devices = filteredDevices();
+  const hostIds = new Set(S.hosts.map((host) => host.id));
+  const container = $('#workspace-devices');
+  if (!devices.length) {
+    container.innerHTML = S.search.trim() || S.siteId !== 'all'
+      ? '<p class="empty">No inventory devices match this selection.</p>' : '';
+    return;
+  }
+  container.innerHTML = `<h3>Inventory devices</h3><table class="table">
+    <thead><tr><th>Device</th><th>Location</th><th>Management</th><th>Actions</th></tr></thead>
+    <tbody>${devices.map((device) => `<tr data-workspace-device="${device.id}">
+      <td><strong>${esc(device.name)}</strong><br><span class="muted">${esc([device.vendor, device.model].filter(Boolean).join(' '))}</span></td>
+      <td>${esc(device.rackId ? `${device.siteName} / ${device.rackName}` : device.siteName)}${device.origin === 'planned' ? ' · Planned' : ''}</td>
+      <td class="mono">${esc(device.mgmt_ip || '—')}</td>
+      <td>${hostIds.has(device.host_id) ? `<button class="btn primary xs" data-nd-open="${device.host_id}">Connect</button>` : ''}
+      <button class="btn ghost xs" data-workspace-details="${device.id}">Details</button></td>
+    </tr>`).join('')}</tbody></table>`;
 }
 
 const KIND_LABEL = {
@@ -1031,10 +1196,10 @@ function renderSettings() {
         <div class="body">
           <p class="hint">Official source: <b class="mono">${esc(upd.repo || 'StefAa1/MUXIVRA')}</b>
             ${upd.token ? ' · private repo token saved' : ''}</p>
-          <p class="hint" id="upd-status">${upd.last_check ? 'last check: ' + esc(upd.last_check) : 'no checks yet'}</p>
+          <p class="hint" id="upd-status">${esc(S.updateMessage || (upd.last_check ? `Last check: ${upd.last_check}` : 'No checks yet'))}</p>
           <div class="actions">
-            <button class="btn xs" id="upd-check">Check for updates</button>
-            <button class="btn primary xs${upd.asset ? '' : ' hidden'}" id="upd-prepare">Update now</button>
+            <button class="btn xs" id="upd-check"${S.updateBusy ? ' disabled' : ''}>Check for updates</button>
+            <button class="btn primary xs${S.updateRelease?.asset ? '' : ' hidden'}" id="upd-prepare"${S.updateBusy ? ' disabled' : ''}>Update now</button>
           </div>
         </div></div>
       <div class="card"><h3>Vault</h3>
@@ -1056,8 +1221,20 @@ function renderSettings() {
     </div>`;
 
   if (S.view === 'settings') renderVaultState().catch(() => {});
-  const ev = $('#events-refresh');
-  if (ev) ev.onclick = async () => { await loadEvents(); renderPage(); toast('Refreshed'); };
+}
+
+function setUpdateProgress(message, busy) {
+  S.updateMessage = message;
+  S.updateBusy = busy;
+  const status = $('#upd-status');
+  if (status) status.textContent = message;
+  const check = $('#upd-check');
+  if (check) check.disabled = busy;
+  const prepare = $('#upd-prepare');
+  if (prepare) {
+    prepare.disabled = busy;
+    prepare.classList.toggle('hidden', !S.updateRelease?.asset);
+  }
 }
 
 /* --------------------------------------------------------------- host form */
@@ -1343,7 +1520,6 @@ function openImportModal() {
 
 /* First contact with a host key: the user must see and approve the fingerprint. */
 function termPromptHostKey(tab, frame) {
-  tab.state = 'closed';
   const host = tab.host;
   const port = host.port || 22;
   tab.term.writeln('\r\n\x1b[33m? Unknown host key — connection was not established.\x1b[0m');
@@ -1365,17 +1541,31 @@ function termPromptHostKey(tab, frame) {
       <button class="btn ghost" data-close>Cancel</button>
       <button class="btn primary" id="hk-trust">Accept and retry</button>
     </div>`);
-  $('#hk-trust').onclick = async () => {
+  const button = $('#hk-trust');
+  const errorText = $('#hk-error');
+  button.onclick = async () => {
+    if (!S.tabs.includes(tab) || tab.pendingHostKey !== frame) return;
+    button.disabled = true;
     try {
-      await api(`/hosts/${host.id}/trust`, { json: { fingerprint: frame.fingerprint } });
-      closeModal();
+      await api(`/hosts/${host.id}/trust`, {
+        customerId: tab.customerId, json: { fingerprint: frame.fingerprint },
+      });
+      if (!S.tabs.includes(tab) || tab.pendingHostKey !== frame) return;
+      if ($('#hk-trust') === button) closeModal();
       toast('Host key added to trusted keys');
-      closeTab(tab.id);
-      openTerminal(host);
+      connectTab(tab);
     } catch (err) {
-      $('#hk-error').textContent = err.message === 'no_pending_key' || err.message.startsWith('no_pending_key')
-        ? 'The confirmation expired — try connecting again.'
-        : err.message;
+      if (err.detail === 'no_pending_key' && S.tabs.includes(tab)) {
+        tab.pendingHostKey = null;
+        tab.state = 'closed';
+        renderTabs();
+        if ($('#hk-trust') === button) closeModal();
+        toast('The host key confirmation expired. Reconnect to check it again.', 'err');
+      } else {
+        errorText.textContent = err.message;
+      }
+    } finally {
+      button.disabled = false;
     }
   };
 }
@@ -1390,15 +1580,14 @@ function confirmDialog(title, text, onConfirm, confirmLabel) {
 /* ------------------------------------------------------------------- SFTP */
 function openDrawer() {
   const tab = activeTab();
-  const host = tab ? tab.host : S.hosts[0];
-  if (!host) { toast('Add a server first', 'err'); return; }
+  const host = tab?.host;
+  if (!host) { toast('Select an SSH session before opening Files', 'err'); return; }
   if ((host.protocol || 'ssh') !== 'ssh') {
     toast('SFTP is only supported for SSH connections', 'err');
     return;
   }
-  S.sftp.hostId = host.id;
-  S.sftp.path = '.';
-  $('#sftp-host').textContent = hostTargetText(host);
+  S.sftp = { hostId: host.id, customerId: tab.customerId ?? S.customerId, label: host.label, path: '.', sequence: 0 };
+  $('#sftp-host').textContent = [tab.customerName, host.label, hostTargetText(host)].filter(Boolean).join(' · ');
   $('#drawer').classList.add('open');
   $('#app').classList.add('drawer-open');
   $('#sftp-path').value = '.';
@@ -1407,21 +1596,27 @@ function openDrawer() {
 }
 
 function closeDrawer() {
+  if (!S.sftp) return;
+  S.sftp = null;
+  pendingUpload = null;
   $('#drawer').classList.remove('open');
   $('#app').classList.remove('drawer-open');
   setTimeout(refitActive, 220);
 }
 
 async function loadFiles(path) {
-  const hostId = S.sftp.hostId;
-  if (!hostId) return;
+  const target = S.sftp;
+  if (!target) return;
+  const sequence = ++target.sequence;
+  target.loading = true;
   $('#sftp-list').innerHTML = '<div class="empty" style="margin:12px;padding:18px">Loading…</div>';
   try {
-    const data = await api(`/hosts/${hostId}/files?path=${encodeURIComponent(path || '.')}`);
-    S.sftp.path = data.cwd;
+    const data = await api(`/hosts/${target.hostId}/files?path=${encodeURIComponent(path || '.')}`, { customerId: target.customerId });
+    if (S.sftp !== target || sequence !== target.sequence) return;
+    target.path = data.cwd;
     $('#sftp-path').value = data.cwd;
     const rows = [];
-    if (data.cwd !== '/') rows.push(`<div class="frow dir" data-path="${esc(parentPath(data.cwd))}"><span class="ic">↩</span><span class="nm">..</span></div>`);
+    if (data.cwd !== '/') rows.push(`<div class="frow dir" data-path="${esc(parentPath(data.cwd))}" data-dir="true"><span class="ic">↩</span><span class="nm">..</span></div>`);
     data.entries.forEach((e) => {
       const icon = e.is_dir ? '▸' : '·';
       rows.push(`<div class="frow${e.is_dir ? ' dir' : ''}" data-path="${esc(e.path)}" data-dir="${e.is_dir}">
@@ -1433,7 +1628,11 @@ async function loadFiles(path) {
     });
     $('#sftp-list').innerHTML = rows.join('') || '<div class="empty" style="margin:12px">Empty folder</div>';
   } catch (err) {
+    if (S.sftp !== target || sequence !== target.sequence) return;
+    $('#sftp-path').value = target.path;
     $('#sftp-list').innerHTML = `<div class="empty" style="margin:12px;padding:18px"><b>Error</b>${esc(err.message)}</div>`;
+  } finally {
+    if (sequence === target.sequence) target.loading = false;
   }
 }
 
@@ -1474,6 +1673,24 @@ function connectFromPalette() {
 
 /* ----------------------------------------------------------------- events */
 document.addEventListener('click', async (event) => {
+  const details = event.target.closest('[data-workspace-details]');
+  if (details) {
+    const device = workspaceDevices().find((item) => item.id === Number(details.dataset.workspaceDetails));
+    if (!device) return;
+    const customerId = S.customerId;
+    if (device.rackId) {
+      ND.tab = 'layout';
+      setView('racks');
+      await ndSelectRack(device.rackId);
+      if (customerId === S.customerId && S.view === 'racks') window.ndOpenDeviceModal(device.id);
+    } else {
+      DG.dataset = 'planned';
+      setView('diagram');
+      await renderDiagram();
+      if (customerId === S.customerId && S.view === 'diagram') dgSelect(device.id);
+    }
+    return;
+  }
   const ndOpen = event.target.closest('[data-nd-open]');
   if (ndOpen) {
     const host = (S.hosts || []).find((h) => h.id === Number(ndOpen.dataset.ndOpen));
@@ -1684,28 +1901,37 @@ document.addEventListener('click', async (event) => {
   }
   const dl = event.target.closest('[data-dl]');
   if (dl) {
+    const target = S.sftp;
+    if (!target || target.loading) return;
     const path = dl.dataset.dl;
-    const url = `/api/hosts/${S.sftp.hostId}/download?path=${encodeURIComponent(path)}`;
-    const res = await fetch(url, { credentials: 'same-origin' });
-    if (!res.ok) { toast('Download failed', 'err'); return; }
-    const blob = await res.blob();
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = path.split('/').pop();
-    a.click();
-    URL.revokeObjectURL(a.href);
-    toast('Download: ' + a.download);
+    try {
+      const res = await api(`/hosts/${target.hostId}/download?path=${encodeURIComponent(path)}`, { customerId: target.customerId });
+      const blob = await res.blob();
+      if (S.sftp !== target) return;
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = path.split('/').pop();
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 0);
+      toast('Download: ' + a.download);
+    } catch (err) { toast(`Download: ${err.message}`, 'err'); }
     return;
   }
   const rm = event.target.closest('[data-rm]');
   if (rm) {
     event.stopPropagation();
+    const target = S.sftp;
+    if (!target || target.loading) return;
     const path = rm.dataset.rm;
-    confirmDialog('Delete', `Delete ${path}?`, async () => {
+    const sequence = target.sequence;
+    confirmDialog('Delete', `Delete ${path} on ${target.label}?`, async () => {
+      if (S.sftp !== target || sequence !== target.sequence) return;
       try {
-        await api(`/hosts/${S.sftp.hostId}/delete-path`, { json: { path } });
-        await loadFiles(S.sftp.path);
-        toast('Deleted');
+        await api(`/hosts/${target.hostId}/delete-path`, { customerId: target.customerId, json: { path } });
+        if (S.sftp === target && sequence === target.sequence) {
+          await loadFiles(target.path);
+          toast('Deleted');
+        }
       } catch (err) { toast(err.message, 'err'); }
     });
     return;
@@ -1737,7 +1963,7 @@ document.addEventListener('keydown', (event) => {
 
 /* --------------------------------------------------------------- wiring up */
 $('#auth-form').addEventListener('submit', handleAuthSubmit);
-$('#search').addEventListener('input', (event) => { S.search = event.target.value; renderSidebar(); });
+$('#search').addEventListener('input', (event) => updateSearch(event.target.value));
 $('#btn-add-host').onclick = () => openHostModal(null);
 $('#hero-add').onclick = () => openHostModal(null);
 $('#btn-import').onclick = openImportModal;
@@ -1746,54 +1972,74 @@ $('#hero-palette').onclick = openPalette;
 $('#tab-add').onclick = openPalette;
 $('#btn-sftp').onclick = openDrawer;
 $('#btn-files-inline').onclick = openDrawer;
+$('#btn-terminal-retry').onclick = () => {
+  const tab = activeTab();
+  if (tab?.state === 'closed') connectTab(tab);
+};
 $('#sftp-close').onclick = closeDrawer;
-$('#sftp-up').onclick = () => loadFiles(parentPath(S.sftp.path));
-$('#sftp-refresh').onclick = () => loadFiles(S.sftp.path);
+$('#sftp-up').onclick = () => { if (S.sftp) loadFiles(parentPath(S.sftp.path)); };
+$('#sftp-refresh').onclick = () => { if (S.sftp) loadFiles(S.sftp.path); };
 $('#sftp-path').addEventListener('keydown', (event) => { if (event.key === 'Enter') loadFiles(event.target.value.trim() || '.'); });
 $('#btn-snippets-inline').onclick = () => { setView('snippets'); };
-$('#btn-logout').onclick = async () => {
-  await api('/logout', { json: {} });
-  S.tabs.forEach((t) => { try { t.ws && t.ws.close(); } catch (_) {} });
-  S.tabs = []; S.activeTabId = null;
-  showAuth(false);
-};
+$('#btn-logout').onclick = signOut;
 $('#palette-input').addEventListener('input', (event) => renderPalette(event.target.value));
 
 $('#sftp-mkdir').onclick = () => {
+  const target = S.sftp;
+  if (!target || target.loading) return;
+  const sequence = target.sequence;
   openModal(`<h3>New folder</h3><form id="mkdir-form">
-    <label class="field"><span>Path</span><input name="path" value="${esc(S.sftp.path === '/' ? '/newdir' : S.sftp.path + '/newdir')}" /></label>
+    <label class="field"><span>Path</span><input name="path" value="${esc(target.path === '/' ? '/newdir' : target.path + '/newdir')}" /></label>
     <div class="modal-actions"><button type="button" class="btn ghost" data-close>Cancel</button>
     <button class="btn primary" type="submit">Create</button></div></form>`);
   $('#mkdir-form').onsubmit = async (event) => {
     event.preventDefault();
+    if (S.sftp !== target || sequence !== target.sequence) return;
     const path = new FormData(event.target).get('path');
-    try { await api(`/hosts/${S.sftp.hostId}/mkdir`, { json: { path } }); closeModal(); loadFiles(S.sftp.path); }
+    try {
+      await api(`/hosts/${target.hostId}/mkdir`, { customerId: target.customerId, json: { path } });
+      if (S.sftp === target && sequence === target.sequence) {
+        if ($('#mkdir-form') === event.target) closeModal();
+        loadFiles(target.path);
+      }
+    }
     catch (err) { toast(err.message, 'err'); }
   };
 };
 
-$('#sftp-upload').onclick = () => $('#sftp-file').click();
+let pendingUpload = null;
+$('#sftp-upload').onclick = () => {
+  const target = S.sftp;
+  if (!target || target.loading) return;
+  pendingUpload = { target, sequence: target.sequence };
+  $('#sftp-file').click();
+};
 $('#sftp-file').onchange = async (event) => {
   const file = event.target.files[0];
-  if (!file) return;
+  event.target.value = '';
+  const upload = pendingUpload;
+  pendingUpload = null;
+  if (!file || !upload || S.sftp !== upload.target || upload.target.sequence !== upload.sequence) return;
+  const { target, sequence } = upload;
   const form = new FormData();
   form.append('file', file);
-  const target = (S.sftp.path === '/' ? '' : S.sftp.path) + '/' + file.name;
+  const path = (target.path === '/' ? '' : target.path) + '/' + file.name;
   try {
-    const res = await fetch(`/api/hosts/${S.sftp.hostId}/upload?path=${encodeURIComponent(target)}`, {
-      method: 'POST', body: form, credentials: 'same-origin', headers: { 'x-requested-with': 'sshdeck' },
+    await api(`/hosts/${target.hostId}/upload?path=${encodeURIComponent(path)}`, {
+      method: 'POST', body: form, customerId: target.customerId,
     });
-    if (!res.ok) throw new Error((await res.json()).detail || 'upload failed');
-    toast(`Uploaded: ${file.name}`);
-    loadFiles(S.sftp.path);
+    if (S.sftp === target && sequence === target.sequence) {
+      toast(`Uploaded: ${file.name}`);
+      loadFiles(target.path);
+    }
   } catch (err) { toast('Upload: ' + err.message, 'err'); }
-  event.target.value = '';
 };
 
 document.addEventListener('click', (event) => {
   const map = {
     'key-add': () => openCredModal(null),
     'snippet-add': () => openSnippetModal(null),
+    'events-refresh': async () => { await loadEvents(); renderPage(); toast('Refreshed'); },
     'settings-import': openImportModal,
     'nd-add-site': async () => {
       const name = (($('#nd-site-name') || {}).value || '').trim();
@@ -1849,26 +2095,26 @@ document.addEventListener('click', (event) => {
       } catch (err) { toast(err.message, 'err'); }
     },
     'upd-check': async () => {
-      const line = $('#upd-status');
-      if (line) line.textContent = 'Checking…';
+      if (S.updateBusy) return;
+      const sessionEpoch = S.sessionEpoch;
+      S.updateRelease = null;
+      setUpdateProgress('Checking…', true);
       try {
         const result = await api('/update/check', json_opts_empty());
-        // κρατάμε ΟΛΟ το release (asset + manifest + signature): το prepare τα χρειάζεται
+        if (sessionEpoch !== S.sessionEpoch) return;
         S.updateRelease = result;
         S.update = { ...(S.update || {}), ...result, last_check: new Date().toLocaleString('en-GB') };
-        renderPage();
-        toast(result.available ? `New version: ${result.latest}` : `You are on the latest (${result.latest || result.current})`);
+        const message = result.available ? `New version ${result.latest}` : `You are on the latest version (${result.latest || result.current})`;
+        setUpdateProgress(message, false);
       } catch (err) {
-        if (line) line.textContent = err.message;
-        toast(err.message, 'err');
+        if (sessionEpoch === S.sessionEpoch) setUpdateProgress(err.message, false);
       }
     },
     'upd-prepare': async () => {
-      const release = S.updateRelease || (S.update || {});
-      const asset = release.asset;
-      if (!asset) { toast('Run a check first', 'err'); return; }
-      const line = $('#upd-status');
-      if (line) line.textContent = 'Downloading and verifying…';
+      const release = S.updateRelease;
+      if (S.updateBusy || !release?.asset) return;
+      const sessionEpoch = S.sessionEpoch;
+      setUpdateProgress('Downloading and verifying…', true);
       try {
         const result = await api('/update/prepare', {
           json: {
@@ -1878,25 +2124,25 @@ document.addEventListener('click', (event) => {
             signature: release.signature || null,
           },
         });
-        if (line) line.textContent = `Prepared ${result.version} — installing and restarting…`;
-        // one click: αμέσως μετά το staging ξεκινά η εγκατάσταση και η επανεκκίνηση
-        const started = await api('/update/apply', { json: {} });
-        if (line) line.textContent = started.started
-          ? 'Installing — MUXIVRA restarts itself, no manual steps.'
-          : 'Staged, but the installer could not start. Open Details.';
-        toast(started.started ? 'Installing update — the app will restart' : 'Could not start the installer', started.started ? 'ok' : 'err');
+        if (sessionEpoch !== S.sessionEpoch || release !== S.updateRelease) return;
+        if (!result.prepare_id) throw new Error('The update preparation ID is missing. Check for updates again.');
+        setUpdateProgress(`Prepared ${result.version}. Starting installation…`, true);
+        const started = await api('/update/apply', { json: { prepare_id: result.prepare_id } });
+        if (sessionEpoch !== S.sessionEpoch) return;
+        setUpdateProgress(started.started ? 'Installing. MUXIVRA will restart.' : 'The installer could not start.', !!started.started);
       } catch (err) {
-        if (line) line.textContent = err.message;
-        toast(err.message, 'err');
+        if (sessionEpoch === S.sessionEpoch) setUpdateProgress(err.message, false);
       }
     },
     'pw-change': openPasswordModal,
-    'logout2': async () => { await api('/logout', { json: {} }); showAuth(false); },
+    'logout2': signOut,
     'forget-key': async () => {
       const tab = activeTab();
       if (!tab) return;
-      await api(`/hosts/${tab.host.id}/trust`, { method: 'DELETE' });
-      toast(`Trust removed for ${tab.host.hostname}:${tab.host.port || 22}`);
+      try {
+        await api(`/hosts/${tab.host.id}/trust`, { method: 'DELETE', customerId: tab.customerId });
+        toast(`Trust removed for ${tab.host.hostname}:${tab.host.port || 22}`);
+      } catch (err) { toast(err.message, 'err'); }
     },
   };
   for (const [id, fn] of Object.entries(map)) {
@@ -1919,8 +2165,8 @@ function openPasswordModal() {
       await api('/password', { json: { current: data.current, new: data.new } });
       closeModal();
       toast('Password changed — sign in again');
-      showAuth(false);
-    } catch (err) { $('#pw-error').textContent = err.message === 'bad_password' ? 'Wrong current password.' : err.message; }
+      leaveWorkspace();
+    } catch (err) { $('#pw-error').textContent = err.detail === 'bad_password' ? 'Wrong current password.' : err.message; }
   };
 }
 
@@ -1938,8 +2184,11 @@ function openPasswordModal() {
   }
   try {
     S.status = await api('/status');
-  } catch (_) {
-    S.status = { initialized: false, authenticated: false };
+  } catch (error) {
+    S.status = { initialized: true, authenticated: false };
+    showAuth(false);
+    $('#auth-message').textContent = `Unable to open the local workspace. ${error.message}`;
+    return;
   }
   if (S.status.authenticated) {
     try { await enterApp(); } catch (_) { showAuth(false); }

@@ -3,11 +3,14 @@
 Persistent data (database, vault key, known_hosts) lives OUTSIDE the program
 folder so an update can replace the binaries without touching user data.
 """
-import os
+import errno
 import json
+import os
 import shutil
 import sys
+import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -128,8 +131,6 @@ KNOWN_HOSTS_DIR = None                               # resolved lazily (DATA_DIR
 
 def known_hosts_file(customer_id: int | None = None):
     """Each customer gets its own trust store: same IP, different legitimate keys."""
-    from pathlib import Path
-
     base = Path(DATA_DIR) / "known_hosts.d"
     if customer_id is None:
         return Path(KNOWN_HOSTS_PATH)
@@ -137,34 +138,67 @@ def known_hosts_file(customer_id: int | None = None):
 
 
 def ensure_known_hosts(customer_id: int | None = None) -> str:
-    import os
-
     ensure_dirs()
     path = known_hosts_file(customer_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    if not path.exists():
+    try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        os.close(fd)
-    else:
+    except FileExistsError:
         os.chmod(path, 0o600)
+    else:
+        os.close(fd)
     return str(path)
 
 
 def migrate_known_hosts(default_customer_id: int) -> bool:
     """Adopt the pre-0.4.6 shared trust file into the unclassified customer."""
-    from pathlib import Path
-    import shutil
-
     legacy = Path(KNOWN_HOSTS_PATH)
     if not legacy.exists() or not legacy.stat().st_size:
         return False
     target = known_hosts_file(default_customer_id)
-    if target.exists() and target.stat().st_size:
-        return False                     # already migrated: never overwrite trust
+    if target.exists():
+        return False  # An empty scoped file can record that trust was removed.
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(legacy, target)
-    target.chmod(0o600)
+    write_private_file(target, legacy.read_bytes())
     return True
+
+
+def write_private_file(path: Path, contents: bytes) -> None:
+    """Replace a per-user file atomically, with owner-only permissions on Unix."""
+    fd, filename = tempfile.mkstemp(dir=path.parent)
+    temporary = Path(filename)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(contents)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+@contextmanager
+def file_lock(path: Path, *, wait: bool = True):
+    """Hold an exclusive interprocess lock for the lifetime of the open file."""
+    with path.open("a+b") as handle:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            try:
+                mode = msvcrt.LK_LOCK if wait else msvcrt.LK_NBLCK
+                msvcrt.locking(handle.fileno(), mode, 1)
+            except OSError as exc:
+                if not wait and exc.errno in (errno.EACCES, errno.EAGAIN):
+                    raise BlockingIOError(exc.errno, "already locked") from exc
+                raise
+        else:
+            import fcntl
+
+            fcntl.flock(handle, fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+
+
 LOG_PATH = DATA_DIR / "sshdeck.log"
 
 def _default_staging_dir(data_dir: Path) -> Path:

@@ -56,7 +56,6 @@ function shBuildNav() {
     const label = button.querySelector('em');
     if (label) label.textContent = entry[1];
     button.classList.toggle('rail-helper', !!helper);
-    button.addEventListener('click', () => window.setTimeout(shFillSites, 350));
   });
 
   // «Τερματικά» δεν είχε δικό του rail item — παίρνει ένα, πριν τα βοηθητικά
@@ -99,105 +98,56 @@ function shFocusTerminals() {
 }
 
 /* -------------------------------------------------------------- context bar */
-async function shFillSites() {
+function shFillSites() {
   const select = document.querySelector('#site-select');
   if (!select) return;
-  let sites = [];
-  try {
-    if (typeof S !== 'undefined' && S && S.nd && S.nd.tree) sites = S.nd.tree.sites || [];
-  } catch (_) { sites = []; }
-  if (!sites.length && typeof api === 'function') {
-    try { sites = ((await api('/inventory/tree')) || {}).sites || []; } catch (_) { sites = []; }
-  }
-  const current = select.value;
-  select.innerHTML = '<option value="all">All sites</option>'
+  const sites = S.nd?.tree?.sites || [];
+  const options = '<option value="all">All sites</option>'
     + sites.map((site) => `<option value="${site.id}">${shEsc(site.name)}</option>`).join('');
-  if (current && Array.from(select.options).some((option) => option.value === current)) {
-    select.value = current;
-  }
-}
-
-function shFilterHosts(query) {
-  const term = String(query || '').trim().toLowerCase();
-  const rows = document.querySelectorAll('#page-hosts [data-host-row], #page-hosts .host-row, #page-hosts tbody tr');
-  let shown = 0;
-  rows.forEach((row) => {
-    const text = (row.textContent || '').toLowerCase();
-    const visible = !term || text.indexOf(term) >= 0;
-    row.classList.toggle('sh-hidden', !visible);
-    if (visible) shown += 1;
-  });
-  const counter = document.querySelector('#device-count');
-  if (counter) counter.textContent = `${shown} devices`;
-  if (typeof S !== 'undefined' && S) S.hostFilter = term;
+  if (select.innerHTML !== options) select.innerHTML = options;
+  if (select.value !== S.siteId) select.value = S.siteId;
 }
 
 /* --------------------------------------------------------------- split view */
-function shRefitTerminals() {
-  const tabs = (typeof S !== 'undefined' && S && Array.isArray(S.tabs)) ? S.tabs : [];
-  tabs.forEach((tab) => {
-    if (!tab || !tab.fit || !tab.pane) return;
-    window.setTimeout(() => {
-      try {
-        tab.fit.fit();
-        if (typeof sendResize === 'function') sendResize(tab);
-      } catch (_) { /* ο τερματικός θα επανέλθει στο επόμενο resize */ }
-    }, 60);
-  });
-}
-
-function shApplySplit() {
+function shSyncSplit(view) {
   const main = document.querySelector('.main');
   const pane = document.querySelector('#split-pane');
   const handle = document.querySelector('#split-handle');
   const stage = document.querySelector('#stage');
   const page = document.querySelector('#page-diagram');
-  const terminals = document.querySelector('#terminals');
-  if (!main || !pane || !stage || !page) return;
+  if (!main || !pane || !stage || !page) return false;
 
-  main.classList.toggle('split-on', SH.split);
-  pane.classList.toggle('hidden', !SH.split);
-  if (handle) handle.classList.toggle('hidden', !SH.split);
+  const visible = SH.split && view !== 'diagram';
+  main.classList.toggle('split-on', visible);
+  pane.classList.toggle('hidden', !visible);
+  if (handle) handle.classList.toggle('hidden', !visible);
   const button = document.querySelector('#btn-split');
   if (button) {
-    button.classList.toggle('on', SH.split);
-    button.setAttribute('aria-pressed', SH.split ? 'true' : 'false');
-    button.textContent = SH.split ? 'Close split' : 'Diagram side-by-side';
+    button.classList.toggle('on', visible);
+    button.setAttribute('aria-pressed', String(visible));
+    const label = visible ? 'Close split' : 'Diagram side-by-side';
+    if (button.textContent !== label) button.textContent = label;
   }
+  if (visible && SH.splitWidth) pane.style.width = `${SH.splitWidth}px`;
+  const container = visible ? pane : stage;
+  if (page.parentNode !== container) container.appendChild(page);
+  return visible;
+}
 
-  const hasTab = typeof S !== 'undefined' && S && S.activeTabId
-    && Array.isArray(S.tabs) && S.tabs.some((tab) => tab.id === S.activeTabId);
-
-  if (SH.split) {
-    if (SH.splitWidth) pane.style.width = `${SH.splitWidth}px`;
-    // το διάγραμμα πάει στο πλαϊνό panel· η κύρια σκηνή κρατά σελίδα ή terminal
-    pane.innerHTML = '';
-    pane.appendChild(page);
-    page.classList.remove('hidden');
-    if (typeof showPage === 'function') {
-      const keep = (S.view && S.view !== 'diagram') ? S.view : 'hosts';
-      showPage(keep);
-      // το showPage κρύβει όλα τα .page — το διάγραμμα ζει πλέον στο pane
-      page.classList.remove('hidden');
-    }
-  } else {
-    if (stage && page.parentNode !== stage) stage.appendChild(page);
-    if (stage && terminals && terminals.parentNode !== stage) stage.appendChild(terminals);
-    pane.innerHTML = '';
-    if (typeof showPage === 'function') showPage(S.view || 'hosts');
-  }
-
-  shRefitTerminals();
-  if (typeof renderDiagram === 'function') {
-    try { renderDiagram(true); } catch (_) { /* ignored */ }
-  }
+function shApplySplit() {
   try { window.localStorage.setItem('muxivra.split.on', SH.split ? '1' : '0'); } catch (_) { /* ignored */ }
+  if (SH.split && S.view === 'diagram') setView('hosts');
+  else showPage(S.view);
+  requestAnimationFrame(refitActive);
 }
 
 function shWireSplit() {
   const button = document.querySelector('#btn-split');
   if (button) {
-    button.onclick = () => { SH.split = !SH.split; shApplySplit(); };
+    button.onclick = () => {
+      SH.split = S.view === 'diagram' || !SH.split;
+      shApplySplit();
+    };
   }
   const handle = document.querySelector('#split-handle');
   if (!handle) return;
@@ -214,13 +164,6 @@ function shWireSplit() {
     const width = Math.max(360, Math.min(bounds.width - 420, bounds.right - event.clientX));
     pane.style.width = `${Math.round(width)}px`;
     SH.splitWidth = Math.round(width);
-  });
-  window.addEventListener('resize', () => {
-    if (!SH.split) return;
-    shRefitTerminals();
-    if (typeof renderDiagram === 'function') {
-      try { renderDiagram(true); } catch (_) { /* ignored */ }
-    }
   });
   handle.addEventListener('pointerup', () => {
     SH.splitDragging = false;
@@ -324,26 +267,8 @@ function shWrapDeviceModal() {
 }
 
 /* -------------------------------------------------------------------- boot */
-function shWrapShowPage() {
-  if (typeof window.showPage !== 'function' || window.showPage.__wrapped) return;
-  const original = window.showPage;
-  const wrapped = function (view) {
-    const result = original.apply(this, arguments);
-    if (view === 'racks' || view === 'diagram') window.setTimeout(shFillSites, 250);
-    if (view === 'hosts') window.setTimeout(() => {
-      const search = document.querySelector('#device-search');
-      if (search && search.value) shFilterHosts(search.value);
-    }, 150);
-    return result;
-  };
-  wrapped.__wrapped = true;
-  window.showPage = wrapped;
-  if (typeof ShowPageIsGlobal === 'undefined') { /* το app.js το καλεί ως showPage τοπικά */ }
-}
-
 function shBoot() {
   shBuildNav();
-  shWrapShowPage();
   shWireSplit();
   shFillSites();
   shWrapDeviceModal();
@@ -351,41 +276,38 @@ function shBoot() {
   const addButton = document.querySelector('#btn-add-device');
   if (addButton) {
     addButton.onclick = () => {
-      const host = document.querySelector('#wizard-page');
-      if (typeof showPage === 'function') showPage('wizard');
-      if (window.MuxWizard) {
-        window.MuxWizard.mount(host, {
-          onDone: async (info) => {
-            if (typeof loadHosts === 'function') { try { await loadHosts(); } catch (_) { /* ignored */ } }
-            if (typeof loadInventory === 'function') { try { await loadInventory(); } catch (_) { /* ignored */ } }
-            if (typeof showPage === 'function') showPage('hosts');
-            shFillSites();
-            if (info && info.name) shToast(`${info.name} was added`);
-          },
-          onCancel: () => { if (typeof showPage === 'function') showPage('hosts'); },
-        });
-      }
+      const customerId = S.customerId;
+      setView('wizard');
+      window.MuxWizard.mount(document.querySelector('#wizard-host'), {
+        onDone: async () => {
+          await Promise.allSettled([loadHosts(), loadInventory()]);
+          if (S.customerId !== customerId) return;
+          renderSidebar();
+          if (S.view === 'wizard') setView('hosts');
+          else renderPage();
+        },
+        onCancel: () => { if (S.view === 'wizard') setView('hosts'); },
+      });
     };
   }
 
   const search = document.querySelector('#device-search');
   if (search) {
-    search.addEventListener('input', () => shFilterHosts(search.value));
+    search.addEventListener('input', () => updateSearch(search.value, true));
     search.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') { search.value = ''; shFilterHosts(''); }
+      if (event.key === 'Escape') updateSearch('', true);
     });
   }
 
   const site = document.querySelector('#site-select');
   if (site) {
     site.onchange = () => {
-      if (typeof S !== 'undefined' && S) S.siteFilter = site.value;
-      shFilterHosts(document.querySelector('#device-search') ? document.querySelector('#device-search').value : '');
-      if (typeof renderPage === 'function') { try { renderPage(); } catch (_) { /* ignored */ } }
+      S.siteId = site.value;
+      renderSidebar();
+      renderPage();
     };
   }
 
-  if (SH.split) shApplySplit();
 }
 
 if (document.readyState === 'loading') {

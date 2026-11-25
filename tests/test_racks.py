@@ -220,7 +220,7 @@ def test_device_connections_lists_profiles_and_routeros_client_state(rack):
     # RouterOS client launch without an executable must fail with a clear code, not a crash
     res = rack["client"].post(f"/api/inventory/devices/{device['id']}/routeros-client", json={})
     if res.status_code == 409:
-        assert "routeros_client" in res.json()["detail"]
+        assert "client_not_found" in res.json()["detail"]  # μήνυμα του νέου routeros client resolver
     else:
         assert res.status_code == 200
 

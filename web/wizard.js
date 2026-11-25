@@ -3,8 +3,7 @@
      1 Details → 2 Access → 3 Placement
 
    Κανόνες που τηρούνται εδώ:
-   • μία μόνο τελική αποθήκευση· αν η τοποθέτηση αποτύχει, η εγγραφή του
-     profile διαγράφεται ξανά, ώστε να μη μένει μισή εγγραφή,
+   • μία τελική αποθήκευση για device και προφίλ πρόσβασης,
    • κανένα μυστικό δεν μένει στο DOM ή στο localStorage μετά την αποθήκευση,
    • οι τιμές της φόρμας επιβιώνουν από inline δημιουργία πελάτη/χώρου/rack ή
      credential (δεν ξαναγεμίζει ο χρήστης τίποτα).
@@ -17,7 +16,7 @@ const WZ = {
   step: 1,
   data: {
     name: '', kind: 'switch', vendor: '', model: '', mgmt_ip: '', serial_interface: '',
-    planned: false, note: '',
+    planned: false, planned_site_id: '', note: '',
     protocol: 'ssh', username: '', credential_id: '', secret: '', port: 22,
     serial_port: '', baud: 115200, bytesize: 8, parity: 'N', stopbits: 1, flow: 'none',
     site_id: '', site_name: '', rack_id: '', rack_name: '', units: 1, position: 1,
@@ -48,25 +47,7 @@ function wzEsc(value) {
 }
 
 function wzApi(path, options) {
-  if (typeof api === 'function') return api(path, options || {});
-  const opts = options || {};
-  const headers = { 'x-requested-with': 'sshdeck' };
-  if (typeof S !== 'undefined' && S && S.customerId) headers['x-customer-id'] = String(S.customerId);
-  const init = { method: opts.method || 'GET', headers, credentials: 'same-origin' };
-  if (opts.json) {
-    headers['content-type'] = 'application/json';
-    init.body = JSON.stringify(opts.json);
-  }
-  return fetch(`/api${path}`, init).then(async (response) => {
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const error = new Error(payload.detail || `HTTP ${response.status}`);
-      error.status = response.status;
-      error.detail = payload.detail;
-      throw error;
-    }
-    return payload;
-  });
+  return api(path, { customerId: WZ.customerId, ...options });
 }
 
 function wzToast(message) {
@@ -80,7 +61,7 @@ function wzValidateStep(step) {
   const d = WZ.data;
   if (step === 1) {
     if (!d.name.trim()) return { field: 'wz-name', message: 'A device name is required.' };
-    if (!d.planned && !d.mgmt_ip.trim() && !d.serial_port.trim()) {
+    if (!d.planned && !d.mgmt_ip.trim() && !d.serial_interface.trim()) {
       return { field: 'wz-ip', message: 'Enter a management IP/hostname or COM port, or mark it as planned.' };
     }
     if (d.mgmt_ip.trim() && /\s/.test(d.mgmt_ip.trim())) {
@@ -88,8 +69,10 @@ function wzValidateStep(step) {
     }
     return null;
   }
+  if (d.planned) return null;
   if (step === 2) {
     if (d.protocol !== 'serial') {
+      if (!d.mgmt_ip.trim()) return { message: 'Go back and enter the management IP or hostname.' };
       if (!d.username.trim()) return { field: 'wz-user', message: 'A username is required to connect.' };
       if (!d.credential_id) return { field: 'wz-cred', message: 'Select or create a credential.' };
       const port = Number(d.port);
@@ -103,7 +86,6 @@ function wzValidateStep(step) {
     }
     return null;
   }
-  if (d.planned) return null;
   if (!d.rack_id) return { field: 'wz-rack', message: 'Select a rack or create a new one.' };
   const position = Number(d.position);
   const units = Number(d.units) || 1;
@@ -216,6 +198,7 @@ function wzModelNote() {
 
 function wzStepTwoHtml() {
   const d = WZ.data;
+  if (d.planned) return '<p class="wz-planned-note">Add access details after the device is ready to connect.</p>';
   const credentials = WZ.credentials.length
     ? WZ.credentials.map((c) => `<option value="${c.id}"${String(d.credential_id) === String(c.id) ? ' selected' : ''}>${wzEsc(c.name)}${c.username ? ` · ${wzEsc(c.username)}` : ''}</option>`).join('')
     : '<option value="">— no credential —</option>';
@@ -267,7 +250,11 @@ function wzStepThreeHtml() {
   if (d.planned) {
     return `<div class="wz-planned-note">
       <b>Planned device</b>
-      <p>It is recorded without a rack, appears dashed in the diagram, and gets no physical cable until you place it.</p></div>`;
+      <p>It appears in the Planned diagram. Choose a site if you know where it will go.</p>
+      <label class="wz-field"><span>Site</span><select id="wz-planned-site">
+        <option value="">Unplaced</option>
+        ${WZ.sites.map((site) => `<option value="${site.id}"${String(d.planned_site_id) === String(site.id) ? ' selected' : ''}>${wzEsc(site.name)}</option>`).join('')}
+      </select></label></div>`;
   }
   const sites = WZ.sites.length
     ? WZ.sites.map((s) => `<option value="${s.id}"${String(d.site_id) === String(s.id) ? ' selected' : ''}>${wzEsc(s.name)}</option>`).join('')
@@ -373,6 +360,7 @@ function wzReadStep() {
     d.planned = get('wz-planned').checked;
     d.note = get('wz-note').value;
   } else if (WZ.step === 2) {
+    if (d.planned) return;
     d.protocol = get('wz-proto').value;
     const user = get('wz-user');
     const cred = get('wz-cred');
@@ -392,7 +380,9 @@ function wzReadStep() {
     if (stop) d.stopbits = Number(stop.value) || 1;
     const flow = get('wz-flow');
     if (flow) d.flow = flow.value;
-  } else if (!d.planned) {
+  } else if (d.planned) {
+    d.planned_site_id = get('wz-planned-site').value;
+  } else {
     d.site_id = get('wz-site').value;
     d.rack_id = get('wz-rack').value;
     d.position = Number(get('wz-position').value) || 1;
@@ -432,7 +422,12 @@ function wzBind() {
   };
 
   const proto = el.querySelector('#wz-proto');
-  if (proto) proto.onchange = () => { wzReadStep(); wzRender(); };
+  if (proto) proto.onchange = () => {
+    const previousPort = WZ.data.protocol === 'telnet' ? 23 : 22;
+    wzReadStep();
+    if (WZ.data.port === previousPort) WZ.data.port = WZ.data.protocol === 'telnet' ? 23 : 22;
+    wzRender();
+  };
 
   const bindNew = (buttonId, formId, focusId) => {
     const button = el.querySelector(`#${buttonId}`);
@@ -544,7 +539,7 @@ async function wzSave() {
     label: d.name.trim(),
     protocol: d.protocol,
     hostname: d.protocol === 'serial' ? (d.serial_port.trim() || 'serial') : d.mgmt_ip.trim(),
-    port: d.protocol === 'telnet' ? 23 : (Number(d.port) || 22),
+    port: Number(d.port) || (d.protocol === 'telnet' ? 23 : 22),
     username: d.username.trim(),
     credential_id: d.credential_id ? Number(d.credential_id) : null,
     group_name: 'General',
@@ -558,40 +553,25 @@ async function wzSave() {
     stopbits: Number(d.stopbits) || 1,
     flow: d.flow,
   };
-  let host = null;
+  const device = {
+    name: d.name.trim(), kind: d.kind, note: d.note.trim(), vendor: d.vendor.trim(),
+    model: d.model.trim(), mgmt_ip: d.mgmt_ip.trim(), model_key: WZ.modelKey || '',
+  };
+  const payload = d.planned
+    ? { ...device, rack_id: null, site_id: d.planned_site_id ? Number(d.planned_site_id) : null, origin: 'planned' }
+    : { ...device, rack_id: Number(d.rack_id), units: Number(d.units) || 1, position: Number(d.position) || 1,
+      origin: 'documented', connection: hostPayload };
   try {
-    host = await wzApi('/hosts', { method: 'POST', json: hostPayload });
-    if (!d.planned && d.rack_id) {
-      await wzApi('/inventory/devices', {
-        method: 'POST',
-        json: {
-          rack_id: Number(d.rack_id),
-          name: d.name.trim(),
-          kind: d.kind,
-          units: Number(d.units) || 1,
-          position: Number(d.position) || 1,
-          note: d.note.trim(),
-          host_id: host.id,
-          vendor: (d.vendor || '').trim(),
-          model: (d.model || '').trim(),
-          mgmt_ip: d.mgmt_ip.trim(),
-          origin: 'documented',
-          model_key: WZ.modelKey || '',
-        },
-      });
-    }
-    WZ.busy = false;
+    const saved = await wzApi('/inventory/devices', { json: payload });
+    if (WZ.data !== d) return;
     const name = d.name;
+    const onDone = WZ.onDone;
     wzReset();
     wzToast(`${name} added`);
-    if (typeof WZ.onDone === 'function') WZ.onDone({ host, name });
-    else if (typeof loadHosts === 'function') await loadHosts();
+    if (onDone) await onDone({ host: saved.host, name });
   } catch (error) {
+    if (WZ.data !== d) return;
     WZ.busy = false;
-    if (host) {
-      // no half-written record: undo the profile we just created
-      try { await wzApi(`/hosts/${host.id}`, { method: 'DELETE' }); } catch (_) { /* reported below */ }
-    }
     wzShowError({ message: `Save failed: ${error.message}` });
   }
 }
@@ -603,7 +583,7 @@ async function wzNext() {
   wzShowError(null);
   if (WZ.step < 3) {
     WZ.step += 1;
-    if (WZ.step === 3 && WZ.data.rack_id) await wzLoadLayout();
+    if (WZ.step === 3 && !WZ.data.planned && WZ.data.rack_id) await wzLoadLayout();
     if (WZ.step === 3 && WZ.sites.length === 0) {
       try { WZ.sites = (await wzApi('/inventory/tree')).sites || []; } catch (_) { WZ.sites = []; }
     }
@@ -621,18 +601,20 @@ function wzReset() {
   WZ.busy = false;
   WZ.data = {
     name: '', kind: 'switch', vendor: '', model: '', mgmt_ip: '', serial_interface: '',
-    planned: false, note: '', protocol: 'ssh', username: '', credential_id: '', secret: '',
+    planned: false, planned_site_id: '', note: '', protocol: 'ssh', username: '', credential_id: '', secret: '',
     port: 22, serial_port: '', baud: 115200, bytesize: 8, parity: 'N', stopbits: 1,
     flow: 'none', site_id: '', site_name: '', rack_id: '', rack_name: '', units: 1, position: 1,
   };
 }
 
 function wzClose() {
-  if (typeof WZ.onCancel === 'function') WZ.onCancel();
+  const onCancel = WZ.onCancel;
   if (WZ.el) {
     WZ.el.classList.add('hidden');
     WZ.el.innerHTML = '';
   }
+  wzReset();
+  if (onCancel) onCancel();
 }
 
 async function wzLoadLayout() {
@@ -674,21 +656,19 @@ async function wzMount(container, options) {
   WZ.onDone = opts.onDone || null;
   WZ.onCancel = opts.onCancel || null;
   if (opts.reset !== false) wzReset();
+  WZ.customerId = S.customerId;
+  const draft = WZ.data;
   el.classList.remove('hidden');
-  try {
-    WZ.credentials = await wzApi('/credentials');
-  } catch (_) { WZ.credentials = []; }
-  try {
-    WZ.catalog = await wzApi('/inventory/catalog');
-  } catch (_) { WZ.catalog = { vendors: [] }; }
-  try {
-    WZ.sites = ((await wzApi('/inventory/tree')) || {}).sites || [];
-  } catch (_) { WZ.sites = []; }
-  // προεπιλογή τρέχοντος context
-  if (typeof S !== 'undefined' && S && S.nd && S.nd.tree && (S.nd.tree.sites || []).length && !WZ.data.site_id) {
-    WZ.data.site_id = S.nd.tree.sites[0].id;
-    const racks = S.nd.tree.sites[0].racks || [];
-    if (racks.length) WZ.data.rack_id = racks[0].id;
+  el.innerHTML = '<p role="status">Loading device options…</p>';
+  const catalog = await wzApi('/inventory/catalog').catch(() => ({ vendors: [] }));
+  if (WZ.data !== draft || WZ.customerId !== S.customerId) return null;
+  WZ.catalog = catalog;
+  WZ.credentials = S.creds || [];
+  WZ.sites = S.nd?.tree?.sites || [];
+  if (WZ.sites.length && !WZ.data.site_id) {
+    const site = WZ.sites.find((item) => String(item.id) === S.siteId) || WZ.sites[0];
+    WZ.data.site_id = site.id;
+    if (site.racks?.length) WZ.data.rack_id = site.racks[0].id;
   }
   wzRender();
   return WZ;

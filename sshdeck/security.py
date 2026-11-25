@@ -5,6 +5,7 @@ import hmac
 import os
 import secrets
 import sqlite3
+import threading
 import time
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -190,49 +191,65 @@ def _validate_key(key: bytes) -> bytes:
     return key.strip()
 
 
+def _validate_saved_secrets(key: bytes | None) -> None:
+    if not config.DB_PATH.exists():
+        return
+    cipher = Fernet(key) if key is not None else None
+    with db.db() as conn:
+        rows = conn.execute(
+            """SELECT secret_enc FROM credentials WHERE length(secret_enc) > 0
+            UNION ALL SELECT passphrase_enc FROM credentials WHERE length(passphrase_enc) > 0
+            UNION ALL SELECT raw_enc FROM config_versions WHERE length(raw_enc) > 0
+            UNION ALL SELECT value FROM settings
+              WHERE length(value) > 0 AND (key = 'update_token_enc' OR key GLOB 'snmp_community:*')"""
+        )
+        for (blob,) in rows:
+            if cipher is None:
+                raise VaultError("vault_key_missing")
+            try:
+                cipher.decrypt(blob.encode("ascii") if isinstance(blob, str) else blob)
+            except (InvalidToken, TypeError, ValueError) as exc:
+                raise VaultError("vault_decrypt_failed") from exc
+
+
 def _load_key() -> bytes:
     config.ensure_dirs()
     plain = config.VAULT_KEY_PATH
     wrapped = _wrapped_key_path()
 
-    if wrapped.exists():
-        blob = wrapped.read_bytes()
-        if not blob:
-            # a failed protect used to leave a zero-byte file: nothing was ever
-            # encrypted with it, so regenerating is lossless
-            wrapped.unlink(missing_ok=True)
-        else:
+    # A failed restore leaves existing ciphertext and key paths untouched.
+    if not any(path.exists() and path.stat().st_size for path in (plain, wrapped)):
+        _validate_saved_secrets(None)
+
+    with config.file_lock(plain.with_name(".vault.lock")):
+        blob = wrapped.read_bytes() if wrapped.exists() else b""
+        if blob:
             try:
-                return _validate_key(dpapi_unprotect(blob))
+                key = _validate_key(dpapi_unprotect(blob))
             except VaultError as exc:
                 raise VaultError("vault_key_unreadable") from exc
-
-    if plain.exists():
-        raw = plain.read_bytes()
-        if not raw:
-            plain.unlink(missing_ok=True)
-        else:
-            key = _validate_key(raw)
-            if _dpapi_available():
-                wrapped.write_bytes(dpapi_protect(key) or key)
-                os.chmod(wrapped, 0o600)
-                plain.unlink(missing_ok=True)
+            _validate_saved_secrets(key)
             return key
 
-    key = Fernet.generate_key()
-    if _dpapi_available():
-        # wrap before opening the file: a failed protect must not leave a stub
-        wrapped_blob = dpapi_protect(key)
-        if not wrapped_blob:
-            raise VaultError("dpapi_protect_failed")
-        fd = os.open(wrapped, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(wrapped_blob)
-    else:
-        fd = os.open(plain, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(key)
-    return key
+        raw = plain.read_bytes() if plain.exists() else b""
+        key = _validate_key(raw) if raw else None
+        _validate_saved_secrets(key)
+        key = key or Fernet.generate_key()
+
+        if _dpapi_available():
+            wrapped_blob = dpapi_protect(key)
+            if not wrapped_blob:
+                raise VaultError("dpapi_protect_failed")
+            config.write_private_file(wrapped, wrapped_blob)
+            plain.unlink(missing_ok=True)
+        elif not raw:
+            config.write_private_file(plain, key)
+        return key
+
+
+def verify_vault() -> None:
+    """Check persisted ciphertext with its stored key, initializing an empty vault."""
+    _load_key()
 
 
 def vault_key_status() -> dict:
@@ -247,38 +264,39 @@ def vault_key_status() -> dict:
 
 _last_secret_use = 0.0
 _locked = False  # explicit lock state: while True no secret operation is allowed
+_VAULT_LOCK = threading.RLock()
 AUTO_LOCK_SECONDS = int(os.environ.get("SSHDECK_AUTO_LOCK_SECONDS", "0"))  # 0 = off
 
 
 def fernet() -> Fernet:
     """Return the vault cipher. While locked, every secret operation is refused."""
-    global _cached_fernet, _last_secret_use, _locked
-    if _locked:
-        raise VaultError("vault_locked")
-    if AUTO_LOCK_SECONDS > 0 and _last_secret_use and (time.time() - _last_secret_use) > AUTO_LOCK_SECONDS:
-        _locked = True          # idle lock: never silently reload the key
-        _cached_fernet = None
-        raise VaultError("vault_locked")
-    if _cached_fernet is None:
-        _cached_fernet = Fernet(_load_key())
-    _last_secret_use = time.time()
-    return _cached_fernet
+    global _cached_fernet, _last_secret_use
+    with _VAULT_LOCK:
+        enforce_auto_lock()
+        if _locked:
+            raise VaultError("vault_locked")
+        if _cached_fernet is None:
+            _cached_fernet = Fernet(_load_key())
+        _last_secret_use = time.time()
+        return _cached_fernet
 
 
 def lock(reason: str = "manual") -> None:
     """Lock the vault: drop the key and refuse secret operations until unlock()."""
     global _cached_fernet, _locked
-    _cached_fernet = None
-    _locked = True
-    _last_lock_reason = reason  # noqa: F841 - kept for diagnostics
+    with _VAULT_LOCK:
+        _cached_fernet = None
+        _locked = True
 
 
 def unlock() -> None:
     """Explicit unlock: re-read the key (DPAPI/0600) and reset the idle clock."""
     global _cached_fernet, _last_secret_use, _locked
-    _cached_fernet = Fernet(_load_key())
-    _locked = False
-    _last_secret_use = time.time()
+    with _VAULT_LOCK:
+        lock()
+        _cached_fernet = Fernet(_load_key())
+        _locked = False
+        _last_secret_use = time.time()
 
 
 def is_locked() -> bool:
@@ -293,10 +311,11 @@ def auto_lock_expired() -> bool:
 
 
 def enforce_auto_lock() -> bool:
-    if auto_lock_expired():
-        lock("idle")
-        return True
-    return False
+    with _VAULT_LOCK:
+        if auto_lock_expired():
+            lock("idle")
+            return True
+        return False
 
 
 def vault_state() -> dict:
